@@ -274,21 +274,52 @@ class Matchmaking(commands.Cog):
                     await self.reset_lobby(lobby, keep_voice_members=True)
 
     async def update_lobby_status(self, lobby):
+        """Update the lobby status embed"""
         # Only update the embed if the lobby is in phase 1 (waiting for players)
         if lobby["phase"] == 1:
-            embed = discord.Embed(
-                title="LOBBY STATUS",
-                description=f"Players in Queue: {len(lobby['players'])}/4\nPhase: Waiting for players...",
-                color=EMBED_COLORS["waiting"],
-            )
-            text = lobby["text"]
-            if lobby["message"]:
-                await lobby["message"].edit(embed=embed, view=None)
-            else:
-                lobby["message"] = await text.send(embed=embed)
+            try:
+                embed = discord.Embed(
+                    title="LOBBY STATUS",
+                    description=f"Players in Queue: {len(lobby['players'])}/4\nPhase: Waiting for players...",
+                    color=EMBED_COLORS["waiting"],
+                )
 
-            # Save lobby state when players change
-            await self.save_lobby_state(lobby["category"].id)
+                # Check if text channel still exists and we have permissions
+                if (
+                    not lobby["text"]
+                    or not lobby["text"]
+                    .permissions_for(lobby["text"].guild.me)
+                    .send_messages
+                ):
+                    logger.warning(
+                        f"Missing permissions or text channel for lobby #{lobby.get('lobby_number', 'unknown')}"
+                    )
+                    return
+
+                try:
+                    # If message exists, try to edit it
+                    if lobby["message"]:
+                        await lobby["message"].edit(embed=embed, view=None)
+                    else:
+                        # Create new message if it doesn't exist
+                        lobby["message"] = await lobby["text"].send(embed=embed)
+                except discord.NotFound:
+                    # Message was deleted, create a new one
+                    lobby["message"] = await lobby["text"].send(embed=embed)
+                except discord.Forbidden:
+                    logger.warning(
+                        f"Missing permissions to edit message in lobby #{lobby.get('lobby_number', 'unknown')}"
+                    )
+                except Exception as e:
+                    logger.error(f"Unexpected error updating lobby message: {e}")
+
+                # Save lobby state when players change
+                await self.save_lobby_state(lobby["category"].id)
+
+            except Exception as e:
+                logger.error(
+                    f"Error in update_lobby_status for lobby #{lobby.get('lobby_number', 'unknown')}: {e}"
+                )
 
     async def start_captain_selection(self, lobby):
         lobby["phase"] = 2
@@ -761,24 +792,15 @@ class Matchmaking(commands.Cog):
                         f"Lobby #{lobby_number} has been deleted by an administrator."
                     )
                 except Exception:
-                    pass
+                    pass  # Delete all channels within the lobby's category
+            category = target_lobby["category"]
 
-            # Delete all channels (voice, text, team voices) before deleting category
+            # Get all channels in the category (voice and text channels)
             channels_to_delete = []
+            for channel in category.channels:
+                channels_to_delete.append(channel)
 
-            # Add main channels
-            if target_lobby.get("voice"):
-                channels_to_delete.append(target_lobby["voice"])
-            if target_lobby.get("text"):
-                channels_to_delete.append(target_lobby["text"])
-
-            # Add team voice channels if they exist
-            if target_lobby.get("ct_voice"):
-                channels_to_delete.append(target_lobby["ct_voice"])
-            if target_lobby.get("t_voice"):
-                channels_to_delete.append(target_lobby["t_voice"])
-
-            # Delete all channels
+            # Delete all channels within the category
             for channel in channels_to_delete:
                 try:
                     await channel.delete()
