@@ -691,7 +691,6 @@ class Matchmaking(commands.Cog):
 
             # Update status message
             await self.update_lobby_status(restored_lobby)
-
             logger.info(
                 f"Successfully restored lobby {state['category_id']} with {len(current_players)} players"
             )
@@ -758,23 +757,54 @@ class Matchmaking(commands.Cog):
                     await member.send(
                         f"Lobby #{lobby_number} has been deleted by an administrator."
                     )
-                except:
+                except Exception:
                     pass
 
-            # Delete channels
+            # Delete all channels (voice, text, team voices) before deleting category
+            channels_to_delete = []
+
+            # Add main channels
+            if target_lobby.get("voice"):
+                channels_to_delete.append(target_lobby["voice"])
+            if target_lobby.get("text"):
+                channels_to_delete.append(target_lobby["text"])
+
+            # Add team voice channels if they exist
+            if target_lobby.get("ct_voice"):
+                channels_to_delete.append(target_lobby["ct_voice"])
+            if target_lobby.get("t_voice"):
+                channels_to_delete.append(target_lobby["t_voice"])
+
+            # Delete all channels
+            for channel in channels_to_delete:
+                try:
+                    await channel.delete()
+                    logger.info(f"Deleted channel: {channel.name}")
+                    await asyncio.sleep(0.5)  # Small delay between deletions
+                except discord.NotFound:
+                    pass  # Channel was already deleted
+                except Exception as e:
+                    logger.error(f"Failed to delete channel {channel.name}: {e}")
+
+            # Finally delete the category
             try:
                 await target_lobby["category"].delete()
+                logger.info(f"Deleted category for lobby #{lobby_number}")
+            except discord.NotFound:
+                pass  # Category was already deleted
             except Exception as e:
                 logger.error(f"Failed to delete category: {e}")
+                raise
 
             # Remove from active lobbies
-            del self.active_lobbies[target_category_id]
+            if target_category_id in self.active_lobbies:
+                del self.active_lobbies[target_category_id]
 
             # Delete from database
             await self.delete_lobby_state(target_category_id)
 
             await interaction.response.send_message(
-                f"Lobby #{lobby_number} has been deleted.", ephemeral=True
+                f"Successfully deleted lobby #{lobby_number}.", ephemeral=True
             )
 
         except Exception as e:
