@@ -6,8 +6,7 @@ import asyncio
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -18,15 +17,17 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
     logger.info("------")
-    
+
     # Add persistent view
     from cogs.registration import RegisterView
+
     bot.add_view(RegisterView())
-    
+
     # Load cogs and sync commands with retry logic
     max_retries = 3
     for attempt in range(max_retries):
@@ -44,16 +45,20 @@ async def on_ready():
                 logger.error("Failed to sync commands after multiple attempts")
             await asyncio.sleep(2)
 
+
 @bot.command()
 @commands.is_owner()
 async def sync(ctx):
     """Manually sync slash commands"""
     try:
         synced = await bot.tree.sync()
-        await ctx.send(f"Synced {len(synced)} commands: {', '.join([cmd.name for cmd in synced])}")
+        await ctx.send(
+            f"Synced {len(synced)} commands: {', '.join([cmd.name for cmd in synced])}"
+        )
     except Exception as e:
         await ctx.send(f"Failed to sync: {e}")
         logger.error(f"Sync error: {e}")
+
 
 if __name__ == "__main__":
     bot.run(Config.TOKEN)

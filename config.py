@@ -5,13 +5,14 @@ from threading import Lock
 
 load_dotenv()
 
+
 class Config:
     # Discord configuration
     TOKEN = os.getenv("DISCORD_TOKEN")
     REGISTERED_ROLE = "Registered"
     REGISTRATION_CHANNEL = "registration"
     MAP_POOL = os.getenv("MAP_POOL", "Sandstone,Rust,Province").split(",")
-    
+
     # Supabase configuration
     SUPABASE_URL = os.getenv("SUPABASE_URL")
     SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -24,5 +25,7 @@ class Config:
         if cls._supabase_client is None:
             with cls._supabase_lock:
                 if cls._supabase_client is None:
-                    cls._supabase_client = create_client(cls.SUPABASE_URL, cls.SUPABASE_KEY)
+                    cls._supabase_client = create_client(
+                        cls.SUPABASE_URL, cls.SUPABASE_KEY
+                    )
         return cls._supabase_client
