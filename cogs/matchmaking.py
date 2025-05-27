@@ -734,6 +734,9 @@ class Matchmaking(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def delete_lobby(self, interaction: discord.Interaction, lobby_number: int):
         """Delete a lobby and clean up its state"""
+        # Defer the interaction immediately to prevent timeout
+        await interaction.response.defer(ephemeral=True)
+
         try:
             # Find the lobby by number
             target_lobby = None
@@ -746,7 +749,7 @@ class Matchmaking(commands.Cog):
                     break
 
             if not target_lobby:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"Lobby #{lobby_number} not found.", ephemeral=True
                 )
                 return
@@ -803,15 +806,19 @@ class Matchmaking(commands.Cog):
             # Delete from database
             await self.delete_lobby_state(target_category_id)
 
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Successfully deleted lobby #{lobby_number}.", ephemeral=True
             )
 
         except Exception as e:
             logger.error(f"Failed to delete lobby {lobby_number}: {e}")
-            await interaction.response.send_message(
-                f"Failed to delete lobby #{lobby_number}.", ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    f"Failed to delete lobby #{lobby_number}.", ephemeral=True
+                )
+            except Exception:
+                # If followup also fails, just log it
+                logger.error(f"Failed to send error message for lobby {lobby_number}")
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel):
