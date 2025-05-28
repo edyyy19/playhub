@@ -16,11 +16,243 @@ class Leaderboard(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.leaderboard_messages = {}  # Store message references for auto-updates
+
+        # Initialize database table for persistent storage
+        self.bot.loop.create_task(self.init_database())
+
+        # Load existing leaderboards from database after bot is ready
+        self.bot.loop.create_task(self.load_persistent_leaderboards())
+
         self.update_leaderboards.start()  # Start the auto-update task
 
     def cog_unload(self):
         """Clean up when the cog is unloaded"""
         self.update_leaderboards.cancel()
+
+    async def init_database(self):
+        """Initialize the database table for storing leaderboard message references"""
+        await self.bot.wait_until_ready()
+
+        try:
+            loop = asyncio.get_running_loop()
+
+            def create_table_if_not_exists():
+                try:
+                    # Try to select from table first
+                    Config.supabase().table("leaderboard_messages").select("*").limit(
+                        1
+                    ).execute()
+                    logger.info("Leaderboard messages table already exists")
+                except Exception:
+                    # Table doesn't exist, we'll handle this gracefully
+                    logger.info("Leaderboard messages table handling initialized")
+
+            await loop.run_in_executor(None, create_table_if_not_exists)
+
+        except Exception as e:
+            logger.error(f"Failed to initialize leaderboard database: {e}")
+
+    async def load_persistent_leaderboards(self):
+        """Load existing leaderboard messages from database after bot restart"""
+        await self.bot.wait_until_ready()
+
+        try:
+            loop = asyncio.get_running_loop()
+
+            def get_leaderboards():
+                try:
+                    response = (
+                        Config.supabase()
+                        .table("leaderboard_messages")
+                        .select("*")
+                        .execute()
+                    )
+                    return response.data if response.data else []
+                except Exception:
+                    # Table might not exist yet, that's okay
+                    return []
+
+            leaderboard_data = await loop.run_in_executor(None, get_leaderboards)
+
+            if not leaderboard_data:
+                logger.info("No persistent leaderboards found")
+                return
+
+            # Reconstruct message references
+            valid_leaderboards = []
+            for data in leaderboard_data:
+                try:
+                    guild_id = data.get("guild_id")
+                    channel_id = data.get("channel_id")
+                    message_id = data.get("message_id")
+
+                    if not all([guild_id, channel_id, message_id]):
+                        continue
+
+                    # Get guild and channel
+                    guild = self.bot.get_guild(guild_id)
+                    if not guild:
+                        logger.warning(
+                            f"Guild {guild_id} not found, skipping leaderboard"
+                        )
+                        continue
+
+                    channel = guild.get_channel(channel_id)
+                    if not channel:
+                        logger.warning(
+                            f"Channel {channel_id} not found, skipping leaderboard"
+                        )
+                        continue
+
+                    # Try to get the message
+                    message = await channel.fetch_message(message_id)
+                    if not message:
+                        logger.warning(
+                            f"Message {message_id} not found, skipping leaderboard"
+                        )
+                        continue
+
+                    # Store the message reference
+                    self.leaderboard_messages[channel_id] = {
+                        "message": message,
+                        "channel": channel,
+                        "guild_id": guild_id,
+                    }
+
+                    valid_leaderboards.append(data)
+                    logger.info(f"Restored leaderboard in {guild.name}#{channel.name}")
+
+                except Exception as e:
+                    logger.warning(f"Failed to restore leaderboard {data}: {e}")
+
+            logger.info(f"Restored {len(valid_leaderboards)} persistent leaderboards")
+
+            # Clean up any invalid entries from database
+            invalid_count = len(leaderboard_data) - len(valid_leaderboards)
+            if invalid_count > 0:
+                await self.cleanup_invalid_leaderboards()
+
+        except Exception as e:
+            logger.error(f"Failed to load persistent leaderboards: {e}")
+
+    async def save_leaderboard_to_database(self, guild_id, channel_id, message_id):
+        """Save a leaderboard message reference to the database"""
+        try:
+            loop = asyncio.get_running_loop()
+
+            def save_to_db():
+                try:
+                    # First try to update existing record
+                    existing = (
+                        Config.supabase()
+                        .table("leaderboard_messages")
+                        .select("*")
+                        .eq("channel_id", channel_id)
+                        .execute()
+                    )
+
+                    leaderboard_data = {
+                        "guild_id": guild_id,
+                        "channel_id": channel_id,
+                        "message_id": message_id,
+                        "created_at": datetime.now().isoformat(),
+                    }
+
+                    if existing.data:
+                        # Update existing record
+                        Config.supabase().table("leaderboard_messages").update(
+                            leaderboard_data
+                        ).eq("channel_id", channel_id).execute()
+                    else:
+                        # Insert new record
+                        Config.supabase().table("leaderboard_messages").insert(
+                            leaderboard_data
+                        ).execute()
+
+                    return True
+                except Exception as e:
+                    logger.error(f"Database save error: {e}")
+                    return False
+
+            success = await loop.run_in_executor(None, save_to_db)
+            if success:
+                logger.info(
+                    f"Saved leaderboard reference to database: guild={guild_id}, channel={channel_id}"
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to save leaderboard to database: {e}")
+
+    async def remove_leaderboard_from_database(self, channel_id):
+        """Remove a leaderboard message reference from the database"""
+        try:
+            loop = asyncio.get_running_loop()
+
+            def remove_from_db():
+                try:
+                    Config.supabase().table("leaderboard_messages").delete().eq(
+                        "channel_id", channel_id
+                    ).execute()
+                    return True
+                except Exception as e:
+                    logger.error(f"Database delete error: {e}")
+                    return False
+
+            success = await loop.run_in_executor(None, remove_from_db)
+            if success:
+                logger.info(
+                    f"Removed leaderboard reference from database: channel={channel_id}"
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to remove leaderboard from database: {e}")
+
+    async def cleanup_invalid_leaderboards(self):
+        """Clean up invalid leaderboard references from database"""
+        try:
+            valid_channel_ids = set(self.leaderboard_messages.keys())
+
+            loop = asyncio.get_running_loop()
+
+            def cleanup_db():
+                try:
+                    # Get all records
+                    all_records = (
+                        Config.supabase()
+                        .table("leaderboard_messages")
+                        .select("channel_id")
+                        .execute()
+                    )
+
+                    if not all_records.data:
+                        return 0
+
+                    # Find invalid records
+                    invalid_channel_ids = []
+                    for record in all_records.data:
+                        if record["channel_id"] not in valid_channel_ids:
+                            invalid_channel_ids.append(record["channel_id"])
+
+                    # Remove invalid records
+                    if invalid_channel_ids:
+                        for channel_id in invalid_channel_ids:
+                            Config.supabase().table("leaderboard_messages").delete().eq(
+                                "channel_id", channel_id
+                            ).execute()
+
+                    return len(invalid_channel_ids)
+                except Exception as e:
+                    logger.error(f"Database cleanup error: {e}")
+                    return 0
+
+            cleaned_count = await loop.run_in_executor(None, cleanup_db)
+            if cleaned_count > 0:
+                logger.info(
+                    f"Cleaned up {cleaned_count} invalid leaderboard references from database"
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to cleanup invalid leaderboards: {e}")
 
     @app_commands.command(
         name="leaderboard",
@@ -59,7 +291,13 @@ class Leaderboard(commands.Cog):
             self.leaderboard_messages[target_channel.id] = {
                 "message": message,
                 "channel": target_channel,
+                "guild_id": interaction.guild.id,
             }
+
+            # Save to database for persistence
+            await self.save_leaderboard_to_database(
+                interaction.guild.id, target_channel.id, message.id
+            )
 
             # Success response
             embed_response = discord.Embed(
@@ -69,7 +307,7 @@ class Leaderboard(commands.Cog):
             )
             embed_response.add_field(
                 name="Auto-Update",
-                value="The leaderboard will automatically update every hour",
+                value="The leaderboard will automatically update every 1 hour",
                 inline=False,
             )
             await interaction.followup.send(embed=embed_response, ephemeral=True)
@@ -183,7 +421,7 @@ class Leaderboard(commands.Cog):
 
     @tasks.loop(hours=1)
     async def update_leaderboards(self):
-        """Automatically update all active leaderboard messages every hour"""
+        """Automatically update all active leaderboard messages every 1 hour"""
         if not self.leaderboard_messages:
             return
 
@@ -230,6 +468,8 @@ class Leaderboard(commands.Cog):
         # Remove invalid message references
         for channel_id in messages_to_remove:
             del self.leaderboard_messages[channel_id]
+            # Also remove from database
+            await self.remove_leaderboard_from_database(channel_id)
 
     @update_leaderboards.before_loop
     async def before_update_leaderboards(self):
@@ -247,6 +487,9 @@ class Leaderboard(commands.Cog):
 
         if channel_id in self.leaderboard_messages:
             del self.leaderboard_messages[channel_id]
+            # Also remove from database
+            await self.remove_leaderboard_from_database(channel_id)
+
             embed = discord.Embed(
                 title="✅ Leaderboard Auto-Update Stopped",
                 description="The leaderboard in this channel will no longer auto-update.",
