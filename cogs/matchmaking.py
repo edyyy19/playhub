@@ -252,6 +252,79 @@ class Matchmaking(commands.Cog):
             if self.lobby["phase"] == 3:
                 await self.cog.handle_timeout(self.lobby, reason="Map veto timeout")
 
+    # --- GET ID BUTTON UI ---
+    class GetIdView(discord.ui.View):
+        def __init__(self, lobby, cog):
+            super().__init__(timeout=3600)  # 1 hour timeout
+            self.lobby = lobby
+            self.cog = cog
+            # Store team data at creation time to prevent data loss after lobby reset
+            self.ct_team = lobby["ct_team"].copy()
+            self.t_team = lobby["t_team"].copy()
+            # Randomly select the host when the view is created
+            all_players = self.ct_team + self.t_team
+            self.host_player = random.choice(all_players) if all_players else None
+            self.host_data = None  # Will be populated when first accessed
+
+        @discord.ui.button(label="Get Host ID", style=discord.ButtonStyle.primary)
+        async def get_id_button(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            await interaction.response.defer(ephemeral=True)
+
+            try:
+                # Check if the user who clicked is in one of the teams
+                all_players = self.ct_team + self.t_team
+
+                if interaction.user not in all_players:
+                    await interaction.followup.send(
+                        "❌ You are not part of this match! Only match participants can view the host ID.",
+                        ephemeral=True,
+                    )
+                    return
+
+                # Check if we have a host selected
+                if not self.host_player:
+                    await interaction.followup.send(
+                        "❌ No host could be selected for this match. Please contact an administrator.",
+                        ephemeral=True,
+                    )
+                    return
+
+                # Fetch the host's data from database (cache it for efficiency)
+                if not self.host_data:
+                    from models.user import User
+
+                    self.host_data = await User.find(self.host_player.id)
+
+                if not self.host_data:
+                    await interaction.followup.send(
+                        f"❌ The selected host ({self.host_player.display_name}) is not registered in the database.",
+                        ephemeral=True,
+                    )
+                    return
+
+                # Create a simple message with the host's ID (easy to copy)
+                message = (
+                    f"🎯 **Lobby Host:** {self.host_player.display_name}\n"
+                    f"**Host's SO2 ID:** `{self.host_data['so2_id']}`\n\n"
+                    f"*Click to copy the ID above*"
+                )
+
+                await interaction.followup.send(message, ephemeral=True)
+
+            except Exception as e:
+                logger.error(f"Failed to get host ID for {interaction.user}: {e}")
+                await interaction.followup.send(
+                    "❌ An error occurred while retrieving the host ID. Please try again.",
+                    ephemeral=True,
+                )
+
+        async def on_timeout(self):
+            # Disable the button when timeout occurs
+            for item in self.children:
+                item.disabled = True
+
     def get_draft_view(self, lobby):
         return Matchmaking.DraftView(lobby, self)
 
@@ -512,15 +585,20 @@ class Matchmaking(commands.Cog):
         )
         hti.screenshot(
             html_str=html_content, save_as=os.path.basename(image_path), size=(740, 711)
-        )
-        # Upload image to Discord CDN by sending it as a file
+        )  # Upload image to Discord CDN by sending it as a file
         file = discord.File(image_path, filename="final_match.png")
         embed = discord.Embed(
             title=f"PlayHub | {match_id}", color=EMBED_COLORS["final"]
         )
         embed.set_image(url=f"attachment://final_match.png")
         embed.set_footer(text=f"Match Created: {now}")
-        await lobby["veto_message"].edit(embed=embed, view=None, attachments=[file])
+
+        # Create the Get ID button view
+        get_id_view = self.GetIdView(lobby, self)
+
+        await lobby["veto_message"].edit(
+            embed=embed, view=get_id_view, attachments=[file]
+        )
         await self.add_match_to_supabase(match_id, lobby, final_map)
         await self.create_team_voice_channels(lobby)
         lobby["just_finalized"] = True
