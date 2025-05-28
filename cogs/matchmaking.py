@@ -88,13 +88,23 @@ class Matchmaking(commands.Cog):
                     "ct_voice": None,
                     "t_voice": None,
                     "lobby_number": lobby_number,
-                }
-
-                # Save lobby state to database
+                }  # Save lobby state to database
                 await self.save_lobby_state(category.id)
-                await interaction.response.send_message(
-                    f"Lobby created: {category_name}", ephemeral=True
+
+                # Create success embed
+                embed = discord.Embed(
+                    title="✅ Lobby Created Successfully",
+                    description="A new lobby has been created and is ready for players!",
+                    color=EMBED_COLORS["waiting"],
                 )
+                embed.add_field(
+                    name="Lobby Number", value=f"#{lobby_number}", inline=True
+                )
+                embed.add_field(name="Players", value="0/4", inline=True)
+                embed.add_field(name="Status", value="Waiting for players", inline=True)
+                embed.set_footer(text="Join the voice channel to queue up!")
+
+                await interaction.response.send_message(embed=embed, ephemeral=True)
             except ValueError as ve:
                 logger.error(f"Error creating lobby - validation error: {ve}")
                 await interaction.response.send_message(
@@ -748,15 +758,34 @@ class Matchmaking(commands.Cog):
     async def cleanup_lobbies(self, interaction: discord.Interaction, days: int = 7):
         """Clean up lobby states older than specified days"""
         try:
-            await LobbyState.cleanup_old_lobbies(days)
-            await interaction.response.send_message(
-                f"Cleaned up lobby states older than {days} days.", ephemeral=True
+            result = await LobbyState.cleanup_old_lobbies(days)
+
+            # Create success embed
+            embed = discord.Embed(
+                title="✅ Lobby Cleanup Completed",
+                description=f"Successfully cleaned up old lobby states from the database.",
+                color=discord.Color.green(),
             )
+            embed.add_field(name="Cleanup Period", value=f"{days} days", inline=True)
+            embed.add_field(name="Status", value="All old states removed", inline=True)
+            embed.set_footer(text="Database has been optimized and cleaned up.")
+
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             logger.error(f"Failed to cleanup old lobbies: {e}")
-            await interaction.response.send_message(
-                "Failed to cleanup old lobbies.", ephemeral=True
+
+            # Create error embed
+            embed = discord.Embed(
+                title="❌ Cleanup Failed",
+                description="An error occurred while cleaning up old lobby states.",
+                color=discord.Color.red(),
             )
+            embed.add_field(
+                name="Error", value="Database cleanup operation failed", inline=False
+            )
+            embed.set_footer(text="Please try again or contact an administrator.")
+
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(
         name="delete_lobby",
@@ -780,9 +809,22 @@ class Matchmaking(commands.Cog):
                     break
 
             if not target_lobby:
-                await interaction.followup.send(
-                    f"Lobby #{lobby_number} not found.", ephemeral=True
+                # Create not found embed
+                embed = discord.Embed(
+                    title="❌ Lobby Not Found",
+                    description=f"**Lobby #{lobby_number}** could not be found.",
+                    color=discord.Color.orange(),
                 )
+                embed.add_field(
+                    name="Suggestion",
+                    value="Check the lobby number and try again",
+                    inline=False,
+                )
+                embed.set_footer(
+                    text="Use /cleanup_lobbies to remove old lobby states."
+                )
+
+                await interaction.followup.send(embed=embed, ephemeral=True)
                 return
 
             # Notify players
@@ -792,7 +834,9 @@ class Matchmaking(commands.Cog):
                         f"Lobby #{lobby_number} has been deleted by an administrator."
                     )
                 except Exception:
-                    pass  # Delete all channels within the lobby's category
+                    pass
+
+            # Delete all channels within the lobby's category
             category = target_lobby["category"]
 
             # Get all channels in the category (voice and text channels)
@@ -809,9 +853,9 @@ class Matchmaking(commands.Cog):
                 except discord.NotFound:
                     pass  # Channel was already deleted
                 except Exception as e:
-                    logger.error(f"Failed to delete channel {channel.name}: {e}")
-
-            # Finally delete the category
+                    logger.error(
+                        f"Failed to delete channel {channel.name}: {e}"
+                    )  # Finally delete the category
             try:
                 await target_lobby["category"].delete()
                 logger.info(f"Deleted category for lobby #{lobby_number}")
@@ -828,16 +872,38 @@ class Matchmaking(commands.Cog):
             # Delete from database
             await self.delete_lobby_state(target_category_id)
 
-            await interaction.followup.send(
-                f"Successfully deleted lobby #{lobby_number}.", ephemeral=True
+            # Create success embed
+            embed = discord.Embed(
+                title="✅ Lobby Deleted Successfully",
+                description=f"**Lobby #{lobby_number}** has been permanently deleted.",
+                color=discord.Color.green(),
             )
+            embed.add_field(
+                name="Channels Deleted",
+                value=f"{len(channels_to_delete)} channels",
+                inline=True,
+            )
+            embed.set_footer(
+                text="All lobby data has been cleaned up from the database."
+            )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f"Failed to delete lobby {lobby_number}: {e}")
             try:
-                await interaction.followup.send(
-                    f"Failed to delete lobby #{lobby_number}.", ephemeral=True
+                # Create error embed
+                embed = discord.Embed(
+                    title="❌ Failed to Delete Lobby",
+                    description=f"An error occurred while deleting **Lobby #{lobby_number}**.",
+                    color=discord.Color.red(),
                 )
+                embed.add_field(
+                    name="Error", value="Lobby deletion operation failed", inline=False
+                )
+                embed.set_footer(text="Please try again or contact an administrator.")
+
+                await interaction.followup.send(embed=embed, ephemeral=True)
             except Exception:
                 # If followup also fails, just log it
                 logger.error(f"Failed to send error message for lobby {lobby_number}")
