@@ -21,9 +21,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
-    logger.info("------")
-
-    # Add persistent view
+    logger.info("------")  # Add persistent view
     from cogs.registration import RegisterView
 
     bot.add_view(RegisterView())
@@ -34,6 +32,7 @@ async def on_ready():
         try:
             await bot.load_extension("cogs.registration")
             await bot.load_extension("cogs.matchmaking")
+            await bot.load_extension("cogs.leaderboard")
             synced = await bot.tree.sync()
             logger.info(f"Successfully synced {len(synced)} commands")
             for cmd in synced:
