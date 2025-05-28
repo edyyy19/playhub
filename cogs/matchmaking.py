@@ -54,15 +54,59 @@ class Matchmaking(commands.Cog):
 
                 lobby_number = self.lobby_counter
                 self.lobby_counter += 1
-                category_name = f"{LOBBY_CATEGORY_PREFIX}{lobby_number}"
-
-                # Check bot permissions
+                category_name = (
+                    f"{LOBBY_CATEGORY_PREFIX}{lobby_number}"  # Check bot permissions
+                )
                 if not guild.me.guild_permissions.manage_channels:
                     raise ValueError(
                         "Bot doesn't have permission to manage channels in this server."
                     )
 
-                category = await guild.create_category(category_name)
+                # Get the Registered role
+                registered_role = discord.utils.get(
+                    guild.roles, name=Config.REGISTERED_ROLE
+                )
+                if not registered_role:
+                    # Create the role if it doesn't exist
+                    registered_role = await guild.create_role(
+                        name=Config.REGISTERED_ROLE,
+                        color=0xB2FA19,  # Vibrant green color
+                        reason="Auto-created for registered players",
+                    )
+
+                # Set up permission overwrites
+                overwrites = {
+                    guild.default_role: discord.PermissionOverwrite(
+                        view_channel=False, connect=False
+                    ),  # Deny @everyone
+                    registered_role: discord.PermissionOverwrite(
+                        view_channel=True,
+                        connect=True,
+                        send_messages=True,
+                        read_messages=True,
+                    ),  # Allow registered players
+                    guild.me: discord.PermissionOverwrite(
+                        view_channel=True,
+                        connect=True,
+                        manage_channels=True,
+                        send_messages=True,
+                        read_messages=True,
+                    ),  # Allow bot
+                }
+
+                # Allow administrators to access lobbies
+                for role in guild.roles:
+                    if role.permissions.administrator:
+                        overwrites[role] = discord.PermissionOverwrite(
+                            view_channel=True,
+                            connect=True,
+                            send_messages=True,
+                            read_messages=True,
+                        )
+
+                category = await guild.create_category(
+                    category_name, overwrites=overwrites
+                )
                 voice = await category.create_voice_channel(
                     LOBBY_VOICE_NAME, user_limit=4
                 )
@@ -89,12 +133,10 @@ class Matchmaking(commands.Cog):
                     "t_voice": None,
                     "lobby_number": lobby_number,
                 }  # Save lobby state to database
-                await self.save_lobby_state(category.id)
-
-                # Create success embed
+                await self.save_lobby_state(category.id)  # Create success embed
                 embed = discord.Embed(
                     title="✅ Lobby Created Successfully",
-                    description="A new lobby has been created and is ready for players!",
+                    description="A new lobby has been created and is ready for registered players!",
                     color=EMBED_COLORS["waiting"],
                 )
                 embed.add_field(
@@ -102,7 +144,12 @@ class Matchmaking(commands.Cog):
                 )
                 embed.add_field(name="Players", value="0/4", inline=True)
                 embed.add_field(name="Status", value="Waiting for players", inline=True)
-                embed.set_footer(text="Join the voice channel to queue up!")
+                embed.add_field(
+                    name="Access", value="🔒 Registered players only", inline=False
+                )
+                embed.set_footer(
+                    text="Only registered players can see and join this lobby!"
+                )
 
                 await interaction.response.send_message(embed=embed, ephemeral=True)
             except ValueError as ve:
