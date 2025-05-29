@@ -106,22 +106,68 @@ class Registration(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def setup(self, interaction: discord.Interaction):
         try:
+            # Create or get the "Registered" role with proper permissions
+            registered_role = discord.utils.get(
+                interaction.guild.roles, name=Config.REGISTERED_ROLE
+            )
+
+            if not registered_role:
+                # Create the role with display role and mention permissions
+                registered_role = await interaction.guild.create_role(
+                    name=Config.REGISTERED_ROLE,
+                    color=EMBED_COLOR,
+                    hoist=True,  # Display role separately in member list
+                    mentionable=True,  # Allow mention
+                    reason="Auto-created for registered players during setup",
+                )
+                logger.info(f"Created 'Registered' role with ID: {registered_role.id}")
+            else:
+                # Update existing role to ensure it has the correct permissions
+                await registered_role.edit(
+                    hoist=True,  # Display role separately in member list
+                    mentionable=True,  # Allow mention
+                    reason="Updated role permissions during setup",
+                )
+                logger.info(f"Updated existing 'Registered' role permissions")
+
             channel = discord.utils.get(
                 interaction.guild.text_channels, name=Config.REGISTRATION_CHANNEL
             )
 
             if not channel:
+                # Set up permission overwrites for the registration channel
                 overwrites = {
                     interaction.guild.default_role: discord.PermissionOverwrite(
                         read_messages=True, send_messages=False
                     ),
+                    registered_role: discord.PermissionOverwrite(
+                        read_messages=False, send_messages=False
+                    ),  # Registered users cannot view the registration channel
                     interaction.guild.me: discord.PermissionOverwrite(
                         read_messages=True, send_messages=True, manage_messages=True
                     ),
                 }
+
+                # Allow administrators to view the registration channel
+                for role in interaction.guild.roles:
+                    if role.permissions.administrator:
+                        overwrites[role] = discord.PermissionOverwrite(
+                            read_messages=True, send_messages=True, manage_messages=True
+                        )
+
                 channel = await interaction.guild.create_text_channel(
                     Config.REGISTRATION_CHANNEL, overwrites=overwrites, position=0
                 )
+                logger.info(f"Created registration channel with proper permissions")
+            else:
+                # Update existing channel permissions to ensure registered users can't view it
+                await channel.set_permissions(
+                    registered_role,
+                    read_messages=False,
+                    send_messages=False,
+                    reason="Updated during setup to hide from registered users",
+                )
+                logger.info(f"Updated permissions for existing registration channel")
 
             embed = discord.Embed(
                 title="PlayHub Registration",
@@ -133,11 +179,34 @@ class Registration(commands.Cog):
 
             await channel.send(embed=embed, view=RegisterView())
 
+            # Create success response with details
             embed = discord.Embed(
-                title="✅ Success",
+                title="✅ Setup Completed Successfully",
                 description=f"Registration system initialized in {channel.mention}",
                 color=EMBED_COLOR,
             )
+
+            embed.add_field(
+                name="Role Created/Updated",
+                value=f"**{registered_role.name}** role is now configured with:\n"
+                f"• Display role\n"
+                f"• Allow mention\n"
+                f"• Cannot view registration channel",
+                inline=False,
+            )
+
+            embed.add_field(
+                name="Channel Permissions",
+                value=f"• **Everyone**: Can view, cannot send messages\n"
+                f"• **{registered_role.name}**: Cannot view channel\n"
+                f"• **Administrators**: Full access",
+                inline=False,
+            )
+
+            embed.set_footer(
+                text="Registered users will be automatically hidden from the registration channel"
+            )
+
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
         except Exception as e:
