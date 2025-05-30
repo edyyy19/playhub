@@ -4,6 +4,7 @@ from discord import app_commands
 from config import Config
 from models.match import Match
 from models.lobby_state import LobbyState
+from models.timeout import timeout_manager
 import random
 import asyncio
 import logging
@@ -34,6 +35,18 @@ class Matchmaking(commands.Cog):
         self.lobby_locks = defaultdict(asyncio.Lock)  # Prevent race conditions
         # Restore lobbies on startup
         asyncio.create_task(self.restore_lobbies())
+        # Initialize timeout manager
+        asyncio.create_task(self.initialize_timeout_manager())
+
+    async def initialize_timeout_manager(self):
+        """Initialize timeout manager and load active timeouts"""
+        try:
+            await self.bot.wait_until_ready()
+            await timeout_manager.create_table_if_not_exists()
+            await timeout_manager.load_active_timeouts()
+            logger.info("Timeout manager initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize timeout manager: {e}")
 
     @app_commands.command(
         name="create_lobby", description="Create a new matchmaking lobby."
@@ -336,14 +349,28 @@ class Matchmaking(commands.Cog):
         # Only remove users if not in waiting phase
         if lobby["phase"] == 1:
             return  # Ignore timeouts in waiting phase
+
+        # Add timeout to database for all players in the lobby
         for member in lobby["players"]:
+            # Add timeout to database
+            success = await timeout_manager.add_timeout(
+                member.id, timeout_minutes=2, reason=reason
+            )
+
             try:
-                await member.send(
-                    f"You have been removed from the lobby due to: {reason}. 2-minute timeout applied."
-                )
-            except Exception:
-                logger.error(f"Failed to send timeout message to {member}: {reason}")
-                pass
+                if success:
+                    await member.send(
+                        f"You have been removed from the lobby due to: {reason}. "
+                        "2-minute timeout applied - you cannot join any lobbies during this time."
+                    )
+                else:
+                    await member.send(
+                        f"You have been removed from the lobby due to: {reason}. "
+                        "2-minute timeout applied."
+                    )
+            except Exception as e:
+                logger.error(f"Failed to send timeout message to {member}: {e}")
+
         await self.reset_lobby(lobby)
 
     @tasks.loop(seconds=30)
@@ -380,6 +407,28 @@ class Matchmaking(commands.Cog):
         for lobby in self.active_lobbies.values():
             if after.channel and after.channel.id == lobby["voice"].id:
                 if member not in lobby["players"]:
+                    # Check if user is timeouted before allowing them to join
+                    (
+                        is_timeouted,
+                        timeout_until,
+                    ) = await timeout_manager.is_user_timeouted(member.id)
+                    if is_timeouted:
+                        try:
+                            remaining_minutes = timeout_manager.get_remaining_time(
+                                member.id
+                            )
+                            await member.send(
+                                f"You are currently timeouted and cannot join lobbies. "
+                                f"Time remaining: {remaining_minutes} minute(s)."
+                            )
+                            # Disconnect the user from the voice channel
+                            await member.move_to(None)
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to handle timeouted user {member}: {e}"
+                            )
+                        continue
+
                     lobby["players"].add(member)
                 await self.update_lobby_status(lobby)
                 if len(lobby["players"]) == 4 and lobby["phase"] == 1:
@@ -393,10 +442,24 @@ class Matchmaking(commands.Cog):
                     lobby["players"].remove(member)
                 await self.update_lobby_status(lobby)
                 if lobby["phase"] in [2, 3]:
+                    # Add timeout to database
+                    success = await timeout_manager.add_timeout(
+                        member.id,
+                        timeout_minutes=2,
+                        reason=f"Left during Phase {lobby['phase']} ({'Draft' if lobby['phase'] == 2 else 'Veto'})",
+                    )
+
                     try:
-                        await member.send(
-                            "You have been removed from the lobby due to leaving mid-game. 2-minute timeout applied."
-                        )
+                        if success:
+                            await member.send(
+                                "You have been removed from the lobby due to leaving mid-game. "
+                                "2-minute timeout applied - you cannot join any lobbies during this time."
+                            )
+                        else:
+                            await member.send(
+                                "You have been removed from the lobby due to leaving mid-game. "
+                                "2-minute timeout applied."
+                            )
                     except Exception as e:
                         logger.error(
                             f"Failed to send mid-game leave message to {member}: {e}"
@@ -1043,7 +1106,223 @@ class Matchmaking(commands.Cog):
                 del self.active_lobbies[channel.id]
                 await self.delete_lobby_state(channel.id)
 
-    # Add error handling, timeouts, and cleanup logic as next steps
+    @app_commands.command(
+        name="timeout_status",
+        description="Check your current timeout status or view all timeouts (admin only).",
+    )
+    async def timeout_status(
+        self, interaction: discord.Interaction, user: discord.Member = None
+    ):
+        """Check timeout status for a user or view all timeouts if admin"""
+        # Check if user wants to see all timeouts (admin only)
+        if user is None:
+            # Check own timeout status
+            target_user = interaction.user
+        else:
+            # Admin checking another user's status
+            if not interaction.user.guild_permissions.administrator:
+                await interaction.response.send_message(
+                    "❌ You don't have permission to check other users' timeout status.",
+                    ephemeral=True,
+                )
+                return
+            target_user = user
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:  # Check if specific user or all users
+            if user is None and interaction.user.guild_permissions.administrator:
+                # Admin viewing all timeouts
+                timeouts = await timeout_manager.get_all_timeouts()
+
+                if not timeouts:
+                    embed = discord.Embed(
+                        title="⏰ Timeout Status",
+                        description="No users are currently timeouted.",
+                        color=discord.Color.green(),
+                    )
+                else:
+                    embed = discord.Embed(
+                        title="⏰ Active Timeouts",
+                        description=f"Found {len(timeouts)} active timeout(s):",
+                        color=discord.Color.orange(),
+                    )
+
+                    for timeout in timeouts[:10]:  # Limit to 10 to avoid embed limits
+                        try:
+                            user_obj = await self.bot.fetch_user(timeout["user_id"])
+                            user_name = (
+                                user_obj.display_name
+                                if user_obj
+                                else f"User {timeout['user_id']}"
+                            )
+                        except:
+                            user_name = f"User {timeout['user_id']}"
+
+                        embed.add_field(
+                            name=user_name,
+                            value=f"**Reason:** {timeout['reason']}\n**Remaining:** {timeout['remaining_minutes']} min(s)",
+                            inline=False,
+                        )
+
+                    if len(timeouts) > 10:
+                        embed.set_footer(text=f"Showing 10 of {len(timeouts)} timeouts")
+            else:
+                # Check specific user's timeout
+                is_timeouted, timeout_until = await timeout_manager.is_user_timeouted(
+                    target_user.id
+                )
+
+                if is_timeouted:
+                    remaining_minutes = timeout_manager.get_remaining_time(
+                        target_user.id
+                    )
+                    embed = discord.Embed(
+                        title="⏰ Timeout Status",
+                        description=f"{'You are' if target_user == interaction.user else f'{target_user.display_name} is'} currently timeouted.",
+                        color=discord.Color.red(),
+                    )
+                    embed.add_field(
+                        name="Time Remaining",
+                        value=f"{remaining_minutes} minute(s)",
+                        inline=True,
+                    )
+                    embed.add_field(
+                        name="Expires At",
+                        value=f"<t:{int(timeout_until.timestamp())}:T>",
+                        inline=True,
+                    )
+                else:
+                    embed = discord.Embed(
+                        title="⏰ Timeout Status",
+                        description=f"{'You are' if target_user == interaction.user else f'{target_user.display_name} is'} not currently timeouted.",
+                        color=discord.Color.green(),
+                    )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        except Exception as e:
+            logger.error(f"Failed to check timeout status: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="Failed to check timeout status. Please try again.",
+                color=discord.Color.red(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="clear_timeout", description="Admin command to clear a user's timeout."
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def clear_timeout(
+        self, interaction: discord.Interaction, user: discord.Member
+    ):
+        """Clear a specific user's timeout"""
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # Check if user is actually timeouted
+            is_timeouted, timeout_until = await timeout_manager.is_user_timeouted(
+                user.id
+            )
+
+            if not is_timeouted:
+                embed = discord.Embed(
+                    title="⏰ Timeout Status",
+                    description=f"{user.display_name} is not currently timeouted.",
+                    color=discord.Color.yellow(),
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Remove the timeout
+            success = await timeout_manager.remove_timeout(user.id)
+
+            if success:
+                embed = discord.Embed(
+                    title="✅ Timeout Cleared",
+                    description=f"Successfully cleared timeout for {user.display_name}.",
+                    color=discord.Color.green(),
+                )
+
+                # Try to notify the user
+                try:
+                    await user.send(
+                        f"Your timeout has been cleared by an administrator. You can now join lobbies again."
+                    )
+                    embed.set_footer(text="User has been notified.")
+                except:
+                    embed.set_footer(text="User could not be notified (DMs disabled).")
+            else:
+                embed = discord.Embed(
+                    title="❌ Failed to Clear Timeout",
+                    description=f"Failed to clear timeout for {user.display_name}. Please try again.",
+                    color=discord.Color.red(),
+                )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        except Exception as e:
+            logger.error(f"Failed to clear timeout for user {user.id}: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="Failed to clear timeout. Please try again.",
+                color=discord.Color.red(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="clear_all_timeouts",
+        description="Admin command to clear all active timeouts.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def clear_all_timeouts(self, interaction: discord.Interaction):
+        """Clear all active timeouts"""
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # Get current timeouts count first
+            timeouts = await timeout_manager.get_all_timeouts()
+            timeout_count = len(timeouts)
+
+            if timeout_count == 0:
+                embed = discord.Embed(
+                    title="⏰ No Timeouts",
+                    description="There are no active timeouts to clear.",
+                    color=discord.Color.yellow(),
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Clear all timeouts
+            success = await timeout_manager.clear_all_timeouts()
+
+            if success:
+                embed = discord.Embed(
+                    title="✅ All Timeouts Cleared",
+                    description=f"Successfully cleared {timeout_count} timeout(s).",
+                    color=discord.Color.green(),
+                )
+                embed.set_footer(text="All users can now join lobbies again.")
+            else:
+                embed = discord.Embed(
+                    title="❌ Failed to Clear Timeouts",
+                    description="Failed to clear all timeouts. Please try again.",
+                    color=discord.Color.red(),
+                )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        except Exception as e:
+            logger.error(f"Failed to clear all timeouts: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="Failed to clear all timeouts. Please try again.",
+                color=discord.Color.red(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ...existing code...
 
 
 async def setup(bot):
