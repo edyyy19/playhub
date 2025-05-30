@@ -40,8 +40,7 @@ class TimeoutManager:
                         reason TEXT DEFAULT 'Left during Phase 2/3',
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         UNIQUE(user_id)
-                    );
-                    """)
+                    );                    """)
                     return False
                 except Exception as e:
                     logger.error(f"Failed to create table {cls.TABLE}: {e}")
@@ -62,19 +61,35 @@ class TimeoutManager:
 
         def db_operation():
             try:
-                # Use upsert to handle both insert and update cases
-                result = (
+                # First try to update existing record
+                update_result = (
                     Config.supabase()
                     .table(self.TABLE)
-                    .upsert(
+                    .update(
                         {
-                            "user_id": user_id,
                             "timeout_until": timeout_until.isoformat(),
                             "reason": reason,
                         }
                     )
+                    .eq("user_id", user_id)
                     .execute()
                 )
+
+                # If no rows were updated, insert new record
+                if not update_result.data:
+                    insert_result = (
+                        Config.supabase()
+                        .table(self.TABLE)
+                        .insert(
+                            {
+                                "user_id": user_id,
+                                "timeout_until": timeout_until.isoformat(),
+                                "reason": reason,
+                            }
+                        )
+                        .execute()
+                    )
+
                 return True
             except Exception as e:
                 logger.error(f"Failed to add timeout for user {user_id}: {e}")

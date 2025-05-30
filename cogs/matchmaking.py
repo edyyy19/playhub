@@ -220,9 +220,18 @@ class Matchmaking(commands.Cog):
             self.add_item(Matchmaking.DraftDropdown(lobby, cog))
 
         async def on_timeout(self):
-            # Only trigger draft timeout if phase is 2 (drafting)
-            if self.lobby["phase"] == 2:
-                await self.cog.handle_timeout(self.lobby, reason="Draft pick timeout")
+            # Only trigger draft timeout if phase is 2 (drafting) and captain hasn't changed
+            if self.lobby["phase"] == 2 and self.lobby.get("next_pick"):
+                # Double-check that this view is still the active one
+                try:
+                    await self.cog.handle_timeout(
+                        self.lobby, reason="Draft pick timeout"
+                    )
+                except Exception as e:
+                    # If handle_timeout fails, it might be because it's already been called
+                    logger.warning(
+                        f"Draft timeout failed, possibly due to race condition: {e}"
+                    )
 
     # --- MAP VETO UI ---
     class VetoDropdown(discord.ui.Select):
@@ -261,9 +270,16 @@ class Matchmaking(commands.Cog):
             self.add_item(Matchmaking.VetoDropdown(lobby, cog))
 
         async def on_timeout(self):
-            # Only trigger veto timeout if phase is 3 (veto)
-            if self.lobby["phase"] == 3:
-                await self.cog.handle_timeout(self.lobby, reason="Map veto timeout")
+            # Only trigger veto timeout if phase is 3 (veto) and captain hasn't changed
+            if self.lobby["phase"] == 3 and self.lobby.get("veto_turn"):
+                # Double-check that this view is still the active one
+                try:
+                    await self.cog.handle_timeout(self.lobby, reason="Map veto timeout")
+                except Exception as e:
+                    # If handle_timeout fails, it might be because it's already been called
+                    logger.warning(
+                        f"Veto timeout failed, possibly due to race condition: {e}"
+                    )
 
     # --- GET ID BUTTON UI ---
     class GetIdView(discord.ui.View):
@@ -345,33 +361,153 @@ class Matchmaking(commands.Cog):
         return Matchmaking.VetoView(lobby, self)
 
     # --- TIMEOUT & ERROR HANDLING ---
-    async def handle_timeout(self, lobby, reason="Timeout"):
-        # Only remove users if not in waiting phase
-        if lobby["phase"] == 1:
-            return  # Ignore timeouts in waiting phase
 
-        # Add timeout to database for all players in the lobby
-        for member in lobby["players"]:
-            # Add timeout to database
+    async def handle_timeout(self, lobby, reason="Timeout"):
+        # Use lobby-specific lock to prevent race conditions
+        async with self.lobby_locks[lobby["category"].guild.id]:
+            # Only remove users if not in waiting phase
+            if lobby["phase"] == 1:
+                return  # Ignore timeouts in waiting phase
+
+            # Determine which captain timed out based on the current phase and turn
+            captain_to_timeout = None
+
+            if lobby["phase"] == 2:  # Draft phase
+                captain_to_timeout = lobby.get("next_pick")
+            elif lobby["phase"] == 3:  # Veto phase
+                captain_to_timeout = lobby.get("veto_turn")
+
+            if not captain_to_timeout:
+                # Fallback: reset entire lobby if we can't determine the captain
+                await self.reset_lobby(lobby)
+                return
+
+            # Check if captain is already timeouted to prevent duplicates
+            is_already_timeouted, _ = await timeout_manager.is_user_timeouted(
+                captain_to_timeout.id
+            )
+            if is_already_timeouted:
+                logger.warning(
+                    f"Captain {captain_to_timeout.id} is already timeouted, skipping timeout application"
+                )
+                # Still need to reset lobby even if already timeouted
+                await self._reset_lobby_after_captain_timeout(lobby, captain_to_timeout)
+                return
+
+            # Add timeout to database for ONLY the captain who failed to act
             success = await timeout_manager.add_timeout(
-                member.id, timeout_minutes=2, reason=reason
+                captain_to_timeout.id, timeout_minutes=2, reason=reason
             )
 
-            try:
-                if success:
-                    await member.send(
-                        f"You have been removed from the lobby due to: {reason}. "
-                        "2-minute timeout applied - you cannot join any lobbies during this time."
-                    )
-                else:
-                    await member.send(
-                        f"You have been removed from the lobby due to: {reason}. "
-                        "2-minute timeout applied."
-                    )
-            except Exception as e:
-                logger.error(f"Failed to send timeout message to {member}: {e}")
+        # Send timeout notification to the captain via DM
+        try:
+            if success:
+                # Create timeout notification embed for the captain
+                embed = discord.Embed(
+                    title="⏰ Captain Timeout Applied",
+                    description="You have been removed from the lobby and timeouted for failing to act within the time limit.",
+                    color=discord.Color.red(),
+                )
+                embed.add_field(
+                    name="Reason",
+                    value=reason,
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Timeout Duration",
+                    value="2 minutes",
+                    inline=True,
+                )
+                embed.add_field(
+                    name="Status",
+                    value="🚫 Cannot join any lobbies during timeout",
+                    inline=True,
+                )
+                embed.set_footer(
+                    text="You will be able to join lobbies again once the timeout expires."
+                )
 
-        await self.reset_lobby(lobby)
+                await captain_to_timeout.send(embed=embed)
+            else:
+                # Fallback embed for database failure
+                embed = discord.Embed(
+                    title="⏰ Captain Timeout Applied",
+                    description="You have been removed from the lobby and timeouted for failing to act within the time limit.",
+                    color=discord.Color.red(),
+                )
+                embed.add_field(
+                    name="Reason",
+                    value=reason,
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Timeout Duration",
+                    value="2 minutes",
+                    inline=True,
+                )
+                embed.set_footer(
+                    text="Note: Timeout may not be properly tracked due to database issues."
+                )
+
+                await captain_to_timeout.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Failed to send timeout message to {captain_to_timeout}: {e}")
+
+        # Reset lobby and handle captain removal
+        await self._reset_lobby_after_captain_timeout(lobby, captain_to_timeout)
+
+    async def _reset_lobby_after_captain_timeout(self, lobby, captain_to_timeout):
+        """Helper method to reset lobby after captain timeout"""
+        # Remove the timeouted captain from the lobby
+        lobby["players"].discard(captain_to_timeout)
+
+        # Disconnect captain from voice channel
+        try:
+            if captain_to_timeout.voice and captain_to_timeout.voice.channel:
+                await captain_to_timeout.move_to(None)
+                logger.info(
+                    f"Disconnected timeouted captain {captain_to_timeout} from voice channel"
+                )
+        except Exception as e:
+            logger.error(
+                f"Failed to disconnect captain {captain_to_timeout} from voice: {e}"
+            )
+
+        # Send private DM notifications to remaining players
+        remaining_players = list(lobby["players"])
+        for player in remaining_players:
+            try:
+                notification_embed = discord.Embed(
+                    title="⚠️ Captain Timeout",
+                    description=f"Captain {captain_to_timeout.display_name} has been timeouted for not acting within the time limit.\n\n**The lobby has been reset to waiting phase.** You can stay and wait for new players to join, or leave to find another lobby.",
+                    color=discord.Color.orange(),
+                )
+                notification_embed.add_field(
+                    name="Phase Reset",
+                    value="🔄 Lobby is now waiting for players",
+                    inline=True,
+                )
+                notification_embed.add_field(
+                    name="Your Options",
+                    value="• Stay and wait for new players\n• Leave to join another lobby",
+                    inline=True,
+                )
+                await player.send(embed=notification_embed)
+            except Exception as e:
+                logger.error(f"Failed to send timeout notification to {player}: {e}")
+
+        # Reset lobby to phase 1 (waiting for players) instead of completely resetting
+        lobby["phase"] = 1
+        lobby["ct_team"] = []
+        lobby["t_team"] = []
+        lobby["available_players"] = []
+        lobby["next_pick"] = None
+        lobby["veto_turn"] = None
+        lobby["remaining_maps"] = []
+        lobby["last_ban"] = None
+
+        # Update lobby status to show waiting for players again
+        await self.update_lobby_status(lobby)
 
     @tasks.loop(seconds=30)
     async def cleanup_voice_channels(self):
@@ -404,10 +540,11 @@ class Matchmaking(commands.Cog):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        for lobby in self.active_lobbies.values():
+        for lobby in list(self.active_lobbies.values()):
             if after.channel and after.channel.id == lobby["voice"].id:
-                if member not in lobby["players"]:
-                    # Check if user is timeouted before allowing them to join
+                if (
+                    member not in lobby["players"]
+                ):  # Check if user is timeouted before allowing them to join
                     (
                         is_timeouted,
                         timeout_until,
@@ -417,10 +554,28 @@ class Matchmaking(commands.Cog):
                             remaining_minutes = timeout_manager.get_remaining_time(
                                 member.id
                             )
-                            await member.send(
-                                f"You are currently timeouted and cannot join lobbies. "
-                                f"Time remaining: {remaining_minutes} minute(s)."
+
+                            # Create timeout notification embed
+                            embed = discord.Embed(
+                                title="⏰ Lobby Access Denied",
+                                description="You are currently timeouted and cannot join lobbies.",
+                                color=discord.Color.red(),
                             )
+                            embed.add_field(
+                                name="Time Remaining",
+                                value=f"{remaining_minutes} minute(s)",
+                                inline=True,
+                            )
+                            embed.add_field(
+                                name="Status",
+                                value="🚫 Lobby access blocked",
+                                inline=True,
+                            )
+                            embed.set_footer(
+                                text="You will be able to join lobbies again once the timeout expires."
+                            )
+
+                            await member.send(embed=embed)
                             # Disconnect the user from the voice channel
                             await member.move_to(None)
                         except Exception as e:
@@ -442,6 +597,18 @@ class Matchmaking(commands.Cog):
                     lobby["players"].remove(member)
                 await self.update_lobby_status(lobby)
                 if lobby["phase"] in [2, 3]:
+                    # Check if user is already timeouted to prevent double timeout
+                    is_already_timeouted, _ = await timeout_manager.is_user_timeouted(
+                        member.id
+                    )
+                    if is_already_timeouted:
+                        logger.info(
+                            f"User {member.id} already timeouted, skipping mid-game leave timeout"
+                        )
+                        # Still reset lobby if needed, but don't apply another timeout
+                        await self.reset_lobby(lobby, keep_voice_members=True)
+                        continue
+
                     # Add timeout to database
                     success = await timeout_manager.add_timeout(
                         member.id,
@@ -451,15 +618,49 @@ class Matchmaking(commands.Cog):
 
                     try:
                         if success:
-                            await member.send(
-                                "You have been removed from the lobby due to leaving mid-game. "
-                                "2-minute timeout applied - you cannot join any lobbies during this time."
+                            # Create mid-game leave timeout embed
+                            embed = discord.Embed(
+                                title="⏰ Mid-Game Leave Penalty",
+                                description="You have been removed from the lobby due to leaving mid-game.",
+                                color=discord.Color.red(),
                             )
+                            embed.add_field(
+                                name="Phase Left During",
+                                value=f"Phase {lobby['phase']} ({'Draft' if lobby['phase'] == 2 else 'Veto'})",
+                                inline=False,
+                            )
+                            embed.add_field(
+                                name="Timeout Duration",
+                                value="2 minutes",
+                                inline=True,
+                            )
+                            embed.add_field(
+                                name="Status",
+                                value="🚫 Cannot join any lobbies during timeout",
+                                inline=True,
+                            )
+                            embed.set_footer(
+                                text="You will be able to join lobbies again once the timeout expires."
+                            )
+
+                            await member.send(embed=embed)
                         else:
-                            await member.send(
-                                "You have been removed from the lobby due to leaving mid-game. "
-                                "2-minute timeout applied."
+                            # Fallback embed for database failure
+                            embed = discord.Embed(
+                                title="⏰ Mid-Game Leave Penalty",
+                                description="You have been removed from the lobby due to leaving mid-game.",
+                                color=discord.Color.red(),
                             )
+                            embed.add_field(
+                                name="Timeout Duration",
+                                value="2 minutes",
+                                inline=True,
+                            )
+                            embed.set_footer(
+                                text="Note: Timeout may not be properly tracked due to database issues."
+                            )
+
+                            await member.send(embed=embed)
                     except Exception as e:
                         logger.error(
                             f"Failed to send mid-game leave message to {member}: {e}"
@@ -468,6 +669,17 @@ class Matchmaking(commands.Cog):
 
     async def update_lobby_status(self, lobby):
         """Update the lobby status embed"""
+        # Check if lobby still exists before updating
+        if lobby["category"].id not in self.active_lobbies:
+            return
+
+        # Additional safety check - ensure lobby components still exist
+        try:
+            if not lobby.get("category") or not lobby.get("text"):
+                return
+        except Exception:
+            return
+
         # Only update the embed if the lobby is in phase 1 (waiting for players)
         if lobby["phase"] == 1:
             try:
@@ -1250,9 +1462,20 @@ class Matchmaking(commands.Cog):
 
                 # Try to notify the user
                 try:
-                    await user.send(
-                        f"Your timeout has been cleared by an administrator. You can now join lobbies again."
+                    # Create timeout cleared notification embed
+                    user_embed = discord.Embed(
+                        title="✅ Timeout Cleared",
+                        description="Your timeout has been cleared by an administrator.",
+                        color=discord.Color.green(),
                     )
+                    user_embed.add_field(
+                        name="Status",
+                        value="🟢 You can now join lobbies again",
+                        inline=False,
+                    )
+                    user_embed.set_footer(text="Welcome back to PlayHub matchmaking!")
+
+                    await user.send(embed=user_embed)
                     embed.set_footer(text="User has been notified.")
                 except:
                     embed.set_footer(text="User could not be notified (DMs disabled).")
