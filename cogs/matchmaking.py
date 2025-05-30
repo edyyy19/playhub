@@ -816,7 +816,7 @@ class Matchmaking(commands.Cog):
                 except Exception as e:
                     logger.error(f"Failed to restore lobbies for guild {guild.id}: {e}")
 
-            # Update lobby counter to avoid conflicts
+                    # Update lobby counter to avoid conflicts
             if self.active_lobbies:
                 max_lobby_num = max(
                     lobby.get("lobby_number", 0)
@@ -827,6 +827,9 @@ class Matchmaking(commands.Cog):
             logger.info(
                 f"Lobby restoration complete. Active lobbies: {len(self.active_lobbies)}"
             )
+
+            # Clean up any orphaned team voice channels
+            await self.cleanup_orphaned_team_channels()
 
         except Exception as e:
             logger.error(f"Failed to restore lobbies: {e}")
@@ -1322,7 +1325,166 @@ class Matchmaking(commands.Cog):
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
-    # ...existing code...
+    @app_commands.command(
+        name="cleanup_team_channels",
+        description="Admin command to clean up orphaned team voice channels.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def cleanup_team_channels_command(self, interaction: discord.Interaction):
+        """Manually trigger cleanup of orphaned team voice channels"""
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # Get all currently tracked team voice channel IDs
+            tracked_team_channels = set()
+            for lobby in self.active_lobbies.values():
+                if lobby.get("ct_voice"):
+                    tracked_team_channels.add(lobby["ct_voice"].id)
+                if lobby.get("t_voice"):
+                    tracked_team_channels.add(lobby["t_voice"].id)
+
+            total_deleted = 0
+            guild_summary = []
+
+            # Check all guilds
+            for guild in self.bot.guilds:
+                guild_deleted = 0
+                try:
+                    # Find all CT/T voice channels in the guild
+                    team_channels = []
+                    for channel in guild.voice_channels:
+                        if channel.name in [CT_VOICE_NAME, T_VOICE_NAME]:
+                            team_channels.append(channel)
+
+                    # Delete orphaned team channels
+                    for channel in team_channels:
+                        if channel.id not in tracked_team_channels:
+                            try:
+                                await channel.delete()
+                                total_deleted += 1
+                                guild_deleted += 1
+                                # Small delay to prevent rate limiting
+                                await asyncio.sleep(0.5)
+                            except discord.NotFound:
+                                # Channel was already deleted
+                                pass
+                            except Exception as e:
+                                logger.error(
+                                    f"Failed to delete orphaned team channel {channel.name}: {e}"
+                                )
+
+                    if guild_deleted > 0:
+                        guild_summary.append(
+                            f"**{guild.name}**: {guild_deleted} channels"
+                        )
+
+                except Exception as e:
+                    logger.error(
+                        f"Failed to cleanup orphaned channels in guild {guild.id}: {e}"
+                    )
+
+            # Create response embed
+            if total_deleted > 0:
+                embed = discord.Embed(
+                    title="✅ Team Channels Cleaned Up",
+                    description=f"Successfully deleted **{total_deleted}** orphaned team voice channels.",
+                    color=discord.Color.green(),
+                )
+
+                if guild_summary:
+                    embed.add_field(
+                        name="Cleanup Summary",
+                        value="\n".join(
+                            guild_summary[:10]
+                        ),  # Limit to 10 guilds to avoid embed limits
+                        inline=False,
+                    )
+
+                embed.set_footer(
+                    text="All orphaned CT Voice and T Voice channels have been removed."
+                )
+            else:
+                embed = discord.Embed(
+                    title="✅ No Cleanup Needed",
+                    description="No orphaned team voice channels were found.",
+                    color=discord.Color.green(),
+                )
+                embed.set_footer(text="All team voice channels are properly tracked.")
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        except Exception as e:
+            logger.error(f"Failed to cleanup team channels: {e}")
+            embed = discord.Embed(
+                title="❌ Cleanup Failed",
+                description="An error occurred while cleaning up team voice channels.",
+                color=discord.Color.red(),
+            )
+            embed.add_field(
+                name="Error",
+                value="Team channel cleanup operation failed",
+                inline=False,
+            )
+            embed.set_footer(text="Please try again or contact an administrator.")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def cleanup_orphaned_team_channels(self):
+        """Clean up orphaned CT/T voice channels that don't belong to any active lobby"""
+        try:
+            logger.info("Starting cleanup of orphaned team voice channels...")
+
+            # Get all currently tracked team voice channel IDs
+            tracked_team_channels = set()
+            for lobby in self.active_lobbies.values():
+                if lobby.get("ct_voice"):
+                    tracked_team_channels.add(lobby["ct_voice"].id)
+                if lobby.get("t_voice"):
+                    tracked_team_channels.add(lobby["t_voice"].id)
+
+            total_deleted = 0
+
+            # Check all guilds
+            for guild in self.bot.guilds:
+                try:
+                    # Find all CT/T voice channels in the guild
+                    team_channels = []
+                    for channel in guild.voice_channels:
+                        if channel.name in [CT_VOICE_NAME, T_VOICE_NAME]:
+                            team_channels.append(channel)
+
+                    # Delete orphaned team channels
+                    for channel in team_channels:
+                        if channel.id not in tracked_team_channels:
+                            try:
+                                logger.info(
+                                    f"Deleting orphaned team channel: {channel.name} ({channel.id}) in {guild.name}"
+                                )
+                                await channel.delete()
+                                total_deleted += 1
+                                # Small delay to prevent rate limiting
+                                await asyncio.sleep(0.5)
+                            except discord.NotFound:
+                                # Channel was already deleted
+                                pass
+                            except Exception as e:
+                                logger.error(
+                                    f"Failed to delete orphaned team channel {channel.name}: {e}"
+                                )
+
+                except Exception as e:
+                    logger.error(
+                        f"Failed to cleanup orphaned channels in guild {guild.id}: {e}"
+                    )
+
+            if total_deleted > 0:
+                logger.info(
+                    f"Cleanup complete: Deleted {total_deleted} orphaned team voice channels"
+                )
+            else:
+                logger.info("Cleanup complete: No orphaned team voice channels found")
+
+        except Exception as e:
+            logger.error(f"Failed to cleanup orphaned team channels: {e}")
 
 
 async def setup(bot):
