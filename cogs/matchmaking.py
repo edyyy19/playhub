@@ -762,6 +762,16 @@ class Matchmaking(commands.Cog):
                 lobby["t_team"].append(picked_member)
                 lobby["next_pick"] = lobby["ct_team"][0]
             lobby["available_players"].remove(picked_member)
+
+            # If there's only 1 player left, automatically assign them to the other team
+            if len(lobby["available_players"]) == 1:
+                last_player = lobby["available_players"][0]
+                if lobby["next_pick"] == lobby["ct_team"][0]:
+                    lobby["ct_team"].append(last_player)
+                else:
+                    lobby["t_team"].append(last_player)
+                lobby["available_players"].remove(last_player)
+
             # --- New Draft UI ---
             ct_lines = "\n".join([m.mention for m in lobby["ct_team"]]) or "-"
             t_lines = "\n".join([m.mention for m in lobby["t_team"]]) or "-"

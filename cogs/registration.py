@@ -8,7 +8,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Constants
-REGISTRATION_BANNER = "https://res.cloudinary.com/dzhebhupq/image/upload/v1748000675/playhub_banner_mvqfjj.png"
+REGISTRATION_BANNER = "https://res.cloudinary.com/dzhebhupq/image/upload/v1748788836/playhub_3d_banner_u93fy0.png"
 EMBED_COLOR = 0xB2FA19  # Vibrant green color
 
 
