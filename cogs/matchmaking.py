@@ -32,6 +32,7 @@ class Matchmaking(commands.Cog):
         self.bot = bot
         self.lobby_counter = 1
         self.active_lobbies = {}
+        self.lobbies_locked = False  # Track if lobbies are locked globally
         self.cleanup_voice_channels.start()
         self.lobby_locks = defaultdict(asyncio.Lock)  # Prevent race conditions
         # Restore lobbies on startup
@@ -87,18 +88,11 @@ class Matchmaking(commands.Cog):
                         color=0xB2FA19,  # Vibrant green color
                         reason="Auto-created for registered players",
                     )
-
-                # Set up permission overwrites
+                    # Set up permission overwrites
                 overwrites = {
                     guild.default_role: discord.PermissionOverwrite(
                         view_channel=False, connect=False
                     ),  # Deny @everyone
-                    registered_role: discord.PermissionOverwrite(
-                        view_channel=True,
-                        connect=True,
-                        send_messages=True,
-                        read_messages=True,
-                    ),  # Allow registered players
                     guild.me: discord.PermissionOverwrite(
                         view_channel=True,
                         connect=True,
@@ -107,6 +101,22 @@ class Matchmaking(commands.Cog):
                         read_messages=True,
                     ),  # Allow bot
                 }
+
+                # Set registered role permissions based on lock status
+                if self.lobbies_locked:
+                    overwrites[registered_role] = discord.PermissionOverwrite(
+                        view_channel=True,
+                        connect=False,  # Deny connection when locked
+                        send_messages=True,
+                        read_messages=True,
+                    )  # Locked: Can see but cannot connect
+                else:
+                    overwrites[registered_role] = discord.PermissionOverwrite(
+                        view_channel=True,
+                        connect=True,
+                        send_messages=True,
+                        read_messages=True,
+                    )  # Unlocked: Full access
 
                 # Allow administrators to access lobbies
                 for role in guild.roles:
@@ -584,6 +594,42 @@ class Matchmaking(commands.Cog):
                             )
                         continue
 
+                    # Check if lobbies are locked and user has Registered role
+                    if self.lobbies_locked:
+                        registered_role = discord.utils.get(
+                            member.guild.roles, name=Config.REGISTERED_ROLE
+                        )
+                        if registered_role and registered_role in member.roles:
+                            try:
+                                # Create lobby locked notification embed
+                                embed = discord.Embed(
+                                    title="🔒 Lobbies Currently Locked",
+                                    description="All lobbies are currently locked by administrators. Registered players cannot connect to lobby voice channels at this time.",
+                                    color=discord.Color.red(),
+                                )
+                                embed.add_field(
+                                    name="Status",
+                                    value="🚫 Voice access temporarily restricted",
+                                    inline=True,
+                                )
+                                embed.add_field(
+                                    name="Access Level",
+                                    value="👀 You can still view text channels",
+                                    inline=True,
+                                )
+                                embed.set_footer(
+                                    text="Please wait for lobbies to be unlocked by administrators."
+                                )
+
+                                await member.send(embed=embed)
+                                # Disconnect the user from the voice channel
+                                await member.move_to(None)
+                            except Exception as e:
+                                logger.error(
+                                    f"Failed to handle locked lobby access for {member}: {e}"
+                                )
+                            continue
+
                     lobby["players"].add(member)
                 await self.update_lobby_status(lobby)
                 if len(lobby["players"]) == 4 and lobby["phase"] == 1:
@@ -1009,7 +1055,7 @@ class Matchmaking(commands.Cog):
             lobby = self.active_lobbies.get(category_id)
             if lobby:
                 await LobbyState.save_lobby(
-                    lobby["category"].guild.id, category_id, lobby
+                    lobby["category"].guild.id, category_id, lobby, self.lobbies_locked
                 )
                 logger.info(f"Saved lobby state for category {category_id}")
         except Exception as e:
@@ -1025,6 +1071,14 @@ class Matchmaking(commands.Cog):
             for guild in self.bot.guilds:
                 try:
                     lobby_states = await LobbyState.load_lobbies(guild.id)
+
+                    # Load lobby lock status from database
+                    self.lobbies_locked = await LobbyState.get_lobby_lock_status(
+                        guild.id
+                    )
+                    logger.info(
+                        f"Loaded lobby lock status for {guild.name}: {'Locked' if self.lobbies_locked else 'Unlocked'}"
+                    )
 
                     for state in lobby_states:
                         try:
@@ -1759,6 +1813,200 @@ class Matchmaking(commands.Cog):
                     )
                 )
         return options
+
+    # --- LOBBY LOCKING COMMANDS ---
+
+    @app_commands.command(
+        name="lock_lobbies",
+        description="Admin command to lock all lobbies - prevents Registered role from connecting to voice.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def lock_lobbies(self, interaction: discord.Interaction):
+        """Lock all lobbies to prevent Registered role from connecting"""
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            if self.lobbies_locked:
+                embed = discord.Embed(
+                    title="⚠️ Lobbies Already Locked",
+                    description="Lobbies are already locked. Registered players cannot connect to lobby voice channels.",
+                    color=discord.Color.orange(),
+                )
+                embed.set_footer(text="Use /unlock_lobbies to restore access.")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return  # Set locked status
+            self.lobbies_locked = True
+
+            # Persist lock status to database
+            await LobbyState.update_lobby_lock_status(interaction.guild.id, True)
+
+            # Update permissions for all active lobbies
+            registered_role = discord.utils.get(
+                interaction.guild.roles, name=Config.REGISTERED_ROLE
+            )
+
+            if not registered_role:
+                embed = discord.Embed(
+                    title="❌ Registered Role Not Found",
+                    description="The 'Registered' role was not found in this server.",
+                    color=discord.Color.red(),
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            lobbies_updated = 0
+            for lobby in self.active_lobbies.values():
+                try:
+                    # Update voice channel permissions
+                    voice_channel = lobby.get("voice")
+                    if voice_channel:
+                        await voice_channel.set_permissions(
+                            registered_role,
+                            view_channel=True,
+                            connect=False,  # Remove connect permission
+                            send_messages=True,
+                            read_messages=True,
+                            reason="Lobbies locked by administrator",
+                        )
+                        lobbies_updated += 1
+                except Exception as e:
+                    logger.error(f"Failed to update permissions for lobby: {e}")
+
+            # Create success embed
+            embed = discord.Embed(
+                title="🔒 Lobbies Locked Successfully",
+                description="All lobbies have been locked. Registered players can see but cannot connect to lobby voice channels.",
+                color=discord.Color.red(),
+            )
+            embed.add_field(
+                name="Lobbies Updated",
+                value=f"{lobbies_updated} active lobbies",
+                inline=True,
+            )
+            embed.add_field(
+                name="Effect",
+                value="🚫 Registered role cannot connect to voice",
+                inline=True,
+            )
+            embed.set_footer(
+                text="Use /unlock_lobbies to restore normal access. New lobbies will also be locked."
+            )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            logger.info(
+                f"Lobbies locked by {interaction.user} - {lobbies_updated} lobbies updated"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to lock lobbies: {e}")
+            embed = discord.Embed(
+                title="❌ Failed to Lock Lobbies",
+                description="An error occurred while locking lobbies.",
+                color=discord.Color.red(),
+            )
+            embed.add_field(
+                name="Error",
+                value="Lobby locking operation failed",
+                inline=False,
+            )
+            embed.set_footer(text="Please try again or contact an administrator.")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="unlock_lobbies",
+        description="Admin command to unlock all lobbies - restores Registered role voice access.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def unlock_lobbies(self, interaction: discord.Interaction):
+        """Unlock all lobbies to restore Registered role voice access"""
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            if not self.lobbies_locked:
+                embed = discord.Embed(
+                    title="⚠️ Lobbies Already Unlocked",
+                    description="Lobbies are already unlocked. Registered players have full access to lobby voice channels.",
+                    color=discord.Color.orange(),
+                )
+                embed.set_footer(text="Use /lock_lobbies to restrict access.")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return  # Set unlocked status
+            self.lobbies_locked = False
+
+            # Persist unlock status to database
+            await LobbyState.update_lobby_lock_status(interaction.guild.id, False)
+
+            # Update permissions for all active lobbies
+            registered_role = discord.utils.get(
+                interaction.guild.roles, name=Config.REGISTERED_ROLE
+            )
+
+            if not registered_role:
+                embed = discord.Embed(
+                    title="❌ Registered Role Not Found",
+                    description="The 'Registered' role was not found in this server.",
+                    color=discord.Color.red(),
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            lobbies_updated = 0
+            for lobby in self.active_lobbies.values():
+                try:
+                    # Update voice channel permissions
+                    voice_channel = lobby.get("voice")
+                    if voice_channel:
+                        await voice_channel.set_permissions(
+                            registered_role,
+                            view_channel=True,
+                            connect=True,  # Restore connect permission
+                            send_messages=True,
+                            read_messages=True,
+                            reason="Lobbies unlocked by administrator",
+                        )
+                        lobbies_updated += 1
+                except Exception as e:
+                    logger.error(f"Failed to update permissions for lobby: {e}")
+
+            # Create success embed
+            embed = discord.Embed(
+                title="🔓 Lobbies Unlocked Successfully",
+                description="All lobbies have been unlocked. Registered players now have full access to lobby voice channels.",
+                color=discord.Color.green(),
+            )
+            embed.add_field(
+                name="Lobbies Updated",
+                value=f"{lobbies_updated} active lobbies",
+                inline=True,
+            )
+            embed.add_field(
+                name="Effect",
+                value="✅ Registered role can connect to voice",
+                inline=True,
+            )
+            embed.set_footer(
+                text="Use /lock_lobbies to restrict access if needed. New lobbies will be unlocked."
+            )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            logger.info(
+                f"Lobbies unlocked by {interaction.user} - {lobbies_updated} lobbies updated"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to unlock lobbies: {e}")
+            embed = discord.Embed(
+                title="❌ Failed to Unlock Lobbies",
+                description="An error occurred while unlocking lobbies.",
+                color=discord.Color.red(),
+            )
+            embed.add_field(
+                name="Error",
+                value="Lobby unlocking operation failed",
+                inline=False,
+            )
+            embed.set_footer(text="Please try again or contact an administrator.")
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 async def setup(bot):

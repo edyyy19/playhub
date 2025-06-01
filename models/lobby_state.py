@@ -11,7 +11,13 @@ class LobbyState:
     TABLE = "lobby_states"
 
     @classmethod
-    async def save_lobby(cls, guild_id: int, category_id: int, lobby_data: dict):
+    async def save_lobby(
+        cls,
+        guild_id: int,
+        category_id: int,
+        lobby_data: dict,
+        locked_lobby: bool = False,
+    ):
         """Save lobby state to database"""
         loop = asyncio.get_running_loop()
 
@@ -45,6 +51,7 @@ class LobbyState:
             "t_voice_id": str(lobby_data["t_voice"].id)
             if lobby_data.get("t_voice")
             else None,
+            "locked_lobby": locked_lobby,
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -129,3 +136,48 @@ class LobbyState:
                 raise
 
         return await loop.run_in_executor(None, db_cleanup)
+
+    @classmethod
+    async def update_lobby_lock_status(cls, guild_id: int, locked: bool):
+        """Update the lock status for all lobbies in a guild"""
+        loop = asyncio.get_running_loop()
+
+        def db_update():
+            try:
+                result = (
+                    Config.supabase()
+                    .table(cls.TABLE)
+                    .update({"locked_lobby": locked})
+                    .eq("guild_id", str(guild_id))
+                    .execute()
+                )
+                return result
+            except Exception as e:
+                logger.error(f"Failed to update lobby lock status: {e}")
+                raise
+
+        return await loop.run_in_executor(None, db_update)
+
+    @classmethod
+    async def get_lobby_lock_status(cls, guild_id: int):
+        """Get the lock status for lobbies in a guild (returns True if any lobby is locked)"""
+        loop = asyncio.get_running_loop()
+
+        def db_select():
+            try:
+                response = (
+                    Config.supabase()
+                    .table(cls.TABLE)
+                    .select("locked_lobby")
+                    .eq("guild_id", str(guild_id))
+                    .limit(1)
+                    .execute()
+                )
+                if response.data and len(response.data) > 0:
+                    return response.data[0].get("locked_lobby", False)
+                return False
+            except Exception as e:
+                logger.error(f"Failed to get lobby lock status: {e}")
+                return False
+
+        return await loop.run_in_executor(None, db_select)
