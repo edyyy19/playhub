@@ -5,6 +5,7 @@ from config import Config
 from models.match import Match
 from models.lobby_state import LobbyState
 from models.timeout import timeout_manager
+from models.user import User
 import random
 import asyncio
 import logging
@@ -175,20 +176,15 @@ class Matchmaking(commands.Cog):
                 await interaction.response.send_message(
                     "Failed to create lobby due to an unexpected error. Please try again later.",
                     ephemeral=True,
-                )
+                )  # --- DRAFT PICK UI ---
 
-    # --- DRAFT PICK UI ---
     class DraftDropdown(discord.ui.Select):
-        def __init__(self, lobby, cog):
-            options = [
-                discord.SelectOption(label=member.display_name, value=str(member.id))
-                for member in lobby["available_players"]
-            ]
+        def __init__(self, lobby, cog, options_with_stats):
             super().__init__(
                 placeholder="Select a player to draft...",
                 min_values=1,
                 max_values=1,
-                options=options,
+                options=options_with_stats,
             )
             self.lobby = lobby
             self.cog = cog
@@ -213,11 +209,11 @@ class Matchmaking(commands.Cog):
             await self.cog.handle_draft_pick(self.lobby, picked_member)
 
     class DraftView(discord.ui.View):
-        def __init__(self, lobby, cog):
+        def __init__(self, lobby, cog, draft_dropdown):
             super().__init__(timeout=120)
             self.lobby = lobby
             self.cog = cog
-            self.add_item(Matchmaking.DraftDropdown(lobby, cog))
+            self.add_item(draft_dropdown)
 
         async def on_timeout(self):
             # Only trigger draft timeout if phase is 2 (drafting) and captain hasn't changed
@@ -354,8 +350,12 @@ class Matchmaking(commands.Cog):
             for item in self.children:
                 item.disabled = True
 
-    def get_draft_view(self, lobby):
-        return Matchmaking.DraftView(lobby, self)
+    async def get_draft_view(self, lobby):
+        options_with_stats = await self.create_draft_options_with_stats(
+            lobby["available_players"]
+        )
+        draft_dropdown = Matchmaking.DraftDropdown(lobby, self, options_with_stats)
+        return Matchmaking.DraftView(lobby, self, draft_dropdown)
 
     def get_veto_view(self, lobby):
         return Matchmaking.VetoView(lobby, self)
@@ -749,7 +749,7 @@ class Matchmaking(commands.Cog):
             color=EMBED_COLORS["draft"],
         )
         embed.set_footer(text="Next Phase: Map Veto")
-        view = self.get_draft_view(lobby)
+        view = await self.get_draft_view(lobby)
         await lobby["message"].edit(embed=embed, view=view)
 
     async def handle_draft_pick(self, lobby, picked_member):
@@ -789,7 +789,10 @@ class Matchmaking(commands.Cog):
                 color=EMBED_COLORS["draft"],
             )
             embed.set_footer(text="Next Phase: Map Veto")
-            view = self.get_draft_view(lobby) if lobby["available_players"] else None
+            if lobby["available_players"]:
+                view = await self.get_draft_view(lobby)
+            else:
+                view = None
             await lobby["message"].edit(embed=embed, view=view)
             if not lobby["available_players"]:
                 await self.start_map_veto(lobby)
@@ -1718,6 +1721,39 @@ class Matchmaking(commands.Cog):
 
         except Exception as e:
             logger.error(f"Failed to cleanup orphaned team channels: {e}")
+
+    async def create_draft_options_with_stats(self, available_players):
+        """Create dropdown options with player stats as descriptions"""
+        options = []
+        for member in available_players:
+            try:
+                user_data = await User.find(member.id)
+                if user_data:
+                    points = user_data.get("points", 0)
+                    kills = user_data.get("kills", 0)
+                    description = f"{points} points | {kills} kills"
+                else:
+                    # Fallback if no data found
+                    description = "No stats available"
+
+                options.append(
+                    discord.SelectOption(
+                        label=member.display_name,
+                        value=str(member.id),
+                        description=description,
+                    )
+                )
+            except Exception as e:
+                # Fallback in case of error
+                logger.error(f"Error fetching stats for {member.display_name}: {e}")
+                options.append(
+                    discord.SelectOption(
+                        label=member.display_name,
+                        value=str(member.id),
+                        description="Stats unavailable",
+                    )
+                )
+        return options
 
 
 async def setup(bot):
