@@ -20,8 +20,8 @@ T_VOICE_NAME = "T Voice"
 
 EMBED_COLORS = {
     "waiting": 0xFFFF00,  # Yellow
-    "draft": 0x3498DB,  # Blue
-    "veto": 0x9B59B6,  # Purple
+    "draft": 0x6969E7,  # Blue
+    "veto": 0xFB5B29,  # Orange
     "final": 0xB2FA19,  # Green
 }
 
