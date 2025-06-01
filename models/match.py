@@ -8,9 +8,8 @@ class Match:
     TABLE = "matches"
 
     @classmethod
-    async def create(cls, match_id: str, ct_team: list, t_team: list, map_name: str):
+    async def create(cls, ct_team: list, t_team: list, map_name: str):
         payload = {
-            "match_id": match_id,
             "ct_team": json.dumps([str(m.id) for m in ct_team]),
             "t_team": json.dumps([str(m.id) for m in t_team]),
             "map": map_name,

@@ -854,12 +854,16 @@ class Matchmaking(commands.Cog):
         import datetime
 
         lobby["phase"] = 4
-        match_id = f"Match #{random.randint(1000, 9999)}"
-        lobby["match_id"] = match_id
         ct_team = [m.display_name for m in lobby["ct_team"]]
         t_team = [m.display_name for m in lobby["t_team"]]
         final_map = lobby["remaining_maps"][0]
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        # Create match in Supabase first to get the auto-generated ID
+        match_result = await self.add_match_to_supabase(lobby, final_map)
+        match_id = f"Match #{match_result['match_id']}"
+        lobby["match_id"] = match_id
+
         # Render HTML with Jinja2
         env = Environment(loader=FileSystemLoader(os.path.dirname(__file__) + "/../"))
         template = env.get_template("final_match_template.html")
@@ -869,11 +873,12 @@ class Matchmaking(commands.Cog):
         # Render HTML to image
         hti = Html2Image(output_path=tempfile.gettempdir())
         image_path = os.path.join(
-            tempfile.gettempdir(), f"final_match_{match_id.replace('#','')}.png"
+            tempfile.gettempdir(), f"final_match_{match_result['match_id']}.png"
         )
         hti.screenshot(
             html_str=html_content, save_as=os.path.basename(image_path), size=(740, 711)
-        )  # Upload image to Discord CDN by sending it as a file
+        )
+        # Upload image to Discord CDN by sending it as a file
         file = discord.File(image_path, filename="final_match.png")
         embed = discord.Embed(
             title=f"PlayHub | {match_id}", color=EMBED_COLORS["final"]
@@ -887,19 +892,19 @@ class Matchmaking(commands.Cog):
         await lobby["veto_message"].edit(
             embed=embed, view=get_id_view, attachments=[file]
         )
-        await self.add_match_to_supabase(match_id, lobby, final_map)
         await self.create_team_voice_channels(lobby)
         lobby["just_finalized"] = True
         await self.reset_lobby(lobby, keep_voice_members=False)
-
         # Save lobby state after finalization
         await self.save_lobby_state(lobby["category"].id)
 
-    async def add_match_to_supabase(self, match_id, lobby, final_map):
+    async def add_match_to_supabase(self, lobby, final_map):
         try:
-            await Match.create(match_id, lobby["ct_team"], lobby["t_team"], final_map)
+            result = await Match.create(lobby["ct_team"], lobby["t_team"], final_map)
+            return result.data[0]  # Return the first (and only) inserted record
         except Exception as e:
             logger.error(f"Failed to insert match into supabase: {e}")
+            raise
 
     async def create_team_voice_channels(self, lobby):
         category = lobby["category"]
