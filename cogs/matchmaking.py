@@ -1830,7 +1830,18 @@ class Matchmaking(commands.Cog):
                 if user_data:
                     points = user_data.get("points", 0)
                     kills = user_data.get("kills", 0)
-                    description = f"{points} points | {kills} kills"
+                    deaths = user_data.get("deaths", 0)
+
+                    # Calculate K/D ratio with proper handling for zero deaths
+                    if deaths == 0:
+                        kd_ratio = kills if kills > 0 else 0.0
+                    else:
+                        kd_ratio = kills / deaths
+
+                    # Format K/D ratio to 2 decimal places
+                    kd_formatted = f"{kd_ratio:.2f}"
+
+                    description = f"Points: {points} | K/D: {kd_formatted}"
                 else:
                     # Fallback if no data found
                     description = "No stats available"
