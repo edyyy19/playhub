@@ -361,13 +361,13 @@ class Leaderboard(commands.Cog):
                 title="🏆 Leaderboard",
                 description="Top players ranked by points",
                 color=EMBED_COLOR,
-                timestamp=datetime.now(),
             )
 
             # Add players to embed (top 15 to avoid Discord limits)
             leaderboard_text = ""
-            for i, user in enumerate(processed_users[:15], 1):
-                # Add medal emojis for top 3
+            for i, user in enumerate(
+                processed_users[:15], 1
+            ):  # Add medal emojis for top 3
                 medal = ""
                 if i == 1:
                     medal = "🥇 "
@@ -390,7 +390,7 @@ class Leaderboard(commands.Cog):
                 embed.description = "No player data available."
 
             embed.set_footer(
-                text=f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+                text=f"Last Updated: {datetime.now().strftime('%H:%M | %d/%m/%Y')}"
             )
 
             return embed, None
