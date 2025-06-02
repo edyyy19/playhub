@@ -33,6 +33,7 @@ async def on_ready():
             await bot.load_extension("cogs.registration")
             await bot.load_extension("cogs.matchmaking")
             await bot.load_extension("cogs.leaderboard")
+            await bot.load_extension("cogs.profile")
             synced = await bot.tree.sync()
             logger.info(f"Successfully synced {len(synced)} commands")
             for cmd in synced:

@@ -47,3 +47,19 @@ class User:
             return response.data[0] if response.data else None
 
         return await loop.run_in_executor(None, db_select)
+
+    @classmethod
+    async def update_profile(cls, discord_id: int, nickname: str, so2_id: str):
+        """Update user's nickname and Standoff 2 ID"""
+        loop = asyncio.get_running_loop()
+
+        def db_update():
+            return (
+                Config.supabase()
+                .table(cls.TABLE)
+                .update({"nickname": nickname, "so2_id": so2_id})
+                .eq("discord_id", str(discord_id))
+                .execute()
+            )
+
+        return await loop.run_in_executor(None, db_update)
