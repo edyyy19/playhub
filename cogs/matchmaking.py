@@ -53,7 +53,9 @@ class Matchmaking(commands.Cog):
     @app_commands.command(
         name="create_lobby", description="Create a new matchmaking lobby."
     )
-    async def create_lobby(self, interaction: discord.Interaction):
+    async def create_lobby(
+        self, interaction: discord.Interaction, required_role: discord.Role = None
+    ):
         # Check if interaction has a valid guild
         if not interaction.guild:
             await interaction.response.send_message(
@@ -64,59 +66,68 @@ class Matchmaking(commands.Cog):
         async with self.lobby_locks[interaction.guild.id]:
             try:
                 guild = interaction.guild
+
                 if not guild:
                     raise ValueError("Could not access the server.")
 
+                # Determine which role to use for the lobby
+                if required_role:
+                    lobby_role = required_role
+                    lobby_role_name = required_role.name
+                else:
+                    # Get the default Registered role
+                    lobby_role = discord.utils.get(
+                        guild.roles, name=Config.REGISTERED_ROLE
+                    )
+                    if not lobby_role:
+                        # Create the role if it doesn't exist
+                        lobby_role = await guild.create_role(
+                            name=Config.REGISTERED_ROLE,
+                            color=0xB2FA19,  # Vibrant green color
+                            reason="Auto-created for registered players",
+                        )
+                    lobby_role_name = Config.REGISTERED_ROLE
+
                 lobby_number = self.lobby_counter
                 self.lobby_counter += 1
-                category_name = (
-                    f"{LOBBY_CATEGORY_PREFIX}{lobby_number}"  # Check bot permissions
-                )
+                category_name = f"{lobby_role_name} | Lobby #{lobby_number}"
+
+                # Check bot permissions
                 if not guild.me.guild_permissions.manage_channels:
                     raise ValueError(
                         "Bot doesn't have permission to manage channels in this server."
-                    )
-
-                # Get the Registered role
-                registered_role = discord.utils.get(
-                    guild.roles, name=Config.REGISTERED_ROLE
-                )
-                if not registered_role:
-                    # Create the role if it doesn't exist
-                    registered_role = await guild.create_role(
-                        name=Config.REGISTERED_ROLE,
-                        color=0xB2FA19,  # Vibrant green color
-                        reason="Auto-created for registered players",
-                    )
-                    # Set up permission overwrites
+                    )  # Set up permission overwrites - everyone can see, only specific role can join
                 overwrites = {
                     guild.default_role: discord.PermissionOverwrite(
-                        view_channel=False, connect=False
-                    ),  # Deny @everyone
+                        view_channel=True,  # Allow everyone to see
+                        connect=False,  # Deny @everyone from connecting
+                        send_messages=True,  # Allow everyone to read/send messages
+                        read_messages=True,
+                    ),
                     guild.me: discord.PermissionOverwrite(
                         view_channel=True,
                         connect=True,
                         manage_channels=True,
                         send_messages=True,
                         read_messages=True,
-                    ),  # Allow bot
+                    ),  # Allow bot full access
                 }
 
-                # Set registered role permissions based on lock status
+                # Set lobby role permissions based on lock status
                 if self.lobbies_locked:
-                    overwrites[registered_role] = discord.PermissionOverwrite(
+                    overwrites[lobby_role] = discord.PermissionOverwrite(
                         view_channel=True,
-                        connect=False,  # Deny connection when locked
+                        connect=False,  # Deny connection when locked (even for role holders)
                         send_messages=True,
                         read_messages=True,
                     )  # Locked: Can see but cannot connect
                 else:
-                    overwrites[registered_role] = discord.PermissionOverwrite(
+                    overwrites[lobby_role] = discord.PermissionOverwrite(
                         view_channel=True,
-                        connect=True,
+                        connect=True,  # Only this role can connect when unlocked
                         send_messages=True,
                         read_messages=True,
-                    )  # Unlocked: Full access
+                    )  # Unlocked: Role holders can connect
 
                 # Allow administrators to access lobbies
                 for role in guild.roles:
@@ -156,11 +167,15 @@ class Matchmaking(commands.Cog):
                     "ct_voice": None,
                     "t_voice": None,
                     "lobby_number": lobby_number,
-                }  # Save lobby state to database
-                await self.save_lobby_state(category.id)  # Create success embed
+                    "required_role_id": lobby_role.id,
+                    "required_role_name": lobby_role_name,
+                }
+                # Save lobby state to database
+                await self.save_lobby_state(category.id)
+                # Create success embed
                 embed = discord.Embed(
                     title="✅ Lobby Created Successfully",
-                    description="A new lobby has been created and is ready for registered players!",
+                    description=f"A new lobby has been created and is ready for {lobby_role_name} players!",
                     color=EMBED_COLORS["waiting"],
                 )
                 embed.add_field(
@@ -169,10 +184,12 @@ class Matchmaking(commands.Cog):
                 embed.add_field(name="Players", value="0/4", inline=True)
                 embed.add_field(name="Status", value="Waiting for players", inline=True)
                 embed.add_field(
-                    name="Access", value="🔒 Registered players only", inline=False
+                    name="Access",
+                    value=f"🔒 {lobby_role_name} players only",
+                    inline=False,
                 )
                 embed.set_footer(
-                    text="Only registered players can see and join this lobby!"
+                    text=f"Lobby is visible to everyone, but only {lobby_role_name} players can join voice!"
                 )
 
                 await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -186,7 +203,9 @@ class Matchmaking(commands.Cog):
                 await interaction.response.send_message(
                     "Failed to create lobby due to an unexpected error. Please try again later.",
                     ephemeral=True,
-                )  # --- DRAFT PICK UI ---
+                )
+
+    # --- DRAFT PICK UI ---
 
     class DraftDropdown(discord.ui.Select):
         def __init__(self, lobby, cog, options_with_stats):
@@ -592,19 +611,27 @@ class Matchmaking(commands.Cog):
                             logger.error(
                                 f"Failed to handle timeouted user {member}: {e}"
                             )
-                        continue
-
-                    # Check if lobbies are locked and user has Registered role
+                        continue  # Check if lobbies are locked and user has the required role for this lobby
                     if self.lobbies_locked:
-                        registered_role = discord.utils.get(
-                            member.guild.roles, name=Config.REGISTERED_ROLE
-                        )
-                        if registered_role and registered_role in member.roles:
+                        # Get the required role for this specific lobby
+                        required_role_id = lobby.get("required_role_id")
+                        if required_role_id:
+                            required_role = member.guild.get_role(int(required_role_id))
+                        else:
+                            # Fallback to Registered role for old lobbies
+                            required_role = discord.utils.get(
+                                member.guild.roles, name=Config.REGISTERED_ROLE
+                            )
+
+                        if required_role and required_role in member.roles:
                             try:
+                                lobby_role_name = lobby.get(
+                                    "required_role_name", Config.REGISTERED_ROLE
+                                )
                                 # Create lobby locked notification embed
                                 embed = discord.Embed(
                                     title="🔒 Lobbies Currently Locked",
-                                    description="All lobbies are currently locked by administrators. Registered players cannot connect to lobby voice channels at this time.",
+                                    description=f"All lobbies are currently locked by administrators. {lobby_role_name} players cannot connect to lobby voice channels at this time.",
                                     color=discord.Color.red(),
                                 )
                                 embed.add_field(
@@ -1042,9 +1069,7 @@ class Matchmaking(commands.Cog):
             embed.description = f"Players in Queue: {len(lobby['players'])}/4\nPhase: Waiting for players..."
             await lobby["message"].edit(embed=embed, view=None)
         if hasattr(lobby, "_just_finalized"):
-            del lobby._just_finalized
-
-        # Save lobby state after reset
+            del lobby._just_finalized  # Save lobby state after reset
         await self.save_lobby_state(lobby["category"].id)
 
     # --- LOBBY PERSISTENCE METHODS ---
@@ -1052,14 +1077,25 @@ class Matchmaking(commands.Cog):
     async def save_lobby_state(self, category_id: int):
         """Save lobby state to database"""
         try:
+            logger.info(f"Attempting to save lobby state for category {category_id}")
             lobby = self.active_lobbies.get(category_id)
             if lobby:
+                logger.info(
+                    f"Found lobby data for category {category_id}, saving to database..."
+                )
                 await LobbyState.save_lobby(
                     lobby["category"].guild.id, category_id, lobby, self.lobbies_locked
                 )
-                logger.info(f"Saved lobby state for category {category_id}")
+                logger.info(
+                    f"Successfully saved lobby state for category {category_id}"
+                )
+            else:
+                logger.warning(
+                    f"No lobby found in active_lobbies for category {category_id}"
+                )
         except Exception as e:
             logger.error(f"Failed to save lobby state for category {category_id}: {e}")
+            raise  # Re-raise to see the full traceback
 
     async def restore_lobbies(self):
         """Restore lobbies from database on bot startup"""
@@ -1165,9 +1201,9 @@ class Matchmaking(commands.Cog):
                     message = await text_channel.send(embed=embed)
 
             # Get player objects (only for players currently in voice)
-            current_players = set(voice_channel.members) if voice_channel else set()
-
-            # Restore lobby data
+            current_players = (
+                set(voice_channel.members) if voice_channel else set()
+            )  # Restore lobby data
             restored_lobby = {
                 "category": category,
                 "voice": voice_channel,
@@ -1183,6 +1219,10 @@ class Matchmaking(commands.Cog):
                 "ct_voice": None,
                 "t_voice": None,
                 "lobby_number": state.get("lobby_number", 1),
+                "required_role_id": state.get("required_role_id"),
+                "required_role_name": state.get(
+                    "required_role_name", Config.REGISTERED_ROLE
+                ),
             }
 
             # Clean up team voice channels if they exist
@@ -1838,30 +1878,33 @@ class Matchmaking(commands.Cog):
             self.lobbies_locked = True
 
             # Persist lock status to database
-            await LobbyState.update_lobby_lock_status(interaction.guild.id, True)
-
-            # Update permissions for all active lobbies
-            registered_role = discord.utils.get(
-                interaction.guild.roles, name=Config.REGISTERED_ROLE
-            )
-
-            if not registered_role:
-                embed = discord.Embed(
-                    title="❌ Registered Role Not Found",
-                    description="The 'Registered' role was not found in this server.",
-                    color=discord.Color.red(),
-                )
-                await interaction.followup.send(embed=embed, ephemeral=True)
-                return
-
+            await LobbyState.update_lobby_lock_status(
+                interaction.guild.id, True
+            )  # Update permissions for all active lobbies
             lobbies_updated = 0
             for lobby in self.active_lobbies.values():
                 try:
+                    # Get the required role for this specific lobby
+                    required_role_id = lobby.get("required_role_id")
+                    if required_role_id:
+                        lobby_role = interaction.guild.get_role(int(required_role_id))
+                    else:
+                        # Fallback to Registered role for old lobbies
+                        lobby_role = discord.utils.get(
+                            interaction.guild.roles, name=Config.REGISTERED_ROLE
+                        )
+
+                    if not lobby_role:
+                        logger.warning(
+                            f"Could not find required role for lobby {lobby.get('lobby_number')}"
+                        )
+                        continue
+
                     # Update voice channel permissions
                     voice_channel = lobby.get("voice")
                     if voice_channel:
                         await voice_channel.set_permissions(
-                            registered_role,
+                            lobby_role,
                             view_channel=True,
                             connect=False,  # Remove connect permission
                             send_messages=True,
@@ -1934,30 +1977,33 @@ class Matchmaking(commands.Cog):
             self.lobbies_locked = False
 
             # Persist unlock status to database
-            await LobbyState.update_lobby_lock_status(interaction.guild.id, False)
-
-            # Update permissions for all active lobbies
-            registered_role = discord.utils.get(
-                interaction.guild.roles, name=Config.REGISTERED_ROLE
-            )
-
-            if not registered_role:
-                embed = discord.Embed(
-                    title="❌ Registered Role Not Found",
-                    description="The 'Registered' role was not found in this server.",
-                    color=discord.Color.red(),
-                )
-                await interaction.followup.send(embed=embed, ephemeral=True)
-                return
-
+            await LobbyState.update_lobby_lock_status(
+                interaction.guild.id, False
+            )  # Update permissions for all active lobbies
             lobbies_updated = 0
             for lobby in self.active_lobbies.values():
                 try:
+                    # Get the required role for this specific lobby
+                    required_role_id = lobby.get("required_role_id")
+                    if required_role_id:
+                        lobby_role = interaction.guild.get_role(int(required_role_id))
+                    else:
+                        # Fallback to Registered role for old lobbies
+                        lobby_role = discord.utils.get(
+                            interaction.guild.roles, name=Config.REGISTERED_ROLE
+                        )
+
+                    if not lobby_role:
+                        logger.warning(
+                            f"Could not find required role for lobby {lobby.get('lobby_number')}"
+                        )
+                        continue
+
                     # Update voice channel permissions
                     voice_channel = lobby.get("voice")
                     if voice_channel:
                         await voice_channel.set_permissions(
-                            registered_role,
+                            lobby_role,
                             view_channel=True,
                             connect=True,  # Restore connect permission
                             send_messages=True,

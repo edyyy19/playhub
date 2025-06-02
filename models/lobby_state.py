@@ -51,6 +51,10 @@ class LobbyState:
             "t_voice_id": str(lobby_data["t_voice"].id)
             if lobby_data.get("t_voice")
             else None,
+            "required_role_id": str(lobby_data.get("required_role_id"))
+            if lobby_data.get("required_role_id")
+            else None,
+            "required_role_name": lobby_data.get("required_role_name"),
             "locked_lobby": locked_lobby,
             "updated_at": datetime.now().isoformat(),
         }
