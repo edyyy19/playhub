@@ -1036,6 +1036,7 @@ class Matchmaking(commands.Cog):
                 await member.move_to(t_voice)
             except Exception as e:
                 logger.error(f"Failed to move {member} to T Voice: {e}")
+
         # Start cleanup timer (placeholder)
         # ...
 
@@ -1050,6 +1051,26 @@ class Matchmaking(commands.Cog):
         lobby["t_team"] = []
         lobby["map_pool"] = Config.MAP_POOL.copy()
         lobby["match_id"] = None
+
+        # Reset veto-related properties
+        lobby["available_players"] = []
+        lobby["next_pick"] = None
+        lobby["veto_turn"] = None
+        lobby["remaining_maps"] = []
+        lobby["last_ban"] = None
+
+        # Clean up veto message if it exists
+        if lobby.get("veto_message"):
+            try:
+                await lobby["veto_message"].delete()
+                logger.info(
+                    f"Deleted veto message for lobby #{lobby.get('lobby_number', 'unknown')}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to delete veto message: {e}")
+            finally:
+                lobby["veto_message"] = None
+
         text = lobby["text"]
         # Only create a new waiting embed if this is the first time or after a match (not on every reset)
         if not lobby.get("message") or lobby.pop("just_finalized", False):
