@@ -45,6 +45,54 @@ class RegisterModal(discord.ui.Modal, title="PlayHub Registration"):
                     embed=embed, ephemeral=True
                 )
 
+            # Validate that SO2 ID contains only numbers
+            if not self.so2_id.value.isdigit():
+                embed = discord.Embed(
+                    title="❌ Invalid Player ID",
+                    description="Standoff 2 Player ID must contain only numbers.",
+                    color=discord.Color.red(),
+                )
+                return await interaction.response.send_message(
+                    embed=embed, ephemeral=True
+                )
+            # Check for duplicates
+            duplicate_issues = []
+            existing_nickname_user = await User.find_by_nickname(self.nickname.value)
+            existing_so2_user = await User.find_by_so2_id(self.so2_id.value)
+
+            if existing_nickname_user:
+                duplicate_issues.append("nickname")
+            if existing_so2_user:
+                duplicate_issues.append("Player ID")
+
+            # Handle duplicate errors
+            if duplicate_issues:
+                if len(duplicate_issues) == 2:
+                    # Both nickname and Player ID are taken
+                    embed = discord.Embed(
+                        title="❌ Both Nickname and Player ID Already Taken",
+                        description=f"Both the nickname '{self.nickname.value}' and Player ID '{self.so2_id.value}' are already being used by other players.",
+                        color=discord.Color.red(),
+                    )
+                elif "nickname" in duplicate_issues:
+                    # Only nickname is taken
+                    embed = discord.Embed(
+                        title="❌ Nickname Already Taken",
+                        description=f"The nickname '{self.nickname.value}' is already being used by another player.",
+                        color=discord.Color.red(),
+                    )
+                else:
+                    # Only Player ID is taken
+                    embed = discord.Embed(
+                        title="❌ Player ID Already Taken",
+                        description=f"The Player ID '{self.so2_id.value}' is already being used by another player.",
+                        color=discord.Color.red(),
+                    )
+
+                return await interaction.response.send_message(
+                    embed=embed, ephemeral=True
+                )
+
             await User.register(
                 interaction.user.id, self.nickname.value, self.so2_id.value
             )

@@ -44,12 +44,59 @@ class EditProfileModal(discord.ui.Modal, title="Edit Profile"):
 
             # Get current user data to compare changes
             current_user_data = await User.find(interaction.user.id)
-
             # Track what was changed
             changes = []
             nickname_changed = self.nickname.value != current_user_data["nickname"]
             so2_id_changed = self.so2_id.value != current_user_data["so2_id"]
 
+            # Check for duplicates if fields were changed
+            duplicate_issues = []
+            existing_nickname_user = None
+            existing_so2_user = None
+
+            if nickname_changed:
+                existing_nickname_user = await User.find_by_nickname(
+                    self.nickname.value, exclude_discord_id=interaction.user.id
+                )
+                if existing_nickname_user:
+                    duplicate_issues.append("nickname")
+
+            if so2_id_changed:
+                existing_so2_user = await User.find_by_so2_id(
+                    self.so2_id.value, exclude_discord_id=interaction.user.id
+                )
+                if existing_so2_user:
+                    duplicate_issues.append("Player ID")
+
+            # Handle duplicate errors
+            if duplicate_issues:
+                if len(duplicate_issues) == 2:
+                    # Both nickname and Player ID are taken
+                    embed = discord.Embed(
+                        title="❌ Both Nickname and Player ID Already Taken",
+                        description=f"Both the nickname '{self.nickname.value}' and Player ID '{self.so2_id.value}' are already being used by other players.",
+                        color=discord.Color.red(),
+                    )
+                elif "nickname" in duplicate_issues:
+                    # Only nickname is taken
+                    embed = discord.Embed(
+                        title="❌ Nickname Already Taken",
+                        description=f"The nickname '{self.nickname.value}' is already being used by another player.",
+                        color=discord.Color.red(),
+                    )
+                else:
+                    # Only Player ID is taken
+                    embed = discord.Embed(
+                        title="❌ Player ID Already Taken",
+                        description=f"The Player ID '{self.so2_id.value}' is already being used by another player.",
+                        color=discord.Color.red(),
+                    )
+
+                return await interaction.response.send_message(
+                    embed=embed, ephemeral=True
+                )
+
+            # Track successful changes
             if nickname_changed:
                 changes.append("Nickname")
             if so2_id_changed:

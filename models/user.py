@@ -63,3 +63,37 @@ class User:
             )
 
         return await loop.run_in_executor(None, db_update)
+
+    @classmethod
+    async def find_by_nickname(cls, nickname: str, exclude_discord_id: int = None):
+        """Find user by nickname, optionally excluding a specific discord_id"""
+        loop = asyncio.get_running_loop()
+
+        def db_select():
+            query = (
+                Config.supabase().table(cls.TABLE).select("*").eq("nickname", nickname)
+            )
+
+            if exclude_discord_id:
+                query = query.neq("discord_id", str(exclude_discord_id))
+
+            response = query.execute()
+            return response.data[0] if response.data else None
+
+        return await loop.run_in_executor(None, db_select)
+
+    @classmethod
+    async def find_by_so2_id(cls, so2_id: str, exclude_discord_id: int = None):
+        """Find user by SO2 ID, optionally excluding a specific discord_id"""
+        loop = asyncio.get_running_loop()
+
+        def db_select():
+            query = Config.supabase().table(cls.TABLE).select("*").eq("so2_id", so2_id)
+
+            if exclude_discord_id:
+                query = query.neq("discord_id", str(exclude_discord_id))
+
+            response = query.execute()
+            return response.data[0] if response.data else None
+
+        return await loop.run_in_executor(None, db_select)
