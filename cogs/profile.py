@@ -208,6 +208,15 @@ class Profile(commands.Cog):
     ):
         """View profile information for yourself or another user"""
         try:
+            import os
+            import tempfile
+            import datetime
+            from jinja2 import Environment, FileSystemLoader
+            from html2image import Html2Image
+
+            # Defer the response since image generation takes time
+            await interaction.response.defer(ephemeral=True)
+
             target_user = user or interaction.user
             user_data = await User.find(target_user.id)
 
@@ -229,52 +238,84 @@ class Profile(commands.Cog):
                         description=f"{target_user.mention} is not registered.",
                         color=discord.Color.red(),
                     )
-                return await interaction.response.send_message(
-                    embed=embed, ephemeral=True
-                )
+                return await interaction.followup.send(embed=embed)
 
-            # Calculate K/D ratio
+            # Calculate stats
             kills = user_data.get("kills", 0)
             deaths = user_data.get("deaths", 0)
-            if deaths == 0:
-                kd_ratio = kills if kills > 0 else 0.0
-            else:
-                kd_ratio = kills / deaths
+            wins = user_data.get("wins", 0)
+            losses = user_data.get("loses", 0)
+            total_games = wins + losses
 
-            # Create profile embed
+            # Calculate K/D ratio
+            if deaths == 0:
+                kd_ratio = f"{kills:.2f}" if kills > 0 else "0.00"
+            else:
+                kd_ratio = f"{kills / deaths:.2f}"
+
+            # Calculate win rate
+            if total_games > 0:
+                win_rate = f"{(wins / total_games) * 100:.1f}%"
+            else:
+                win_rate = "N/A"
+
+            # Prepare template variables
+            current_date = datetime.datetime.now().strftime("%H:%M | %d/%m/%Y")
+            registered_date = (
+                user_data.get("registered_at", "Unknown")[:10]
+                if user_data.get("registered_at")
+                else "Unknown"
+            )
+
+            template_vars = {
+                "nickname": user_data["nickname"],
+                "player_id": user_data["so2_id"],
+                "avatar_url": str(target_user.display_avatar.url),
+                "points": user_data.get("points", 200),
+                "wins": wins,
+                "losses": losses,
+                "total_games": total_games,
+                "kills": kills,
+                "deaths": deaths,
+                "kd_ratio": kd_ratio,
+                "win_rate": win_rate,
+                "registered_date": registered_date,
+                "discord_id": target_user.id,
+                "current_date": current_date,
+            }  # Render HTML with Jinja2
+            template_dir = os.path.dirname(
+                os.path.dirname(__file__)
+            )  # Go up from cogs/ to project root
+            env = Environment(loader=FileSystemLoader(template_dir))
+            template = env.get_template("profile_template.html")
+            html_content = template.render(**template_vars)
+
+            # Render HTML to image
+            hti = Html2Image(output_path=tempfile.gettempdir())
+            image_path = os.path.join(
+                tempfile.gettempdir(), f"profile_{target_user.id}.png"
+            )
+            hti.screenshot(
+                html_str=html_content,
+                save_as=os.path.basename(image_path),
+                size=(740, 900),
+            )
+
+            # Upload image to Discord
+            file = discord.File(image_path, filename="profile.png")
             embed = discord.Embed(
                 title=f"🎮 {user_data['nickname']}'s Profile", color=EMBED_COLOR
             )
+            embed.set_image(url="attachment://profile.png")
+            embed.set_footer(text=f"Profile generated at {current_date}")
 
-            # Basic info
-            embed.add_field(name="Nickname", value=user_data["nickname"], inline=True)
-            embed.add_field(name="Player ID", value=user_data["so2_id"], inline=True)
-            embed.add_field(
-                name="Points", value=user_data.get("points", 200), inline=True
-            )
+            await interaction.followup.send(embed=embed, file=file)
 
-            # Stats
-            embed.add_field(name="Wins", value=user_data.get("wins", 0), inline=True)
-            embed.add_field(name="Losses", value=user_data.get("loses", 0), inline=True)
-            embed.add_field(name="K/D Ratio", value=f"{kd_ratio:.2f}", inline=True)
-
-            embed.add_field(name="Kills", value=kills, inline=True)
-            embed.add_field(name="Deaths", value=deaths, inline=True)
-
-            # Calculate win rate
-            total_games = user_data.get("wins", 0) + user_data.get("loses", 0)
-            if total_games > 0:
-                win_rate = (user_data.get("wins", 0) / total_games) * 100
-                embed.add_field(name="Win Rate", value=f"{win_rate:.1f}%", inline=True)
-            else:
-                embed.add_field(name="Win Rate", value="N/A", inline=True)
-
-            embed.set_thumbnail(url=target_user.display_avatar.url)
-            embed.set_footer(
-                text=f"Registered: {user_data.get('registered_at', 'Unknown')[:10]}"
-            )
-
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            # Clean up the temporary file
+            try:
+                os.remove(image_path)
+            except Exception:
+                pass
 
         except Exception as e:
             logger.error(f"Error in profile command: {e}")
@@ -283,7 +324,10 @@ class Profile(commands.Cog):
                 description="An error occurred while loading the profile. Please contact an admin.",
                 color=discord.Color.red(),
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot):
