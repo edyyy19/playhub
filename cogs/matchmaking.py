@@ -1059,8 +1059,13 @@ class Matchmaking(commands.Cog):
         lobby["remaining_maps"] = []
         lobby["last_ban"] = None
 
-        # Clean up veto message if it exists
-        if lobby.get("veto_message"):
+        text = lobby["text"]
+        # Check if this reset is after a match finalization
+        just_finalized = lobby.pop("just_finalized", False)
+
+        # Clean up veto message if it exists, BUT preserve it if this is a post-finalization reset
+        # The final match embed uses the veto_message, so we don't want to delete it
+        if lobby.get("veto_message") and not just_finalized:
             try:
                 await lobby["veto_message"].delete()
                 logger.info(
@@ -1071,9 +1076,8 @@ class Matchmaking(commands.Cog):
             finally:
                 lobby["veto_message"] = None
 
-        text = lobby["text"]
         # Only create a new waiting embed if this is the first time or after a match (not on every reset)
-        if not lobby.get("message") or lobby.pop("just_finalized", False):
+        if not lobby.get("message") or just_finalized:
             embed = discord.Embed(
                 title="LOBBY STATUS",
                 description=f"Players in Queue: {len(lobby['players'])}/4\nPhase: Waiting for players...",
