@@ -1036,7 +1036,6 @@ class Matchmaking(commands.Cog):
                 await member.move_to(t_voice)
             except Exception as e:
                 logger.error(f"Failed to move {member} to T Voice: {e}")
-
         # Start cleanup timer (placeholder)
         # ...
 
@@ -1051,33 +1050,9 @@ class Matchmaking(commands.Cog):
         lobby["t_team"] = []
         lobby["map_pool"] = Config.MAP_POOL.copy()
         lobby["match_id"] = None
-
-        # Reset veto-related properties
-        lobby["available_players"] = []
-        lobby["next_pick"] = None
-        lobby["veto_turn"] = None
-        lobby["remaining_maps"] = []
-        lobby["last_ban"] = None
-
         text = lobby["text"]
-        # Check if this reset is after a match finalization
-        just_finalized = lobby.pop("just_finalized", False)
-
-        # Clean up veto message if it exists, BUT preserve it if this is a post-finalization reset
-        # The final match embed uses the veto_message, so we don't want to delete it
-        if lobby.get("veto_message") and not just_finalized:
-            try:
-                await lobby["veto_message"].delete()
-                logger.info(
-                    f"Deleted veto message for lobby #{lobby.get('lobby_number', 'unknown')}"
-                )
-            except Exception as e:
-                logger.error(f"Failed to delete veto message: {e}")
-            finally:
-                lobby["veto_message"] = None
-
         # Only create a new waiting embed if this is the first time or after a match (not on every reset)
-        if not lobby.get("message") or just_finalized:
+        if not lobby.get("message") or lobby.pop("just_finalized", False):
             embed = discord.Embed(
                 title="LOBBY STATUS",
                 description=f"Players in Queue: {len(lobby['players'])}/4\nPhase: Waiting for players...",
