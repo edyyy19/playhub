@@ -1,0 +1,669 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+from config import Config
+import asyncio
+import json
+from openai import OpenAI
+import os
+import logging
+from difflib import SequenceMatcher
+from datetime import datetime
+from models.match import Match
+from models.user import User
+
+logger = logging.getLogger(__name__)
+
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
+    def __init__(self, target_channel_id):
+        super().__init__()
+        self.target_channel_id = target_channel_id
+
+    match_id = discord.ui.TextInput(
+        label="Match ID",
+        placeholder="Enter the match ID...",
+        required=True,
+        max_length=10,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # Validate match ID is a number
+            match_id_int = int(self.match_id.value)
+        except ValueError:
+            await interaction.followup.send(
+                "Please enter a valid match ID number.", ephemeral=True
+            )
+            return
+
+        # Look up match in database
+        match_data = await Match.find(match_id_int)
+
+        if not match_data:
+            await interaction.followup.send(
+                f"Match with ID {match_id_int} not found.", ephemeral=True
+            )
+            return
+
+        # Check if results already submitted
+        if match_data.get("results_submitted", False):
+            await interaction.followup.send(
+                "Results have already been submitted for this match.", ephemeral=True
+            )
+            return  # Check if user participated in the match
+        user_discord_id = str(interaction.user.id)
+        ct_team_data = json.loads(match_data.get("ct_team", "[]"))
+        t_team_data = json.loads(match_data.get("t_team", "[]"))
+
+        # Handle both old format (just players array) and new format (with players and score)
+        if isinstance(ct_team_data, list):
+            # Old format - just an array of players
+            ct_team = ct_team_data
+        else:
+            # New format - object with players array and score
+            ct_team = ct_team_data.get("players", [])
+
+        if isinstance(t_team_data, list):
+            # Old format - just an array of players
+            t_team = t_team_data
+        else:
+            # New format - object with players array and score
+            t_team = t_team_data.get("players", [])
+
+        user_participated = False
+        for player in ct_team + t_team:
+            if player.get("discord_id") == user_discord_id:
+                user_participated = True
+                break
+
+        if not user_participated:
+            await interaction.followup.send(
+                "You are not authorized to submit results for this match.",
+                ephemeral=True,
+            )
+            return
+
+        # Ask for screenshot upload
+        await interaction.followup.send(
+            "Please upload the scoreboard screenshot in your next message. You have 60 seconds.",
+            ephemeral=True,
+        )
+
+        # Store the match data and target channel for the next step
+        self.bot = interaction.client
+        self.match_data = match_data
+        self.user_id = interaction.user.id
+
+        # Wait for image upload
+        try:
+
+            def check(message):
+                return (
+                    message.author.id == interaction.user.id
+                    and message.attachments
+                    and any(
+                        attachment.filename.lower().endswith(
+                            (".png", ".jpg", ".jpeg", ".gif", ".webp")
+                        )
+                        for attachment in message.attachments
+                    )
+                )
+
+            message = await self.bot.wait_for("message", check=check, timeout=60.0)
+
+            # Get the image URL
+            image_url = message.attachments[0].url
+
+            # Process the image with OpenAI
+            await self.process_scoreboard_image(
+                interaction, image_url, match_data, self.target_channel_id
+            )
+
+        except asyncio.TimeoutError:
+            await interaction.followup.send(
+                "Timeout: No screenshot uploaded within 60 seconds.", ephemeral=True
+            )
+
+    async def process_scoreboard_image(
+        self, interaction, image_url, match_data, target_channel_id
+    ):
+        """Process the scoreboard image using OpenAI Vision API"""
+        try:
+            # Prepare the OpenAI vision request
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": """Analyze this scoreboard screenshot and extract player statistics. 
+
+IMPORTANT: First verify this is a Standoff 2 scoreboard with Counter-Terrorists vs Terrorists teams.
+
+Return ONLY valid JSON in this exact format:
+{
+  "game_detected": "standoff2" or "unknown",
+  "confidence": number (0.0-1.0 how confident this is a valid Standoff 2 scoreboard),
+  "teams": {
+    "Counter-Terrorists": {
+      "score": integer,
+      "players": [
+        {"name": "exact_player_name", "kills": integer, "deaths": integer}
+      ]
+    },
+    "Terrorists": {
+      "score": integer, 
+      "players": [
+        {"name": "exact_player_name", "kills": integer, "deaths": integer}
+      ]
+    }
+  }
+}
+
+Extract player names EXACTLY as shown. Pay attention to special characters, numbers, and capitalization.""",
+                            },
+                            {"type": "image_url", "image_url": {"url": image_url}},
+                        ],
+                    }
+                ],
+                max_tokens=1000,
+            )
+
+            # Log token usage
+            usage = response.usage
+            logger.info(
+                f"OpenAI Token Usage — Prompt: {usage.prompt_tokens}, "
+                f"Completion: {usage.completion_tokens}, "
+                f"Total: {usage.total_tokens}"
+            )
+
+            # Parse the JSON response
+            content = response.choices[0].message.content.strip()
+
+            # Try to extract JSON from the response
+            try:
+                # Find JSON in the response
+                if "```json" in content:
+                    json_start = content.find("```json") + 7
+                    json_end = content.find("```", json_start)
+                    json_content = content[json_start:json_end].strip()
+                elif "{" in content:
+                    json_start = content.find("{")
+                    json_end = content.rfind("}") + 1
+                    json_content = content[json_start:json_end]
+                else:
+                    json_content = content
+
+                extracted_data = json.loads(json_content)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse OpenAI JSON response: {e}")
+                await interaction.followup.send(
+                    "Failed to parse scoreboard data. Please try again.", ephemeral=True
+                )
+                return
+
+            # Validate and match players
+            await self.validate_and_update_match(
+                interaction, extracted_data, match_data, target_channel_id
+            )
+
+        except Exception as e:
+            logger.error(f"Error processing scoreboard image: {e}")
+            await interaction.followup.send(
+                "Error processing the scoreboard image. Please try again.",
+                ephemeral=True,
+            )
+
+    async def validate_and_update_match(
+        self, interaction, extracted_data, match_data, target_channel_id
+    ):
+        """Validate extracted data against database and update match results"""
+        try:  # Check game detection confidence
+            game_detected = extracted_data.get("game_detected", "unknown")
+            confidence = extracted_data.get("confidence", 0.0)
+
+            if game_detected != "standoff2" or confidence < 0.5:
+                await interaction.followup.send(
+                    f"Screenshot validation failed:\n"
+                    f"Game detected: {game_detected}\n"
+                    f"Confidence: {confidence:.1%}\n\n"
+                    f"Please ensure you uploaded a clear Standoff 2 scoreboard screenshot.",
+                    ephemeral=True,
+                )
+                return
+
+            # Get team data from database
+            ct_team_data = json.loads(match_data.get("ct_team", "[]"))
+            t_team_data = json.loads(match_data.get("t_team", "[]"))
+
+            # Handle both old format (just players array) and new format (with players and score)
+            if isinstance(ct_team_data, list):
+                # Old format - just an array of players
+                ct_team = ct_team_data
+            else:
+                # New format - object with players array and score
+                ct_team = ct_team_data.get("players", [])
+
+            if isinstance(t_team_data, list):
+                # Old format - just an array of players
+                t_team = t_team_data
+            else:
+                # New format - object with players array and score
+                t_team = t_team_data.get("players", [])
+
+            all_db_players = ct_team + t_team
+
+            # Get all extracted players from both teams (since teams switch at round 15)
+            teams_data = extracted_data.get("teams", {})
+            ct_data = teams_data.get("Counter-Terrorists", {})
+            t_data = teams_data.get("Terrorists", {})
+            all_extracted_players = ct_data.get("players", []) + t_data.get(
+                "players", []
+            )
+
+            # Match all database players against all extracted players (ignore team assignment)
+            matched_players, match_details = self.match_all_players(
+                all_extracted_players, [p["nickname"] for p in all_db_players]
+            )
+
+            # Validate that we matched at least 50% of the players
+            total_db_players = len(all_db_players)
+            matched_count = len(matched_players)
+            match_rate = matched_count / total_db_players if total_db_players > 0 else 0
+
+            if match_rate < 0.5:
+                error_msg = f"Could not match enough players:\n"
+                error_msg += f"Found {matched_count}/{total_db_players} players ({match_rate:.1%})\n"
+                error_msg += f"Need at least 50% to validate match.\n\n"
+                error_msg += "**Expected Players:**\n"
+                error_msg += f"{', '.join([p['nickname'] for p in all_db_players])}\n\n"
+                error_msg += "**Extracted Players:**\n"
+                extracted_names = [p["name"] for p in all_extracted_players]
+                error_msg += (
+                    f"{', '.join(extracted_names) if extracted_names else 'None'}\n\n"
+                )
+                error_msg += "**Matching Details:**\n"
+                error_msg += "\n".join(match_details)
+
+                await interaction.followup.send(
+                    f"```\n{error_msg}\n```\nPlease ensure the scoreboard shows players from your match.",
+                    ephemeral=True,
+                )
+                return
+
+            # Get scores from screenshot
+            ct_score = ct_data.get("score", 0)
+            t_score = t_data.get("score", 0)
+
+            # Validate score reasonableness
+            if ct_score < 0 or t_score < 0 or (ct_score == 0 and t_score == 0):
+                await interaction.followup.send(
+                    f"Invalid scores detected: CT({ct_score}) vs T({t_score})\n"
+                    f"Please verify the scoreboard is clear and shows the final scores.",
+                    ephemeral=True,
+                )
+                return
+
+            if ct_score == t_score:
+                await interaction.followup.send(
+                    "The match appears to be a tie. Please verify the scoreboard.",
+                    ephemeral=True,
+                )
+                return  # Determine winning team based on which side won more rounds
+            ct_team_won = ct_score > t_score  # True if CT side won in screenshot
+
+            # Use GPT-4o's team assignments from screenshot (not original database teams)
+            # Create new team structures based on screenshot analysis
+            updated_ct_team = []
+            updated_t_team = []
+
+            # Process CT team players from screenshot
+            for screenshot_player in ct_data.get("players", []):
+                player_name = screenshot_player["name"]
+
+                # Find the corresponding database player
+                db_player = None
+                for p in all_db_players:
+                    if (
+                        p["nickname"] in matched_players
+                        and matched_players[p["nickname"]]["name"] == player_name
+                    ):
+                        db_player = p.copy()  # Make a copy to avoid modifying original
+                        break
+
+                if db_player:
+                    # Use screenshot stats and database player info
+                    db_player["kills"] = screenshot_player["kills"]
+                    db_player["deaths"] = screenshot_player["deaths"]
+                    db_player["points_received"] = 20 if ct_team_won else -10
+                    updated_ct_team.append(db_player)
+
+            # Process T team players from screenshot
+            for screenshot_player in t_data.get("players", []):
+                player_name = screenshot_player["name"]
+
+                # Find the corresponding database player
+                db_player = None
+                for p in all_db_players:
+                    if (
+                        p["nickname"] in matched_players
+                        and matched_players[p["nickname"]]["name"] == player_name
+                    ):
+                        db_player = p.copy()  # Make a copy to avoid modifying original
+                        break
+
+                if db_player:
+                    # Use screenshot stats and database player info
+                    db_player["kills"] = screenshot_player["kills"]
+                    db_player["deaths"] = screenshot_player["deaths"]
+                    db_player["points_received"] = (
+                        20 if not ct_team_won else -10
+                    )  # T team gets opposite points
+                    updated_t_team.append(db_player)
+
+            # Add missing players with default stats to maintain team balance
+            # Find players who weren't matched to either team in screenshot
+            matched_screenshot_players = {
+                p["name"]
+                for p in ct_data.get("players", []) + t_data.get("players", [])
+            }
+            unmatched_db_players = []
+
+            for db_player in all_db_players:
+                player_matched = False
+                if db_player["nickname"] in matched_players:
+                    matched_name = matched_players[db_player["nickname"]]["name"]
+                    if matched_name in matched_screenshot_players:
+                        player_matched = True
+
+                if not player_matched:
+                    # Add to the team that has fewer players to balance teams
+                    unmatched_player = db_player.copy()
+                    unmatched_player["kills"] = 0
+                    unmatched_player["deaths"] = 13
+                    unmatched_player[
+                        "points_received"
+                    ] = -10  # Default penalty for missing players
+
+                    if len(updated_ct_team) <= len(updated_t_team):
+                        updated_ct_team.append(unmatched_player)
+                    else:
+                        updated_t_team.append(unmatched_player)
+
+                    logger.info(
+                        f"Added missing player '{db_player['nickname']}' with default stats"
+                    )
+
+            # Update database
+            await Match.update_results(
+                match_data["match_id"],
+                updated_ct_team,
+                updated_t_team,
+                ct_score,
+                t_score,
+            )
+
+            # Update user statistics
+            await self.update_user_stats(
+                updated_ct_team + updated_t_team
+            )  # Send final embed to target channel
+            await self.send_final_embed(
+                interaction,
+                target_channel_id,
+                updated_ct_team,
+                updated_t_team,
+                ct_score,
+                t_score,
+                match_data,
+            )
+
+            await interaction.followup.send(
+                f"Scoreboard successfully processed using screenshot team assignments!\n"
+                f"Matched {matched_count}/{total_db_players} players ({match_rate:.1%})\n"
+                f"CT Team: {len(updated_ct_team)} players | T Team: {len(updated_t_team)} players\n"
+                f"Missing players assigned default stats (0K/13D)",
+                ephemeral=True,
+            )
+
+        except Exception as e:
+            logger.error(f"Error validating and updating match: {e}")
+            await interaction.followup.send(
+                "Error processing match results. Please try again.", ephemeral=True
+            )
+
+    def match_players_fuzzy(self, extracted_players, db_players):
+        """Match extracted player names with database players using fuzzy matching"""
+        matched = {}
+        used_extracted = set()
+        match_details = []  # For debugging
+
+        for db_player in db_players:
+            best_match = None
+            best_ratio = 0
+            all_ratios = []  # Track all similarity scores for debugging
+
+            for extracted_player in extracted_players:
+                if extracted_player["name"] in used_extracted:
+                    continue
+
+                # Use sequence matcher for fuzzy matching
+                ratio = SequenceMatcher(
+                    None, db_player.lower(), extracted_player["name"].lower()
+                ).ratio()
+
+                all_ratios.append((extracted_player["name"], ratio))
+
+                if ratio > best_ratio and ratio > 0.4:  # Lowered threshold to 40%
+                    best_match = extracted_player
+                    best_ratio = ratio
+
+            if best_match:
+                matched[db_player] = best_match
+                used_extracted.add(best_match["name"])
+                match_details.append(
+                    f"✅ '{db_player}' → '{best_match['name']}' ({best_ratio:.2f})"
+                )
+            else:
+                # Find closest match for debugging
+                if all_ratios:
+                    closest = max(all_ratios, key=lambda x: x[1])
+                    match_details.append(
+                        f"❌ '{db_player}' → closest: '{closest[0]}' ({closest[1]:.2f})"
+                    )
+                else:
+                    match_details.append(
+                        f"❌ '{db_player}' → no extracted players found"
+                    )
+
+        # Log matching details for debugging
+        logger.info(f"Player matching results:\n" + "\n".join(match_details))
+
+        return matched, match_details
+
+    def match_all_players(self, extracted_players, db_player_names):
+        """Match all database players against all extracted players regardless of team"""
+        matched = {}
+        used_extracted = set()
+        match_details = []
+
+        for db_player in db_player_names:
+            best_match = None
+            best_ratio = 0
+            all_ratios = []
+
+            for extracted_player in extracted_players:
+                if extracted_player["name"] in used_extracted:
+                    continue
+
+                # Use sequence matcher for fuzzy matching
+                ratio = SequenceMatcher(
+                    None, db_player.lower(), extracted_player["name"].lower()
+                ).ratio()
+
+                all_ratios.append((extracted_player["name"], ratio))
+
+                if ratio > best_ratio and ratio > 0.4:  # 40% similarity threshold
+                    best_match = extracted_player
+                    best_ratio = ratio
+
+            if best_match:
+                matched[db_player] = best_match
+                used_extracted.add(best_match["name"])
+                match_details.append(
+                    f"✅ '{db_player}' → '{best_match['name']}' ({best_ratio:.2f})"
+                )
+            else:
+                # Find closest match for debugging
+                if all_ratios:
+                    closest = max(all_ratios, key=lambda x: x[1])
+                    match_details.append(
+                        f"❌ '{db_player}' → closest: '{closest[0]}' ({closest[1]:.2f})"
+                    )
+                else:
+                    match_details.append(
+                        f"❌ '{db_player}' → no extracted players found"
+                    )
+
+        # Log matching details for debugging
+        logger.info(f"Player matching results:\n" + "\n".join(match_details))
+
+        return matched, match_details
+
+    async def update_user_stats(self, all_players):
+        """Update user statistics in database"""
+        for player in all_players:
+            discord_id = int(player["discord_id"])
+            kills = player["kills"]
+            deaths = player["deaths"]
+            points_change = player["points_received"]
+            won = points_change > 0
+
+            await User.update_stats(discord_id, kills, deaths, points_change, won)
+
+    async def send_final_embed(
+        self,
+        interaction,
+        target_channel_id,
+        ct_team,
+        t_team,
+        ct_score,
+        t_score,
+        match_data,
+    ):
+        """Send final results embed to target channel"""
+        try:
+            target_channel = interaction.guild.get_channel(target_channel_id)
+            if not target_channel:
+                logger.error(f"Target channel {target_channel_id} not found")
+                return
+
+            # Create embed
+            embed = discord.Embed(
+                title="🏆 Match Results",
+                description=f"**Map:** {match_data.get('map', 'Unknown')}\n**Match ID:** {match_data['match_id']}",
+                color=0x00FF00,
+                timestamp=datetime.now(),
+            )
+
+            # CT Team field
+            ct_text = f"**Score: {ct_score}**\n"
+            for player in ct_team:
+                points_display = (
+                    f"+{player['points_received']}"
+                    if player["points_received"] > 0
+                    else str(player["points_received"])
+                )
+                ct_text += f"`{player['nickname']}` - K:{player['kills']} D:{player['deaths']} ({points_display} pts)\n"
+
+            embed.add_field(name="🔵 Counter-Terrorists", value=ct_text, inline=True)
+
+            # T Team field
+            t_text = f"**Score: {t_score}**\n"
+            for player in t_team:
+                points_display = (
+                    f"+{player['points_received']}"
+                    if player["points_received"] > 0
+                    else str(player["points_received"])
+                )
+                t_text += f"`{player['nickname']}` - K:{player['kills']} D:{player['deaths']} ({points_display} pts)\n"
+
+            embed.add_field(name="🔴 Terrorists", value=t_text, inline=True)
+
+            # Winner field
+            winner = "Counter-Terrorists" if ct_score > t_score else "Terrorists"
+            embed.add_field(name="🎉 Winner", value=winner, inline=False)
+
+            embed.set_footer(text="Results processed automatically")
+
+            await target_channel.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error sending final embed: {e}")
+
+
+class SubmitScoreboardView(discord.ui.View):
+    def __init__(self, target_channel_id):
+        super().__init__(timeout=None)
+        self.target_channel_id = target_channel_id
+
+    @discord.ui.button(
+        label="Submit Scoreboard", style=discord.ButtonStyle.primary, emoji="📊"
+    )
+    async def submit_scoreboard(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        modal = MatchIDModal(self.target_channel_id)
+        await interaction.response.send_modal(modal)
+
+
+class Scoreboard(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(
+        name="setscoreboardchannel",
+        description="Set a target channel for scoreboard results",
+    )
+    @app_commands.describe(
+        target_channel="The channel where scoreboard results will be posted"
+    )
+    async def set_scoreboard_channel(
+        self, interaction: discord.Interaction, target_channel: discord.TextChannel
+    ):
+        # Check if user has admin permissions
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "You need administrator permissions to use this command.",
+                ephemeral=True,
+            )
+            return
+
+        # Create embed with button
+        embed = discord.Embed(
+            title="📊 Scoreboard Submission",
+            description=f"Scoreboard results will be posted to {target_channel.mention}",
+            color=0x0099FF,
+        )
+        embed.add_field(
+            name="How to submit:",
+            value="1. Click the button below\n2. Enter your match ID\n3. Upload the scoreboard screenshot\n4. Wait for processing",
+            inline=False,
+        )
+        embed.set_footer(text="Only match participants can submit results")
+
+        # Create view with button
+        view = SubmitScoreboardView(target_channel.id)
+
+        await interaction.response.send_message(embed=embed, view=view)
+
+
+async def setup(bot):
+    await bot.add_cog(Scoreboard(bot))

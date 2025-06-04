@@ -80,3 +80,49 @@ class Match:
                 raise
 
         return await loop.run_in_executor(None, db_insert)
+
+    @classmethod
+    async def find(cls, match_id: int):
+        """Find a match by ID"""
+        loop = asyncio.get_running_loop()
+
+        def db_select():
+            response = (
+                Config.supabase()
+                .table(cls.TABLE)
+                .select("*")
+                .eq("match_id", match_id)
+                .execute()
+            )
+            return response.data[0] if response.data else None
+
+        return await loop.run_in_executor(None, db_select)
+
+    @classmethod
+    async def update_results(
+        cls, match_id: int, ct_team: list, t_team: list, ct_score: int, t_score: int
+    ):
+        """Update match results and mark as submitted"""
+        loop = asyncio.get_running_loop()
+
+        def db_update():
+            # Include scores within the team data structure
+            ct_team_with_score = {"players": ct_team, "score": ct_score}
+            t_team_with_score = {"players": t_team, "score": t_score}
+
+            return (
+                Config.supabase()
+                .table(cls.TABLE)
+                .update(
+                    {
+                        "ct_team": json.dumps(ct_team_with_score),
+                        "t_team": json.dumps(t_team_with_score),
+                        "results_submitted": True,
+                        "ended_at": datetime.now().isoformat(),
+                    }
+                )
+                .eq("match_id", match_id)
+                .execute()
+            )
+
+        return await loop.run_in_executor(None, db_update)

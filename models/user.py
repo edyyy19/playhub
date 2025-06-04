@@ -97,3 +97,53 @@ class User:
             return response.data[0] if response.data else None
 
         return await loop.run_in_executor(None, db_select)
+
+    @classmethod
+    async def update_stats(
+        cls, discord_id: int, kills: int, deaths: int, points_change: int, won: bool
+    ):
+        """Update user's game statistics"""
+        loop = asyncio.get_running_loop()
+
+        def db_update():
+            # Get current user stats
+            current_user = (
+                Config.supabase()
+                .table(cls.TABLE)
+                .select("*")
+                .eq("discord_id", str(discord_id))
+                .execute()
+            )
+            if current_user.data:
+                user_data = current_user.data[0]
+                new_kills = user_data.get("kills", 0) + kills
+                new_deaths = user_data.get("deaths", 0) + deaths
+                new_points = user_data.get("points", 0) + points_change
+
+                # Update wins/losses
+                new_wins = user_data.get("wins", 0)
+                new_losses = user_data.get("loses", 0)
+
+                if won:
+                    new_wins += 1
+                else:
+                    new_losses += 1
+
+                # Update user stats
+                return (
+                    Config.supabase()
+                    .table(cls.TABLE)
+                    .update(
+                        {
+                            "kills": new_kills,
+                            "deaths": new_deaths,
+                            "points": new_points,
+                            "wins": new_wins,
+                            "loses": new_losses,
+                        }
+                    )
+                    .eq("discord_id", str(discord_id))
+                    .execute()
+                )
+
+        return await loop.run_in_executor(None, db_update)
