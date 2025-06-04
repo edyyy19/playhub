@@ -11,6 +11,7 @@ from difflib import SequenceMatcher
 from datetime import datetime
 from models.match import Match
 from models.user import User
+from models.scoreboard_config import ScoreboardConfig
 
 logger = logging.getLogger(__name__)
 
@@ -681,10 +682,14 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
 
 class SubmitScoreboardView(discord.ui.View):
     def __init__(self, target_channel_id):
-        super().__init__(timeout=None)
+        super().__init__(timeout=None)  # Make the view persistent
         self.target_channel_id = target_channel_id
 
-    @discord.ui.button(label="Submit Results", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="Submit Results",
+        style=discord.ButtonStyle.primary,
+        custom_id="submit_scoreboard_button",  # Persistent custom_id
+    )
     async def submit_scoreboard(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
@@ -695,6 +700,100 @@ class SubmitScoreboardView(discord.ui.View):
 class Scoreboard(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
+    async def cog_load(self):
+        """Called when the cog is loaded - recreate persistent views"""
+        await self.recreate_persistent_views()
+
+    async def recreate_persistent_views(self):
+        """Recreate persistent views from database configurations"""
+        try:
+            configs = await ScoreboardConfig.get_all_configs()
+
+            for config in configs:
+                guild_id = config["guild_id"]
+                submission_channel_id = config["submission_channel_id"]
+                results_channel_id = config["results_channel_id"]
+                message_id = config.get("message_id")
+
+                guild = self.bot.get_guild(guild_id)
+                if not guild:
+                    logger.warning(
+                        f"Guild {guild_id} not found, skipping scoreboard config"
+                    )
+                    continue
+
+                submission_channel = guild.get_channel(submission_channel_id)
+                if not submission_channel:
+                    logger.warning(
+                        f"Submission channel {submission_channel_id} not found, skipping"
+                    )
+                    continue
+
+                # Create the persistent view
+                view = SubmitScoreboardView(results_channel_id)
+
+                # If we have a message_id, try to get the existing message
+                if message_id:
+                    try:
+                        message = await submission_channel.fetch_message(message_id)
+                        # Update the view on the existing message
+                        await message.edit(view=view)
+                        logger.info(
+                            f"Recreated persistent scoreboard view for guild {guild_id} on existing message {message_id}"
+                        )
+                        continue
+                    except discord.NotFound:
+                        logger.warning(
+                            f"Scoreboard message {message_id} not found, will create new one"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Error fetching scoreboard message {message_id}: {e}"
+                        )
+
+                # Create new message with embed and view
+                results_channel = guild.get_channel(results_channel_id)
+                results_channel_mention = (
+                    results_channel.mention
+                    if results_channel
+                    else f"<#{results_channel_id}>"
+                )
+
+                embed = discord.Embed(
+                    title="📊 Scoreboard Submission",
+                    description=f"Scoreboard results will be posted to {results_channel_mention}",
+                    color=0xB2FA19,
+                )
+                embed.add_field(
+                    name="How to submit:",
+                    value="1. Click the button below\n2. Enter your match ID\n3. Upload the scoreboard screenshot\n4. Wait for processing",
+                    inline=False,
+                )
+                embed.set_footer(text="Only match participants can submit results")
+
+                try:
+                    new_message = await submission_channel.send(embed=embed, view=view)
+
+                    # Update database with new message_id
+                    await ScoreboardConfig.set_config(
+                        guild_id,
+                        submission_channel_id,
+                        results_channel_id,
+                        new_message.id,
+                    )
+
+                    logger.info(
+                        f"Created new persistent scoreboard view for guild {guild_id} with message {new_message.id}"
+                    )
+
+                except Exception as e:
+                    logger.error(
+                        f"Error creating scoreboard message for guild {guild_id}: {e}"
+                    )
+
+        except Exception as e:
+            logger.error(f"Error recreating persistent scoreboard views: {e}")
 
     @app_commands.command(
         name="setscoreboardchannel",
@@ -714,23 +813,54 @@ class Scoreboard(commands.Cog):
             )
             return
 
-        # Create embed with button
-        embed = discord.Embed(
-            title="📊 Scoreboard Submission",
-            description=f"Scoreboard results will be posted to {target_channel.mention}",
-            color=0xB2FA19,
-        )
-        embed.add_field(
-            name="How to submit:",
-            value="1. Click the button below\n2. Enter your match ID\n3. Upload the scoreboard screenshot\n4. Wait for processing",
-            inline=False,
-        )
-        embed.set_footer(text="Only match participants can submit results")
+        try:
+            submission_channel = interaction.channel
+            guild_id = interaction.guild.id
 
-        # Create view with button
-        view = SubmitScoreboardView(target_channel.id)
+            # Create embed with button
+            embed = discord.Embed(
+                title="📊 Scoreboard Submission",
+                description=f"Scoreboard results will be posted to {target_channel.mention}",
+                color=0xB2FA19,
+            )
+            embed.add_field(
+                name="How to submit:",
+                value="1. Click the button below\n2. Enter your match ID\n3. Upload the scoreboard screenshot\n4. Wait for processing",
+                inline=False,
+            )
+            embed.set_footer(text="Only match participants can submit results")
 
-        await interaction.response.send_message(embed=embed, view=view)
+            # Create persistent view with button
+            view = SubmitScoreboardView(target_channel.id)
+
+            # Send the message
+            message = await submission_channel.send(embed=embed, view=view)
+
+            # Save configuration to database
+            await ScoreboardConfig.set_config(
+                guild_id, submission_channel.id, target_channel.id, message.id
+            )
+
+            # Confirm to admin
+            success_embed = discord.Embed(
+                title="✅ Scoreboard Channel Configured",
+                description=f"Scoreboard submission set up successfully!\n\n"
+                f"**Submission Channel:** {submission_channel.mention}\n"
+                f"**Results Channel:** {target_channel.mention}\n\n"
+                f"Users can now submit match results using the button above.\n"
+                f"This configuration will persist across bot restarts.",
+                color=0x00FF00,
+            )
+            await interaction.response.send_message(embed=success_embed, ephemeral=True)
+
+        except Exception as e:
+            logger.error(f"Error setting scoreboard channel: {e}")
+            embed = discord.Embed(
+                title="❌ Setup Error",
+                description="An error occurred while setting up the scoreboard channel. Please try again.",
+                color=0xFF0000,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot):
