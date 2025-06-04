@@ -53,10 +53,15 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
 
         # Check if results already submitted
         if match_data.get("results_submitted", False):
-            await interaction.followup.send(
-                "Results have already been submitted for this match.", ephemeral=True
+            embed = discord.Embed(
+                title="❌ Results Already Submitted",
+                description="Results have already been submitted for this match.",
+                color=0xFF0000,
             )
-            return  # Check if user participated in the match
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        # Check if user participated in the match
         user_discord_id = str(interaction.user.id)
         ct_team_data = json.loads(match_data.get("ct_team", "[]"))
         t_team_data = json.loads(match_data.get("t_team", "[]"))
@@ -90,10 +95,17 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
             return
 
         # Ask for screenshot upload
-        await interaction.followup.send(
-            "Please upload the scoreboard screenshot in your next message. You have 60 seconds.",
-            ephemeral=True,
+        upload_embed = discord.Embed(
+            title="📷 Upload Scoreboard Screenshot",
+            description="Please upload the scoreboard screenshot in your next message.\n\n⏰ **Timeout:** 60 seconds",
+            color=0x0099FF,
         )
+        upload_embed.add_field(
+            name="📋 Instructions",
+            value="• Make sure the scoreboard shows all player stats\n• Supported formats: PNG, JPG, JPEG,\n• Clear image quality for best results",
+            inline=False,
+        )
+        await interaction.followup.send(embed=upload_embed, ephemeral=True)
 
         # Store the match data and target channel for the next step
         self.bot = interaction.client
@@ -115,14 +127,34 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
                     )
                 )
 
-            message = await self.bot.wait_for("message", check=check, timeout=60.0)
+            message = await self.bot.wait_for(
+                "message", check=check, timeout=60.0
+            )  # Show processing embed
+            processing_embed = discord.Embed(
+                title="🔄 Processing Screenshot",
+                description="Analyzing screenshot data...",
+                color=0xFFAA00,
+            )
+            processing_embed.add_field(
+                name="📊 Analysis Steps",
+                value="• Reading player statistics\n• Matching players to database\n• Calculating results\n• Generating final scoreboard",
+                inline=False,
+            )
+            processing_message = await interaction.followup.send(
+                embed=processing_embed, ephemeral=True
+            )
 
             # Get the image URL
             image_url = message.attachments[0].url
 
             # Process the image with OpenAI
             await self.process_scoreboard_image(
-                interaction, image_url, match_data, self.target_channel_id
+                interaction,
+                image_url,
+                match_data,
+                self.target_channel_id,
+                message,
+                processing_message,
             )
 
         except asyncio.TimeoutError:
@@ -131,20 +163,27 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
             )
 
     async def process_scoreboard_image(
-        self, interaction, image_url, match_data, target_channel_id
+        self,
+        interaction,
+        image_url,
+        match_data,
+        target_channel_id,
+        screenshot_message=None,
+        processing_message=None,
     ):
         """Process the scoreboard image using OpenAI Vision API"""
         try:
-            # Prepare the OpenAI vision request
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": """Analyze this scoreboard screenshot and extract player statistics. 
+            # Define the synchronous OpenAI call function
+            def make_openai_call():
+                return client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": """Analyze this scoreboard screenshot and extract player statistics. 
 
 IMPORTANT: First verify this is a Standoff 2 scoreboard with Counter-Terrorists vs Terrorists teams.
 
@@ -156,26 +195,28 @@ Return ONLY valid JSON in this exact format:
     "Counter-Terrorists": {
       "score": integer,
       "players": [
-        {"name": "exact_player_name", "kills": integer, "deaths": integer}
+        {"name": "exact_player_name_without_clan_tag", "kills": integer, "assists": integer, "deaths": integer}
       ]
     },
     "Terrorists": {
       "score": integer, 
       "players": [
-        {"name": "exact_player_name", "kills": integer, "deaths": integer}
+        {"name": "exact_player_name_without_clan_tag", "kills": integer, "assists": integer, "deaths": integer}
       ]
     }
   }
 }
+Extract exact player names, kills, assists, and deaths as shown. Pay attention to special characters, numbers, and capitalization.""",
+                                },
+                                {"type": "image_url", "image_url": {"url": image_url}},
+                            ],
+                        }
+                    ],
+                    max_tokens=1000,
+                )
 
-Extract player names EXACTLY as shown. Pay attention to special characters, numbers, and capitalization.""",
-                            },
-                            {"type": "image_url", "image_url": {"url": image_url}},
-                        ],
-                    }
-                ],
-                max_tokens=1000,
-            )
+            # Run the OpenAI call in a separate thread to avoid blocking Discord's event loop
+            response = await asyncio.to_thread(make_openai_call)
 
             # Log token usage
             usage = response.usage
@@ -212,7 +253,12 @@ Extract player names EXACTLY as shown. Pay attention to special characters, numb
 
             # Validate and match players
             await self.validate_and_update_match(
-                interaction, extracted_data, match_data, target_channel_id
+                interaction,
+                extracted_data,
+                match_data,
+                target_channel_id,
+                screenshot_message,
+                processing_message,
             )
 
         except Exception as e:
@@ -223,10 +269,17 @@ Extract player names EXACTLY as shown. Pay attention to special characters, numb
             )
 
     async def validate_and_update_match(
-        self, interaction, extracted_data, match_data, target_channel_id
+        self,
+        interaction,
+        extracted_data,
+        match_data,
+        target_channel_id,
+        screenshot_message=None,
+        processing_message=None,
     ):
         """Validate extracted data against database and update match results"""
-        try:  # Check game detection confidence
+        try:
+            # Check game detection confidence
             game_detected = extracted_data.get("game_detected", "unknown")
             confidence = extracted_data.get("confidence", 0.0)
 
@@ -317,7 +370,9 @@ Extract player names EXACTLY as shown. Pay attention to special characters, numb
                     "The match appears to be a tie. Please verify the scoreboard.",
                     ephemeral=True,
                 )
-                return  # Determine winning team based on which side won more rounds
+                return
+
+            # Determine winning team based on which side won more rounds
             ct_team_won = ct_score > t_score  # True if CT side won in screenshot
 
             # Use GPT-4o's team assignments from screenshot (not original database teams)
@@ -328,7 +383,6 @@ Extract player names EXACTLY as shown. Pay attention to special characters, numb
             # Process CT team players from screenshot
             for screenshot_player in ct_data.get("players", []):
                 player_name = screenshot_player["name"]
-
                 # Find the corresponding database player
                 db_player = None
                 for p in all_db_players:
@@ -342,6 +396,7 @@ Extract player names EXACTLY as shown. Pay attention to special characters, numb
                 if db_player:
                     # Use screenshot stats and database player info
                     db_player["kills"] = screenshot_player["kills"]
+                    db_player["assists"] = screenshot_player.get("assists", 0)
                     db_player["deaths"] = screenshot_player["deaths"]
                     db_player["points_received"] = 20 if ct_team_won else -10
                     updated_ct_team.append(db_player)
@@ -349,7 +404,6 @@ Extract player names EXACTLY as shown. Pay attention to special characters, numb
             # Process T team players from screenshot
             for screenshot_player in t_data.get("players", []):
                 player_name = screenshot_player["name"]
-
                 # Find the corresponding database player
                 db_player = None
                 for p in all_db_players:
@@ -363,6 +417,7 @@ Extract player names EXACTLY as shown. Pay attention to special characters, numb
                 if db_player:
                     # Use screenshot stats and database player info
                     db_player["kills"] = screenshot_player["kills"]
+                    db_player["assists"] = screenshot_player.get("assists", 0)
                     db_player["deaths"] = screenshot_player["deaths"]
                     db_player["points_received"] = (
                         20 if not ct_team_won else -10
@@ -388,6 +443,7 @@ Extract player names EXACTLY as shown. Pay attention to special characters, numb
                     # Add to the team that has fewer players to balance teams
                     unmatched_player = db_player.copy()
                     unmatched_player["kills"] = 0
+                    unmatched_player["assists"] = 0
                     unmatched_player["deaths"] = 13
                     unmatched_player[
                         "points_received"
@@ -412,10 +468,10 @@ Extract player names EXACTLY as shown. Pay attention to special characters, numb
             )
 
             # Update user statistics
-            await self.update_user_stats(
-                updated_ct_team + updated_t_team
-            )  # Send final embed to target channel
-            await self.send_final_embed(
+            await self.update_user_stats(updated_ct_team + updated_t_team)
+
+            # Send final results image to target channel
+            await self.send_final_results_image(
                 interaction,
                 target_channel_id,
                 updated_ct_team,
@@ -425,68 +481,50 @@ Extract player names EXACTLY as shown. Pay attention to special characters, numb
                 match_data,
             )
 
-            await interaction.followup.send(
-                f"Scoreboard successfully processed using screenshot team assignments!\n"
-                f"Matched {matched_count}/{total_db_players} players ({match_rate:.1%})\n"
-                f"CT Team: {len(updated_ct_team)} players | T Team: {len(updated_t_team)} players\n"
-                f"Missing players assigned default stats (0K/13D)",
-                ephemeral=True,
+            # Delete the screenshot message to clean up
+            if screenshot_message:
+                try:
+                    await screenshot_message.delete()
+                except discord.NotFound:
+                    pass  # Message already deleted
+                except discord.Forbidden:
+                    logger.warning(
+                        "No permission to delete screenshot message"
+                    )  # Update processing message or send new success embed
+            success_embed = discord.Embed(
+                title="✅ Scoreboard Successfully Processed",
+                description="Screenshot analysis completed successfully!",
+                color=0xB2FA19,
             )
+            success_embed.add_field(
+                name="📊 Match Results",
+                value=f"**Matched:** {matched_count}/{total_db_players} players ({match_rate:.1%})\n"
+                f"**CT Team:** {len(updated_ct_team)} players\n"
+                f"**T Team:** {len(updated_t_team)} players",
+                inline=True,
+            )
+            success_embed.add_field(
+                name="⚙️ Processing Details",
+                value="• Missing players assigned default stats (0K/0A/13D)\n"
+                "• Results posted to scoreboard channel\n"
+                "• Player statistics updated",
+                inline=True,
+            )
+            success_embed.set_footer(text="Screenshot deleted for privacy")
+
+            if processing_message:
+                try:
+                    await processing_message.edit(embed=success_embed)
+                except discord.NotFound:
+                    await interaction.followup.send(embed=success_embed, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=success_embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f"Error validating and updating match: {e}")
             await interaction.followup.send(
                 "Error processing match results. Please try again.", ephemeral=True
             )
-
-    def match_players_fuzzy(self, extracted_players, db_players):
-        """Match extracted player names with database players using fuzzy matching"""
-        matched = {}
-        used_extracted = set()
-        match_details = []  # For debugging
-
-        for db_player in db_players:
-            best_match = None
-            best_ratio = 0
-            all_ratios = []  # Track all similarity scores for debugging
-
-            for extracted_player in extracted_players:
-                if extracted_player["name"] in used_extracted:
-                    continue
-
-                # Use sequence matcher for fuzzy matching
-                ratio = SequenceMatcher(
-                    None, db_player.lower(), extracted_player["name"].lower()
-                ).ratio()
-
-                all_ratios.append((extracted_player["name"], ratio))
-
-                if ratio > best_ratio and ratio > 0.4:  # Lowered threshold to 40%
-                    best_match = extracted_player
-                    best_ratio = ratio
-
-            if best_match:
-                matched[db_player] = best_match
-                used_extracted.add(best_match["name"])
-                match_details.append(
-                    f"✅ '{db_player}' → '{best_match['name']}' ({best_ratio:.2f})"
-                )
-            else:
-                # Find closest match for debugging
-                if all_ratios:
-                    closest = max(all_ratios, key=lambda x: x[1])
-                    match_details.append(
-                        f"❌ '{db_player}' → closest: '{closest[0]}' ({closest[1]:.2f})"
-                    )
-                else:
-                    match_details.append(
-                        f"❌ '{db_player}' → no extracted players found"
-                    )
-
-        # Log matching details for debugging
-        logger.info(f"Player matching results:\n" + "\n".join(match_details))
-
-        return matched, match_details
 
     def match_all_players(self, extracted_players, db_player_names):
         """Match all database players against all extracted players regardless of team"""
@@ -548,7 +586,7 @@ Extract player names EXACTLY as shown. Pay attention to special characters, numb
 
             await User.update_stats(discord_id, kills, deaths, points_change, won)
 
-    async def send_final_embed(
+    async def send_final_results_image(
         self,
         interaction,
         target_channel_id,
@@ -558,55 +596,87 @@ Extract player names EXACTLY as shown. Pay attention to special characters, numb
         t_score,
         match_data,
     ):
-        """Send final results embed to target channel"""
+        """Generate and send final results as an image to target channel"""
         try:
+            import os
+            import tempfile
+            from jinja2 import Environment, FileSystemLoader
+            from html2image import Html2Image
+            from datetime import datetime
+
             target_channel = interaction.guild.get_channel(target_channel_id)
             if not target_channel:
                 logger.error(f"Target channel {target_channel_id} not found")
                 return
 
-            # Create embed
-            embed = discord.Embed(
-                title="🏆 Match Results",
-                description=f"**Map:** {match_data.get('map', 'Unknown')}\n**Match ID:** {match_data['match_id']}",
-                color=0x00FF00,
-                timestamp=datetime.now(),
+            # Prepare template variables
+            ct_won = ct_score > t_score
+            winner = "Counter-Terrorists" if ct_won else "Terrorists"
+            current_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+            # Ensure all players have assists field (for backward compatibility)
+            for player in ct_team + t_team:
+                if "assists" not in player:
+                    player["assists"] = 0
+
+            template_vars = {
+                "match_id": match_data["match_id"],
+                "map_name": match_data.get("map", "Unknown"),
+                "ct_score": ct_score,
+                "t_score": t_score,
+                "ct_team": ct_team,
+                "t_team": t_team,
+                "ct_won": ct_won,
+                "winner": winner,
+                "current_date": current_date,
+            }
+
+            # Render HTML with Jinja2
+            template_dir = os.path.dirname(
+                os.path.dirname(__file__)
+            )  # Go up from cogs/ to project root
+            env = Environment(loader=FileSystemLoader(template_dir))
+            template = env.get_template("scoreboard_results_template.html")
+            html_content = template.render(**template_vars)
+
+            # Render HTML to image
+            hti = Html2Image(output_path=tempfile.gettempdir())
+            image_path = os.path.join(
+                tempfile.gettempdir(),
+                f"scoreboard_results_{match_data['match_id']}.png",
+            )
+            hti.screenshot(
+                html_str=html_content,
+                save_as=os.path.basename(image_path),
+                size=(840, 1000),  # Adjusted size for scoreboard results
             )
 
-            # CT Team field
-            ct_text = f"**Score: {ct_score}**\n"
-            for player in ct_team:
-                points_display = (
-                    f"+{player['points_received']}"
-                    if player["points_received"] > 0
-                    else str(player["points_received"])
-                )
-                ct_text += f"`{player['nickname']}` - K:{player['kills']} D:{player['deaths']} ({points_display} pts)\n"
+            # Upload image to Discord
+            file = discord.File(image_path, filename="scoreboard_results.png")
+            embed = discord.Embed(
+                title=f"🏆 Match {match_data['match_id']} Results", color=0x00FF00
+            )
+            embed.set_image(url="attachment://scoreboard_results.png")
+            embed.set_footer(text=f"Results processed at {current_date}")
 
-            embed.add_field(name="🔵 Counter-Terrorists", value=ct_text, inline=True)
+            await target_channel.send(embed=embed, file=file)
 
-            # T Team field
-            t_text = f"**Score: {t_score}**\n"
-            for player in t_team:
-                points_display = (
-                    f"+{player['points_received']}"
-                    if player["points_received"] > 0
-                    else str(player["points_received"])
-                )
-                t_text += f"`{player['nickname']}` - K:{player['kills']} D:{player['deaths']} ({points_display} pts)\n"
-
-            embed.add_field(name="🔴 Terrorists", value=t_text, inline=True)
-
-            # Winner field
-            winner = "Counter-Terrorists" if ct_score > t_score else "Terrorists"
-            embed.add_field(name="🎉 Winner", value=winner, inline=False)
-
-            embed.set_footer(text="Results processed automatically")
-
-            await target_channel.send(embed=embed)
+            # Clean up the temporary file
+            try:
+                os.remove(image_path)
+            except Exception:
+                pass
 
         except Exception as e:
-            logger.error(f"Error sending final embed: {e}")
+            logger.error(f"Error sending final results image: {e}")
+            # Fallback to text message if image generation fails
+            winner = "Counter-Terrorists" if ct_score > t_score else "Terrorists"
+            fallback_msg = f"🏆 **Match {match_data['match_id']} Results**\n"
+            fallback_msg += f"**Map:** {match_data.get('map', 'Unknown')}\n"
+            fallback_msg += f"**Score:** {ct_score} - {t_score}\n"
+            fallback_msg += f"**Winner:** {winner}\n\n"
+            fallback_msg += "*(Image generation failed - showing text summary)*"
+            await target_channel.send(fallback_msg)
 
 
 class SubmitScoreboardView(discord.ui.View):
@@ -614,9 +684,7 @@ class SubmitScoreboardView(discord.ui.View):
         super().__init__(timeout=None)
         self.target_channel_id = target_channel_id
 
-    @discord.ui.button(
-        label="Submit Scoreboard", style=discord.ButtonStyle.primary, emoji="📊"
-    )
+    @discord.ui.button(label="Submit Results", style=discord.ButtonStyle.primary)
     async def submit_scoreboard(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
@@ -650,7 +718,7 @@ class Scoreboard(commands.Cog):
         embed = discord.Embed(
             title="📊 Scoreboard Submission",
             description=f"Scoreboard results will be posted to {target_channel.mention}",
-            color=0x0099FF,
+            color=0xB2FA19,
         )
         embed.add_field(
             name="How to submit:",
