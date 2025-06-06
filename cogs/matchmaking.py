@@ -1065,8 +1065,12 @@ class Matchmaking(commands.Cog):
                     logger.error(f"Failed to delete old lobby message: {e}")
             lobby["message"] = await text.send(embed=embed)
         else:
-            embed = lobby["message"].embeds[0]
-            embed.description = f"Players in Queue: {len(lobby['players'])}/4\nPhase: Waiting for players..."
+            # Update existing message with proper waiting phase embed properties
+            embed = discord.Embed(
+                title="LOBBY STATUS",
+                description=f"Players in Queue: {len(lobby['players'])}/4\nPhase: Waiting for players...",
+                color=EMBED_COLORS["waiting"],
+            )
             await lobby["message"].edit(embed=embed, view=None)
         if hasattr(lobby, "_just_finalized"):
             del lobby._just_finalized  # Save lobby state after reset
@@ -1831,6 +1835,8 @@ class Matchmaking(commands.Cog):
                     points = user_data.get("points", 0)
                     kills = user_data.get("kills", 0)
                     deaths = user_data.get("deaths", 0)
+                    wins = user_data.get("wins", 0)
+                    losses = user_data.get("loses", 0)
 
                     # Calculate K/D ratio with proper handling for zero deaths
                     if deaths == 0:
@@ -1841,7 +1847,19 @@ class Matchmaking(commands.Cog):
                     # Format K/D ratio to 2 decimal places
                     kd_formatted = f"{kd_ratio:.2f}"
 
-                    description = f"Points: {points} | K/D: {kd_formatted}"
+                    # Calculate average kills per match
+                    total_matches = wins + losses
+                    if total_matches == 0:
+                        avg_kills = 0.0
+                    else:
+                        avg_kills = kills / total_matches
+
+                    # Format average kills to 1 decimal place
+                    avg_formatted = f"{avg_kills:.1f}"
+
+                    description = (
+                        f"Points: {points} | K/D: {kd_formatted} | AVG {avg_formatted}"
+                    )
                 else:
                     # Fallback if no data found
                     description = "No stats available"
