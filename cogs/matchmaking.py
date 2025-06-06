@@ -96,12 +96,13 @@ class Matchmaking(commands.Cog):
                 if not guild.me.guild_permissions.manage_channels:
                     raise ValueError(
                         "Bot doesn't have permission to manage channels in this server."
-                    )  # Set up permission overwrites - everyone can see, only specific role can join
+                    )
+                # Set up permission overwrites - everyone can see, only specific role can join
                 overwrites = {
                     guild.default_role: discord.PermissionOverwrite(
                         view_channel=True,  # Allow everyone to see
                         connect=False,  # Deny @everyone from connecting
-                        send_messages=True,  # Allow everyone to read/send messages
+                        send_messages=False,  # Prevent everyone from sending messages
                         read_messages=True,
                     ),
                     guild.me: discord.PermissionOverwrite(
@@ -118,16 +119,16 @@ class Matchmaking(commands.Cog):
                     overwrites[lobby_role] = discord.PermissionOverwrite(
                         view_channel=True,
                         connect=False,  # Deny connection when locked (even for role holders)
-                        send_messages=True,
+                        send_messages=False,  # Prevent role holders from sending messages
                         read_messages=True,
-                    )  # Locked: Can see but cannot connect
+                    )  # Locked: Can see but cannot connect or send messages
                 else:
                     overwrites[lobby_role] = discord.PermissionOverwrite(
                         view_channel=True,
                         connect=True,  # Only this role can connect when unlocked
-                        send_messages=True,
+                        send_messages=False,  # Prevent role holders from sending messages
                         read_messages=True,
-                    )  # Unlocked: Role holders can connect
+                    )  # Unlocked: Role holders can connect but not send messages
 
                 # Allow administrators to access lobbies
                 for role in guild.roles:
@@ -135,7 +136,7 @@ class Matchmaking(commands.Cog):
                         overwrites[role] = discord.PermissionOverwrite(
                             view_channel=True,
                             connect=True,
-                            send_messages=True,
+                            send_messages=True,  # Administrators can send messages
                             read_messages=True,
                         )
 
@@ -1929,14 +1930,23 @@ class Matchmaking(commands.Cog):
                         )
                         continue
 
-                    # Update voice channel permissions
+                    # Update voice and text channel permissions
                     voice_channel = lobby.get("voice")
+                    text_channel = lobby.get("text")
                     if voice_channel:
                         await voice_channel.set_permissions(
                             lobby_role,
                             view_channel=True,
                             connect=False,  # Remove connect permission
-                            send_messages=True,
+                            send_messages=False,  # Prevent sending messages in text
+                            read_messages=True,
+                            reason="Lobbies locked by administrator",
+                        )
+                    if text_channel:
+                        await text_channel.set_permissions(
+                            lobby_role,
+                            view_channel=True,
+                            send_messages=False,  # Prevent sending messages in text
                             read_messages=True,
                             reason="Lobbies locked by administrator",
                         )
@@ -2028,14 +2038,23 @@ class Matchmaking(commands.Cog):
                         )
                         continue
 
-                    # Update voice channel permissions
+                    # Update voice and text channel permissions
                     voice_channel = lobby.get("voice")
+                    text_channel = lobby.get("text")
                     if voice_channel:
                         await voice_channel.set_permissions(
                             lobby_role,
                             view_channel=True,
                             connect=True,  # Restore connect permission
-                            send_messages=True,
+                            send_messages=False,  # Still prevent sending messages in text
+                            read_messages=True,
+                            reason="Lobbies unlocked by administrator",
+                        )
+                    if text_channel:
+                        await text_channel.set_permissions(
+                            lobby_role,
+                            view_channel=True,
+                            send_messages=False,  # Still prevent sending messages in text
                             read_messages=True,
                             reason="Lobbies unlocked by administrator",
                         )
@@ -2046,7 +2065,7 @@ class Matchmaking(commands.Cog):
             # Create success embed
             embed = discord.Embed(
                 title="🔓 Lobbies Unlocked Successfully",
-                description="All lobbies have been unlocked. Registered players now have full access to lobby voice channels.",
+                description="All lobbies have been unlocked. Registered players now have full voice access to lobby channels.",
                 color=discord.Color.green(),
             )
             embed.add_field(
