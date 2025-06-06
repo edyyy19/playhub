@@ -62,6 +62,20 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
+        # Attempt to atomically lock the match for submission
+        submission_locked = await Match.try_lock_for_submission(
+            match_id_int, str(interaction.user.id)
+        )
+
+        if not submission_locked:
+            embed = discord.Embed(
+                title="❌ Submission In Progress",
+                description="This match is already being processed by another player or has been submitted. Please try again in a moment.",
+                color=0xFF4444,
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
         # Check if user participated in the match
         user_discord_id = str(interaction.user.id)
         ct_team_data = json.loads(match_data.get("ct_team", "[]"))
@@ -159,6 +173,15 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
             )
 
         except asyncio.TimeoutError:
+            # Release the submission lock since user didn't upload in time
+            try:
+                await Match.release_submission_lock(match_data["match_id"])
+                logger.info(
+                    f"Released submission lock for match {match_data['match_id']} due to timeout"
+                )
+            except Exception as lock_error:
+                logger.error(f"Failed to release submission lock: {lock_error}")
+
             await interaction.followup.send(
                 "Timeout: No screenshot uploaded within 60 seconds.", ephemeral=True
             )
@@ -264,6 +287,16 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
 
         except Exception as e:
             logger.error(f"Error processing scoreboard image: {e}")
+
+            # Release the submission lock since an error occurred
+            try:
+                await Match.release_submission_lock(match_data["match_id"])
+                logger.info(
+                    f"Released submission lock for match {match_data['match_id']} due to an processing error"
+                )
+            except Exception as lock_error:
+                logger.error(f"Failed to release submission lock: {lock_error}")
+
             await interaction.followup.send(
                 "Error processing the scoreboard image. Please try again.",
                 ephemeral=True,
@@ -460,7 +493,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                     )
 
             # Update database
-            await Match.update_results(
+            await Match.complete_submission(
                 match_data["match_id"],
                 updated_ct_team,
                 updated_t_team,
@@ -523,6 +556,16 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
 
         except Exception as e:
             logger.error(f"Error validating and updating match: {e}")
+
+            # Release the submission lock since an error occurred
+            try:
+                await Match.release_submission_lock(match_data["match_id"])
+                logger.info(
+                    f"Released submission lock for match {match_data['match_id']} due to error"
+                )
+            except Exception as lock_error:
+                logger.error(f"Failed to release submission lock: {lock_error}")
+
             await interaction.followup.send(
                 "Error processing match results. Please try again.", ephemeral=True
             )

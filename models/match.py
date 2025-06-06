@@ -2,7 +2,10 @@ from config import Config
 from datetime import datetime
 import json
 import asyncio
+import logging
 from models.user import User
+
+logger = logging.getLogger(__name__)
 
 
 class Match:
@@ -126,3 +129,103 @@ class Match:
             )
 
         return await loop.run_in_executor(None, db_update)
+
+    @classmethod
+    async def try_lock_for_submission(cls, match_id: int, submitter_discord_id: str):
+        """
+        Atomically attempt to lock a match for submission.
+        Returns True if successfully locked, False if already submitted or locked.
+        """
+        loop = asyncio.get_running_loop()
+
+        def db_atomic_lock():
+            try:
+                # Use PostgreSQL's UPDATE with WHERE condition to ensure atomicity
+                # This will only update if results_submitted is still False
+                response = (
+                    Config.supabase()
+                    .table(cls.TABLE)
+                    .update(
+                        {
+                            "submission_in_progress": True,
+                            "submitter_discord_id": submitter_discord_id,
+                            "submission_started_at": datetime.now().isoformat(),
+                        }
+                    )
+                    .eq("match_id", match_id)
+                    .eq(
+                        "results_submitted", False
+                    )  # Only update if not already submitted
+                    .is_(
+                        "submission_in_progress", None
+                    )  # Only if not already being processed
+                    .execute()
+                )
+
+                # Return True if exactly one row was updated (successful lock)
+                return len(response.data) == 1
+
+            except Exception as e:
+                logger.error(f"Error attempting to lock match {match_id}: {e}")
+                return False
+
+        return await loop.run_in_executor(None, db_atomic_lock)
+
+    @classmethod
+    async def complete_submission(
+        cls, match_id: int, ct_team: list, t_team: list, ct_score: int, t_score: int
+    ):
+        """
+        Complete the submission process after successful lock.
+        This should only be called after try_lock_for_submission returns True.
+        """
+        loop = asyncio.get_running_loop()
+
+        def db_complete():
+            # Include scores within the team data structure
+            ct_team_with_score = {"players": ct_team, "score": ct_score}
+            t_team_with_score = {"players": t_team, "score": t_score}
+
+            return (
+                Config.supabase()
+                .table(cls.TABLE)
+                .update(
+                    {
+                        "ct_team": json.dumps(ct_team_with_score),
+                        "t_team": json.dumps(t_team_with_score),
+                        "results_submitted": True,
+                        "ended_at": datetime.now().isoformat(),
+                        "submission_in_progress": None,  # Clear the lock
+                        "submitter_discord_id": None,  # Clear submitter info
+                        "submission_started_at": None,  # Clear start time
+                    }
+                )
+                .eq("match_id", match_id)
+                .execute()
+            )
+
+        return await loop.run_in_executor(None, db_complete)
+
+    @classmethod
+    async def release_submission_lock(cls, match_id: int):
+        """
+        Release a submission lock in case of error during processing.
+        """
+        loop = asyncio.get_running_loop()
+
+        def db_release():
+            return (
+                Config.supabase()
+                .table(cls.TABLE)
+                .update(
+                    {
+                        "submission_in_progress": None,
+                        "submitter_discord_id": None,
+                        "submission_started_at": None,
+                    }
+                )
+                .eq("match_id", match_id)
+                .execute()
+            )
+
+        return await loop.run_in_executor(None, db_release)
