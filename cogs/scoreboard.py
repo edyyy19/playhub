@@ -103,6 +103,15 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
                 break
 
         if not user_participated:
+            # Release the submission lock since user is not authorized
+            try:
+                await Match.release_submission_lock(match_id_int)
+                logger.info(
+                    f"Released submission lock for match {match_id_int} - user {user_discord_id} not authorized"
+                )
+            except Exception as lock_error:
+                logger.error(f"Failed to release submission lock: {lock_error}")
+
             await interaction.followup.send(
                 "You are not authorized to submit results for this match.",
                 ephemeral=True,
