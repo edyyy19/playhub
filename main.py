@@ -35,6 +35,7 @@ async def on_ready():
             await bot.load_extension("cogs.leaderboard")
             await bot.load_extension("cogs.profile")
             await bot.load_extension("cogs.scoreboard")
+            await bot.load_extension("cogs.levels")
             synced = await bot.tree.sync()
             logger.info(f"Successfully synced {len(synced)} commands")
             for cmd in synced:

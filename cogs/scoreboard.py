@@ -322,6 +322,9 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
     ):
         """Validate extracted data against database and update match results"""
         try:
+            # Store guild ID for later use in role management
+            self._guild_id = interaction.guild.id
+
             # Check game detection confidence
             game_detected = extracted_data.get("game_detected", "unknown")
             confidence = extracted_data.get("confidence", 0.0)
@@ -441,7 +444,20 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                     db_player["kills"] = screenshot_player["kills"]
                     db_player["assists"] = screenshot_player.get("assists", 0)
                     db_player["deaths"] = screenshot_player["deaths"]
-                    db_player["points_received"] = 20 if ct_team_won else -10
+
+                    # Calculate level-based points for CT team
+                    discord_id = int(db_player["discord_id"])
+                    current_points = await self.get_player_current_points(discord_id)
+                    is_challenger = await self.check_challenger_status(
+                        discord_id, current_points
+                    )
+                    ct_won = ct_team_won
+                    db_player[
+                        "points_received"
+                    ] = await self.calculate_level_based_points(
+                        discord_id, ct_won, is_challenger
+                    )
+
                     updated_ct_team.append(db_player)
 
             # Process T team players from screenshot
@@ -462,9 +478,20 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                     db_player["kills"] = screenshot_player["kills"]
                     db_player["assists"] = screenshot_player.get("assists", 0)
                     db_player["deaths"] = screenshot_player["deaths"]
-                    db_player["points_received"] = (
-                        20 if not ct_team_won else -10
-                    )  # T team gets opposite points
+
+                    # Calculate level-based points for T team
+                    discord_id = int(db_player["discord_id"])
+                    current_points = await self.get_player_current_points(discord_id)
+                    is_challenger = await self.check_challenger_status(
+                        discord_id, current_points
+                    )
+                    t_won = not ct_team_won
+                    db_player[
+                        "points_received"
+                    ] = await self.calculate_level_based_points(
+                        discord_id, t_won, is_challenger
+                    )
+
                     updated_t_team.append(db_player)
 
             # Add missing players with default stats to maintain team balance
@@ -629,7 +656,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
         return matched, match_details
 
     async def update_user_stats(self, all_players):
-        """Update user statistics in database"""
+        """Update user statistics in database and manage level roles"""
         for player in all_players:
             discord_id = int(player["discord_id"])
             kills = player["kills"]
@@ -637,7 +664,14 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             points_change = player["points_received"]
             won = points_change > 0
 
-            await User.update_stats(discord_id, kills, deaths, points_change, won)
+            # Get the guild object from the interaction context
+            guild = None
+            if hasattr(self, "bot") and hasattr(self, "_guild_id"):
+                guild = self.bot.get_guild(self._guild_id)
+
+            await User.update_stats_with_roles(
+                discord_id, kills, deaths, points_change, won, guild
+            )
 
     async def send_final_results_image(
         self,
@@ -730,6 +764,45 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             fallback_msg += f"**Winner:** {winner}\n\n"
             fallback_msg += "*(Image generation failed - showing text summary)*"
             await target_channel.send(fallback_msg)
+
+    async def get_player_current_points(self, discord_id):
+        """Get current points for a player from database"""
+        try:
+            user_data = await User.find(discord_id)
+            return user_data.get("points", 0) if user_data else 0
+        except Exception as e:
+            logger.error(f"Error getting points for {discord_id}: {e}")
+            return 0
+
+    async def calculate_level_based_points(
+        self, discord_id, is_win, is_challenger=False
+    ):
+        """Calculate points based on player's current level and win/loss"""
+        try:
+            # Import here to avoid circular imports
+            from cogs.levels import LevelsCog
+
+            current_points = await self.get_player_current_points(discord_id)
+
+            if is_challenger:
+                return LevelsCog.get_challenger_point_delta(is_win)
+            else:
+                return LevelsCog.get_point_delta(current_points, is_win)
+        except Exception as e:
+            logger.error(f"Error calculating level-based points for {discord_id}: {e}")
+            # Fallback to old system
+            return 20 if is_win else -10
+
+    async def check_challenger_status(self, discord_id, current_points):
+        """Check if player is currently in Challenger tier"""
+        try:
+            from cogs.levels import LevelsCog
+
+            levels_cog = LevelsCog(None)
+            return await levels_cog.is_challenger_eligible(discord_id, current_points)
+        except Exception as e:
+            logger.error(f"Error checking challenger status for {discord_id}: {e}")
+            return False
 
 
 class SubmitScoreboardView(discord.ui.View):
