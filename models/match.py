@@ -229,3 +229,92 @@ class Match:
             )
 
         return await loop.run_in_executor(None, db_release)
+
+    @classmethod
+    async def get_user_matches(cls, discord_id: str, limit: int = 5):
+        """Get the last N matches for a specific user"""
+        loop = asyncio.get_running_loop()
+
+        def db_select():
+            try:
+                # Query matches where the user appears in either CT or T team
+                response = (
+                    Config.supabase()
+                    .table(cls.TABLE)
+                    .select("*")
+                    .eq("results_submitted", True)  # Only get completed matches
+                    .not_.is_("ended_at", None)  # Make sure match has ended
+                    .order("ended_at", desc=True)  # Most recent first
+                    .execute()
+                )
+
+                # Filter matches where the user participated
+                user_matches = []
+                for match in response.data:
+                    ct_team_data = json.loads(match.get("ct_team", "[]"))
+                    t_team_data = json.loads(match.get("t_team", "[]"))
+
+                    # Handle both old format (just players array) and new format (with players and score)
+                    if isinstance(ct_team_data, list):
+                        ct_team = ct_team_data
+                    else:
+                        ct_team = ct_team_data.get("players", [])
+
+                    if isinstance(t_team_data, list):
+                        t_team = t_team_data
+                    else:
+                        t_team = t_team_data.get("players", [])
+
+                    # Check if user is in either team
+                    user_in_match = False
+                    for player in ct_team + t_team:
+                        if player.get("discord_id") == discord_id:
+                            user_in_match = True
+                            break
+
+                    if user_in_match:
+                        # Extract final scores
+                        ct_score = 0
+                        t_score = 0
+
+                        if isinstance(ct_team_data, dict) and "score" in ct_team_data:
+                            ct_score = ct_team_data["score"]
+                        if isinstance(t_team_data, dict) and "score" in t_team_data:
+                            t_score = t_team_data["score"]
+
+                        # Add processed match data
+                        match_info = {
+                            "match_id": match.get("match_id"),
+                            "map": match.get("map"),
+                            "ended_at": match.get("ended_at"),
+                            "ct_score": ct_score,
+                            "t_score": t_score,
+                            "user_team": "CT"
+                            if any(p.get("discord_id") == discord_id for p in ct_team)
+                            else "T",
+                            "user_won": (
+                                ct_score > t_score
+                                and any(
+                                    p.get("discord_id") == discord_id for p in ct_team
+                                )
+                            )
+                            or (
+                                t_score > ct_score
+                                and any(
+                                    p.get("discord_id") == discord_id for p in t_team
+                                )
+                            ),
+                        }
+                        user_matches.append(match_info)
+
+                        # Stop when we have enough matches
+                        if len(user_matches) >= limit:
+                            break
+
+                return user_matches
+
+            except Exception as e:
+                logger.error(f"Error fetching user matches: {e}")
+                return []
+
+        return await loop.run_in_executor(None, db_select)

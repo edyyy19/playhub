@@ -2,7 +2,13 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from models.user import User
+from models.match import Match
 import logging
+import datetime
+import os
+import tempfile
+from jinja2 import Environment, FileSystemLoader
+from html2image import Html2Image
 
 logger = logging.getLogger(__name__)
 
@@ -259,8 +265,37 @@ class Profile(commands.Cog):
             else:
                 win_rate = "N/A"
 
+            # Get last 5 matches for the user
+            recent_matches = await Match.get_user_matches(str(target_user.id), limit=5)
+
+            # Format matches for template
+            formatted_matches = []
+            for match in recent_matches:
+                # Format the date
+                match_date = "Unknown"
+                if match.get("ended_at"):
+                    try:
+                        from datetime import datetime
+
+                        dt = datetime.fromisoformat(
+                            match["ended_at"].replace("Z", "+00:00")
+                        )
+                        match_date = dt.strftime("%d/%m/%Y")
+                    except:
+                        match_date = "Unknown"
+
+                formatted_match = {
+                    "match_id": match.get("match_id", "Unknown"),
+                    "map": match.get("map", "Unknown"),
+                    "date": match_date,
+                    "final_score": f"{match.get('ct_score', 0)}-{match.get('t_score', 0)}",
+                    "user_team": match.get("user_team", "Unknown"),
+                    "result": "W" if match.get("user_won", False) else "L",
+                }
+                formatted_matches.append(formatted_match)
+
             # Prepare template variables
-            current_date = datetime.datetime.now().strftime("%H:%M | %d/%m/%Y")
+            current_date = datetime.now().strftime("%H:%M | %d/%m/%Y")
             registered_date = (
                 user_data.get("registered_at", "Unknown")[:10]
                 if user_data.get("registered_at")
@@ -282,7 +317,10 @@ class Profile(commands.Cog):
                 "registered_date": registered_date,
                 "discord_id": target_user.id,
                 "current_date": current_date,
-            }  # Render HTML with Jinja2
+                "recent_matches": formatted_matches,  # Add match history
+            }
+
+            # Render HTML with Jinja2
             template_dir = os.path.dirname(
                 os.path.dirname(__file__)
             )  # Go up from cogs/ to project root

@@ -106,6 +106,70 @@
             color: #aaa;
             font-size: 0.9em;
         }
+
+        .matches-section {
+            background: #181c20;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 24px;
+        }
+
+        .match-row {
+            display: grid;
+            grid-template-columns: 80px 120px 100px 90px 60px 60px;
+            gap: 12px;
+            padding: 12px 8px;
+            border-bottom: 1px solid #2a2e32;
+            align-items: center;
+        }
+
+        .match-row:last-child {
+            border-bottom: none;
+        }
+
+        .match-header {
+            display: grid;
+            grid-template-columns: 80px 120px 100px 90px 60px 60px;
+            gap: 12px;
+            padding: 8px;
+            margin-bottom: 12px;
+            border-bottom: 2px solid #ffd700;
+        }
+
+        .match-header span {
+            color: #ffd700;
+            font-weight: bold;
+            font-size: 0.9em;
+            text-align: center;
+        }
+
+        .match-cell {
+            color: #fff;
+            font-size: 0.9em;
+            text-align: center;
+        }
+
+        .match-id {
+            color: #b2fa19;
+            font-weight: bold;
+        }
+
+        .match-win {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+
+        .match-loss {
+            color: #f44336;
+            font-weight: bold;
+        }
+
+        .no-matches {
+            text-align: center;
+            color: #aaa;
+            padding: 20px;
+            font-style: italic;
+        }
     </style>
 </head>
 
@@ -175,6 +239,33 @@
                     <span class="stat-value">{{ discord_id }}</span>
                 </div>
             </div>
+        </div>
+
+        <div class="matches-section">
+            <div class="section-title">Recent Matches (Last 5)</div>
+            {% if recent_matches %}
+            <div class="match-header">
+                <span>Match ID</span>
+                <span>Map</span>
+                <span>Final Score</span>
+                <span>Date</span>
+                <span>Team</span>
+                <span>Result</span>
+            </div>
+            {% for match in recent_matches %}
+            <div class="match-row">
+                <div class="match-cell match-id">#{{ match.match_id }}</div>
+                <div class="match-cell">{{ match.map }}</div>
+                <div class="match-cell">{{ match.final_score }}</div>
+                <div class="match-cell">{{ match.date }}</div>
+                <div class="match-cell">{{ match.user_team }}</div>
+                <div class="match-cell {% if match.result == 'W' %}match-win{% else %}match-loss{% endif %}">{{
+                    match.result }}</div>
+            </div>
+            {% endfor %}
+            {% else %}
+            <div class="no-matches">No recent matches found</div>
+            {% endif %}
         </div>
 
         <div class="footer">
