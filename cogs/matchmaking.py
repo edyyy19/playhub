@@ -6,6 +6,7 @@ from models.match import Match
 from models.lobby_state import LobbyState
 from models.timeout import timeout_manager
 from models.user import User
+from cogs.levels import LevelsCog
 import random
 import asyncio
 import logging
@@ -1861,15 +1862,22 @@ class Matchmaking(commands.Cog):
                     description = (
                         f"Points: {points} | K/D: {kd_formatted} | AVG {avg_formatted}"
                     )
+
+                    # Get level emoji based on points
+                    level_emoji = LevelsCog.get_level_emoji(points)
                 else:
                     # Fallback if no data found
                     description = "No stats available"
+                    level_emoji = LevelsCog.get_level_emoji(
+                        0
+                    )  # Default to level 1 emoji
 
                 options.append(
                     discord.SelectOption(
                         label=member.display_name,
                         value=str(member.id),
                         description=description,
+                        emoji=level_emoji,
                     )
                 )
             except Exception as e:
@@ -1880,6 +1888,7 @@ class Matchmaking(commands.Cog):
                         label=member.display_name,
                         value=str(member.id),
                         description="Stats unavailable",
+                        emoji=LevelsCog.get_level_emoji(0),  # Default to level 1 emoji
                     )
                 )
         return options

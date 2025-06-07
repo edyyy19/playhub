@@ -11,9 +11,8 @@ logger = logging.getLogger(__name__)
 
 class LevelsCog(commands.Cog):
     def __init__(self, bot):
-        self.bot = bot
+        self.bot = bot  # Level configuration with point ranges and colors
 
-    # Level configuration with point ranges and colors
     LEVEL_CONFIG = {
         1: {
             "min_points": 0,
@@ -21,6 +20,7 @@ class LevelsCog(commands.Cog):
             "color": 0xBBBBBB,
             "win_points": 70,
             "loss_points": -5,
+            "emoji": "<:level1:1380672303360118804>",
         },
         2: {
             "min_points": 501,
@@ -28,6 +28,7 @@ class LevelsCog(commands.Cog):
             "color": 0x4ADE80,
             "win_points": 70,
             "loss_points": -10,
+            "emoji": "<:level2:1380672304928919583>",
         },
         3: {
             "min_points": 751,
@@ -35,6 +36,7 @@ class LevelsCog(commands.Cog):
             "color": 0x4ADE80,
             "win_points": 55,
             "loss_points": -10,
+            "emoji": "<:level3:1380672307034460371>",
         },
         4: {
             "min_points": 901,
@@ -42,6 +44,7 @@ class LevelsCog(commands.Cog):
             "color": 0xF8C627,
             "win_points": 55,
             "loss_points": -13,
+            "emoji": "<:level4:1380672309148516524>",
         },
         5: {
             "min_points": 1051,
@@ -49,6 +52,7 @@ class LevelsCog(commands.Cog):
             "color": 0xF8C627,
             "win_points": 55,
             "loss_points": -20,
+            "emoji": "<:level5:1380672311249600615>",
         },
         6: {
             "min_points": 1201,
@@ -56,6 +60,7 @@ class LevelsCog(commands.Cog):
             "color": 0xF8C627,
             "win_points": 40,
             "loss_points": -24,
+            "emoji": "<:level6:1380672313401540689>",
         },
         7: {
             "min_points": 1351,
@@ -63,6 +68,7 @@ class LevelsCog(commands.Cog):
             "color": 0xF8C627,
             "win_points": 40,
             "loss_points": -28,
+            "emoji": "<:level7:1380672315410350291>",
         },
         8: {
             "min_points": 1531,
@@ -70,6 +76,7 @@ class LevelsCog(commands.Cog):
             "color": 0xFA6E22,
             "win_points": 40,
             "loss_points": -34,
+            "emoji": "<:level8:1380672318195499039>",
         },
         9: {
             "min_points": 1751,
@@ -77,6 +84,7 @@ class LevelsCog(commands.Cog):
             "color": 0xFA6E22,
             "win_points": 30,
             "loss_points": -40,
+            "emoji": "<:level9:1380672319898255450>",
         },
         10: {
             "min_points": 2001,
@@ -84,6 +92,7 @@ class LevelsCog(commands.Cog):
             "color": 0xDD0226,
             "win_points": 20,
             "loss_points": -45,
+            "emoji": "<:level10:1380672321525776485>",
         },
     }
 
@@ -92,6 +101,7 @@ class LevelsCog(commands.Cog):
         "color": 0xDD0226,
         "win_points": 15,
         "loss_points": -48,
+        "emoji": "<:challenger:1380672301129011222>",
     }
 
     @staticmethod
@@ -125,6 +135,21 @@ class LevelsCog(commands.Cog):
             return LevelsCog.CHALLENGER_CONFIG["win_points"]
         else:
             return LevelsCog.CHALLENGER_CONFIG["loss_points"]
+
+    @staticmethod
+    def get_level_emoji(points):
+        """Get the level emoji based on points"""
+        # Check if player is Challenger level
+        if points >= LevelsCog.CHALLENGER_CONFIG["min_points"]:
+            return LevelsCog.CHALLENGER_CONFIG["emoji"]
+
+        # Otherwise, get the regular level emoji
+        for level, config in LevelsCog.LEVEL_CONFIG.items():
+            if config["min_points"] <= points <= config["max_points"]:
+                return config["emoji"]
+
+        # Default to level 10 emoji for points above 2001 but below challenger
+        return LevelsCog.LEVEL_CONFIG[10]["emoji"]
 
     async def get_top_10_players(self):
         """Get the top 10 players by points from database"""
