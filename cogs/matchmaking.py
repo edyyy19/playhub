@@ -801,6 +801,33 @@ class Matchmaking(commands.Cog):
                     f"Error in update_lobby_status for lobby #{lobby.get('lobby_number', 'unknown')}: {e}"
                 )
 
+    async def format_team_list(self, team_members):
+        """Format team list with level emojis for each player"""
+        if not team_members:
+            return "-"
+
+        formatted_players = []
+        for member in team_members:
+            try:
+                # Get user data to determine points
+                user_data = await User.find(member.id)
+                if user_data:
+                    points = user_data.get("points", 0)
+                    level_emoji = LevelsCog.get_level_emoji(points)
+                    formatted_players.append(f"{level_emoji} {member.mention}")
+                else:
+                    # Default emoji if user not found in database
+                    default_emoji = LevelsCog.get_level_emoji(0)
+                    formatted_players.append(f"{default_emoji} {member.mention}")
+            except Exception as e:
+                logger.error(
+                    f"Error getting level emoji for {member.display_name}: {e}"
+                )
+                # Fallback without emoji
+                formatted_players.append(member.mention)
+
+        return "\n".join(formatted_players)
+
     async def start_captain_selection(self, lobby):
         lobby["phase"] = 2
         players = list(lobby["players"])
@@ -811,8 +838,8 @@ class Matchmaking(commands.Cog):
         lobby["available_players"] = [p for p in players if p not in captains]
         lobby["next_pick"] = ct_captain
         # --- New Draft UI ---
-        ct_lines = "\n".join([m.mention for m in lobby["ct_team"]]) or "-"
-        t_lines = "\n".join([m.mention for m in lobby["t_team"]]) or "-"
+        ct_lines = await self.format_team_list(lobby["ct_team"])
+        t_lines = await self.format_team_list(lobby["t_team"])
         desc = (
             f"**Counter-Terrorists**\n{ct_lines}\n\n"
             f"**Terrorists**\n{t_lines}\n\n"
@@ -848,8 +875,8 @@ class Matchmaking(commands.Cog):
                 lobby["available_players"].remove(last_player)
 
             # --- New Draft UI ---
-            ct_lines = "\n".join([m.mention for m in lobby["ct_team"]]) or "-"
-            t_lines = "\n".join([m.mention for m in lobby["t_team"]]) or "-"
+            ct_lines = await self.format_team_list(lobby["ct_team"])
+            t_lines = await self.format_team_list(lobby["t_team"])
             desc = (
                 f"**Counter-Terrorists**\n{ct_lines}\n\n"
                 f"**Terrorists**\n{t_lines}\n\n"
