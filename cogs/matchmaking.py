@@ -91,7 +91,7 @@ class Matchmaking(commands.Cog):
 
                 lobby_number = self.lobby_counter
                 self.lobby_counter += 1
-                category_name = f"{lobby_role_name} | Lobby #{lobby_number}"
+                category_name = f"[5v5] | {lobby_role_name}"
 
                 # Check bot permissions
                 if not guild.me.guild_permissions.manage_channels:
@@ -145,11 +145,11 @@ class Matchmaking(commands.Cog):
                     category_name, overwrites=overwrites
                 )
                 voice = await category.create_voice_channel(
-                    LOBBY_VOICE_NAME, user_limit=4
+                    f"Lobby #{lobby_number}", user_limit=4
                 )
                 text = await category.create_text_channel(LOBBY_TEXT_NAME)
                 embed = discord.Embed(
-                    title="LOBBY STATUS",
+                    title=f"LOBBY #{lobby_number} STATUS",
                     description="Players in Queue: 0/4\nPhase: Waiting for players...",
                     color=EMBED_COLORS["waiting"],
                 )
@@ -759,7 +759,7 @@ class Matchmaking(commands.Cog):
         if lobby["phase"] == 1:
             try:
                 embed = discord.Embed(
-                    title="LOBBY STATUS",
+                    title=f"LOBBY #{lobby.get('lobby_number', 'X')} STATUS",
                     description=f"Players in Queue: {len(lobby['players'])}/4\nPhase: Waiting for players...",
                     color=EMBED_COLORS["waiting"],
                 )
@@ -1083,7 +1083,7 @@ class Matchmaking(commands.Cog):
         # Only create a new waiting embed if this is the first time or after a match (not on every reset)
         if not lobby.get("message") or lobby.pop("just_finalized", False):
             embed = discord.Embed(
-                title="LOBBY STATUS",
+                title=f"LOBBY #{lobby.get('lobby_number', 'X')} STATUS",
                 description=f"Players in Queue: {len(lobby['players'])}/4\nPhase: Waiting for players...",
                 color=EMBED_COLORS["waiting"],
             )
@@ -1096,7 +1096,7 @@ class Matchmaking(commands.Cog):
         else:
             # Update existing message with proper waiting phase embed properties
             embed = discord.Embed(
-                title="LOBBY STATUS",
+                title=f"LOBBY #{lobby.get('lobby_number', 'X')} STATUS",
                 description=f"Players in Queue: {len(lobby['players'])}/4\nPhase: Waiting for players...",
                 color=EMBED_COLORS["waiting"],
             )
