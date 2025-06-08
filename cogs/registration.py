@@ -109,6 +109,17 @@ class RegisterModal(discord.ui.Modal, title="PlayHub Registration"):
 
             await interaction.user.add_roles(role)
 
+            # Assign Level 1 role to new users (they start with 200 points = Level 1)
+            try:
+                from cogs.levels import LevelsCog
+
+                levels_cog = LevelsCog(None)
+                await levels_cog.update_player_roles(
+                    interaction.guild, interaction.user.id, 200
+                )
+            except Exception as e:
+                logger.error(f"Error assigning level role during registration: {e}")
+
             # Create success embed
             embed = discord.Embed(title="✅ Registration Successful", color=EMBED_COLOR)
             embed.add_field(name="Nickname", value=self.nickname.value, inline=True)
@@ -332,6 +343,22 @@ class Registration(commands.Cog):
             else:
                 role_added = False
 
+            # Assign the appropriate level role based on their current points
+            level_role_updated = False
+            try:
+                from cogs.levels import LevelsCog
+
+                levels_cog = LevelsCog(None)
+                current_points = user_data.get(
+                    "points", 200
+                )  # Default to 200 if no points
+                await levels_cog.update_player_roles(
+                    interaction.guild, member.id, current_points
+                )
+                level_role_updated = True
+            except Exception as e:
+                logger.error(f"Error assigning level role during restore_user: {e}")
+
             # Update their nickname if it doesn't match
             nickname_updated = False
             if member.nick != user_data["nickname"]:
@@ -361,6 +388,11 @@ class Registration(commands.Cog):
                 status_text.append("✅ Role added")
             else:
                 status_text.append("✓ Role already present")
+
+            if level_role_updated:
+                status_text.append("✅ Level role updated")
+            else:
+                status_text.append("⚠️ Level role update failed")
 
             if nickname_updated:
                 status_text.append("✅ Nickname updated")
@@ -413,6 +445,20 @@ class Registration(commands.Cog):
                 await member.add_roles(
                     role, reason="Restoring role for returning registered user"
                 )
+
+                # Assign the appropriate level role based on their current points
+                try:
+                    from cogs.levels import LevelsCog
+
+                    levels_cog = LevelsCog(None)
+                    current_points = user_data.get(
+                        "points", 200
+                    )  # Default to 200 if no points
+                    await levels_cog.update_player_roles(
+                        member.guild, member.id, current_points
+                    )
+                except Exception as e:
+                    logger.error(f"Error assigning level role during member join: {e}")
 
                 # Update their nickname to match the database
                 try:
