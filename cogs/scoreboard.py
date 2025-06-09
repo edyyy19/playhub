@@ -24,6 +24,19 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
         super().__init__()
         self.target_channel_id = target_channel_id
 
+    async def _delete_screenshot_safely(self, screenshot_message):
+        """Helper method to safely delete screenshot messages"""
+        if screenshot_message:
+            try:
+                await screenshot_message.delete()
+                logger.info("Deleted screenshot message for failed submission")
+            except discord.NotFound:
+                pass  # Message already deleted
+            except discord.Forbidden:
+                logger.warning("No permission to delete screenshot message")
+            except Exception as e:
+                logger.error(f"Error deleting screenshot message: {e}")
+
     match_id = discord.ui.TextInput(
         label="Match ID",
         placeholder="Enter the match ID...",
@@ -306,6 +319,9 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             except Exception as lock_error:
                 logger.error(f"Failed to release submission lock: {lock_error}")
 
+            # Delete the screenshot since submission failed
+            await self._delete_screenshot_safely(screenshot_message)
+
             await interaction.followup.send(
                 "Error processing the scoreboard image. Please try again.",
                 ephemeral=True,
@@ -330,6 +346,18 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             confidence = extracted_data.get("confidence", 0.0)
 
             if game_detected != "standoff2" or confidence < 0.5:
+                # Release the submission lock since game detection failed
+                try:
+                    await Match.release_submission_lock(match_data["match_id"])
+                    logger.info(
+                        f"Released submission lock for match {match_data['match_id']} due to game detection failure"
+                    )
+                except Exception as lock_error:
+                    logger.error(f"Failed to release submission lock: {lock_error}")
+
+                # Delete the screenshot since submission failed
+                await self._delete_screenshot_safely(screenshot_message)
+
                 await interaction.followup.send(
                     f"Screenshot validation failed:\n"
                     f"Game detected: {game_detected}\n"
@@ -379,23 +407,118 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             match_rate = matched_count / total_db_players if total_db_players > 0 else 0
 
             if match_rate < 0.5:
-                error_msg = f"Could not match enough players:\n"
-                error_msg += f"Found {matched_count}/{total_db_players} players ({match_rate:.1%})\n"
-                error_msg += f"Need at least 50% to validate match.\n\n"
-                error_msg += "**Expected Players:**\n"
-                error_msg += f"{', '.join([p['nickname'] for p in all_db_players])}\n\n"
-                error_msg += "**Extracted Players:**\n"
-                extracted_names = [p["name"] for p in all_extracted_players]
-                error_msg += (
-                    f"{', '.join(extracted_names) if extracted_names else 'None'}\n\n"
-                )
-                error_msg += "**Matching Details:**\n"
-                error_msg += "\n".join(match_details)
+                # Release the submission lock since not enough players matched
+                try:
+                    await Match.release_submission_lock(match_data["match_id"])
+                    logger.info(
+                        f"Released submission lock for match {match_data['match_id']} due to insufficient player matches ({match_rate:.1%})"
+                    )
+                except Exception as lock_error:
+                    logger.error(f"Failed to release submission lock: {lock_error}")
 
-                await interaction.followup.send(
-                    f"```\n{error_msg}\n```\nPlease ensure the scoreboard shows players from your match.",
-                    ephemeral=True,
+                # Delete the screenshot since submission failed
+                await self._delete_screenshot_safely(screenshot_message)
+
+                # Create embed for player matching error
+                embed = discord.Embed(
+                    title="❌ Insufficient Player Matches",
+                    description=f"Found {matched_count}/{total_db_players} players ({match_rate:.1%}) - Need at least 50% to validate match.",
+                    color=0xFF0000,  # Red color
                 )
+
+                # Expected players field
+                expected_players = ", ".join([p["nickname"] for p in all_db_players])
+                embed.add_field(
+                    name="Expected Players", value=expected_players, inline=False
+                )
+
+                # Extracted players field
+                extracted_names = [p["name"] for p in all_extracted_players]
+                extracted_players = (
+                    ", ".join(extracted_names) if extracted_names else "None"
+                )
+                embed.add_field(
+                    name="Extracted Players", value=extracted_players, inline=False
+                )
+
+                # Matching details field
+                matching_details = (
+                    "\n".join(match_details) if match_details else "No matches found"
+                )
+                embed.add_field(
+                    name="Matching Details",
+                    value=f"```\n{matching_details}\n```",
+                    inline=False,
+                )
+
+                # Solution field
+                embed.add_field(
+                    name="💡 Solution",
+                    value="Please ensure the scoreboard shows players from your match with clear, readable names.",
+                    inline=False,
+                )
+
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Validate team structure - ensure teammates stay together
+            team_validation = self.validate_team_structure(
+                ct_team, t_team, extracted_data, matched_players
+            )
+
+            if not team_validation["overall_valid"]:
+                # Release the submission lock since team validation failed
+                try:
+                    await Match.release_submission_lock(match_data["match_id"])
+                    logger.info(
+                        f"Released submission lock for match {match_data['match_id']} due to team validation failure"
+                    )
+                except Exception as lock_error:
+                    logger.error(f"Failed to release submission lock: {lock_error}")
+
+                # Delete the screenshot since submission failed
+                await self._delete_screenshot_safely(screenshot_message)
+
+                # Create embed for team validation failure
+                error_embed = discord.Embed(
+                    title="❌ Team Structure Validation Failed",
+                    description="The team structure in the screenshot does not match the expected team structure for this match.",
+                    color=0xFF4444,
+                )
+
+                # Show expected team structure
+                expected_ct = [p["nickname"] for p in ct_team]
+                expected_t = [p["nickname"] for p in t_team]
+
+                error_embed.add_field(
+                    name="📋 Expected Team Structure",
+                    value=f"**Team 1:** {', '.join(expected_ct)}\n**Team 2:** {', '.join(expected_t)}",
+                    inline=False,
+                )
+
+                # Show actual team structure from screenshot
+                actual_ct = []
+                actual_t = []
+
+                for assignment in team_validation["ct_assignments"]:
+                    if assignment["screenshot_side"] == "ct_side":
+                        actual_ct.append(assignment["db_name"])
+                    else:
+                        actual_t.append(assignment["db_name"])
+
+                for assignment in team_validation["t_assignments"]:
+                    if assignment["screenshot_side"] == "ct_side":
+                        actual_ct.append(assignment["db_name"])
+                    else:
+                        actual_t.append(assignment["db_name"])
+
+                error_embed.add_field(
+                    name="📸 Actual Team Structure in Screenshot",
+                    value=f"**CT Side:** {', '.join(actual_ct) if actual_ct else 'None'}\n**T Side:** {', '.join(actual_t) if actual_t else 'None'}",
+                    inline=False,
+                )
+
+                await interaction.followup.send(embed=error_embed, ephemeral=True)
                 return
 
             # Get scores from screenshot
@@ -404,6 +527,18 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
 
             # Validate score reasonableness
             if ct_score < 0 or t_score < 0 or (ct_score == 0 and t_score == 0):
+                # Release the submission lock since scores are invalid
+                try:
+                    await Match.release_submission_lock(match_data["match_id"])
+                    logger.info(
+                        f"Released submission lock for match {match_data['match_id']} due to invalid scores"
+                    )
+                except Exception as lock_error:
+                    logger.error(f"Failed to release submission lock: {lock_error}")
+
+                # Delete the screenshot since submission failed
+                await self._delete_screenshot_safely(screenshot_message)
+
                 await interaction.followup.send(
                     f"Invalid scores detected: CT({ct_score}) vs T({t_score})\n"
                     f"Please verify the scoreboard is clear and shows the final scores.",
@@ -412,6 +547,18 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 return
 
             if ct_score == t_score:
+                # Release the submission lock since match is a tie
+                try:
+                    await Match.release_submission_lock(match_data["match_id"])
+                    logger.info(
+                        f"Released submission lock for match {match_data['match_id']} due to tie score"
+                    )
+                except Exception as lock_error:
+                    logger.error(f"Failed to release submission lock: {lock_error}")
+
+                # Delete the screenshot since submission failed
+                await self._delete_screenshot_safely(screenshot_message)
+
                 await interaction.followup.send(
                     "The match appears to be a tie. Please verify the scoreboard.",
                     ephemeral=True,
@@ -601,6 +748,9 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 )
             except Exception as lock_error:
                 logger.error(f"Failed to release submission lock: {lock_error}")
+
+            # Delete the screenshot since submission failed
+            await self._delete_screenshot_safely(screenshot_message)
 
             await interaction.followup.send(
                 "Error processing match results. Please try again.", ephemeral=True
@@ -803,6 +953,80 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
         except Exception as e:
             logger.error(f"Error checking challenger status for {discord_id}: {e}")
             return False
+
+    def validate_team_structure(self, ct_team, t_team, extracted_data, matched_players):
+        """
+        Validate that players who were on the same team in the database
+        are still on the same team in the screenshot (regardless of which side)
+        """
+        # Get screenshot team assignments
+        teams_data = extracted_data.get("teams", {})
+        ct_data = teams_data.get("Counter-Terrorists", {})
+        t_data = teams_data.get("Terrorists", {})
+
+        # Create mappings of player names to their screenshot teams
+        screenshot_team_assignments = {}
+
+        # Map CT side players in screenshot
+        for player in ct_data.get("players", []):
+            screenshot_team_assignments[player["name"]] = "ct_side"
+
+        # Map T side players in screenshot
+        for player in t_data.get("players", []):
+            screenshot_team_assignments[player["name"]] = "t_side"
+
+        # Validate that database teammates are still together
+        def check_team_grouping(db_team, team_name):
+            """Check if all players from a database team are on the same side in screenshot"""
+            screenshot_sides = set()
+            matched_players_in_team = []
+
+            for db_player in db_team:
+                if db_player["nickname"] in matched_players:
+                    screenshot_name = matched_players[db_player["nickname"]]["name"]
+                    if screenshot_name in screenshot_team_assignments:
+                        screenshot_side = screenshot_team_assignments[screenshot_name]
+                        screenshot_sides.add(screenshot_side)
+                        matched_players_in_team.append(
+                            {
+                                "db_name": db_player["nickname"],
+                                "screenshot_name": screenshot_name,
+                                "screenshot_side": screenshot_side,
+                            }
+                        )
+
+            # If we have matched players, they should all be on the same side
+            if len(matched_players_in_team) > 1 and len(screenshot_sides) > 1:
+                return False, matched_players_in_team
+
+            return True, matched_players_in_team
+
+        # Check both teams
+        ct_valid, ct_assignments = check_team_grouping(ct_team, "CT")
+        t_valid, t_assignments = check_team_grouping(t_team, "T")
+
+        validation_details = {
+            "ct_team_valid": ct_valid,
+            "t_team_valid": t_valid,
+            "ct_assignments": ct_assignments,
+            "t_assignments": t_assignments,
+            "overall_valid": ct_valid and t_valid,
+        }
+
+        return validation_details
+
+    async def _delete_screenshot_safely(self, screenshot_message):
+        """Helper method to safely delete screenshot messages"""
+        if screenshot_message:
+            try:
+                await screenshot_message.delete()
+                logger.info("Deleted screenshot message for failed submission")
+            except discord.NotFound:
+                pass  # Message already deleted
+            except discord.Forbidden:
+                logger.warning("No permission to delete screenshot message")
+            except Exception as e:
+                logger.error(f"Error deleting screenshot message: {e}")
 
 
 class SubmitScoreboardView(discord.ui.View):
