@@ -1042,6 +1042,27 @@ class SubmitScoreboardView(discord.ui.View):
     async def submit_scoreboard(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
+        # Check if there's an active season
+        from models.season import Season
+
+        if not await Season.is_season_active():
+            # Get the next season number
+            last_season_id = await Season.get_last_season_id()
+            next_season_number = last_season_id + 1
+
+            embed = discord.Embed(
+                title="❌ Season Not Active",
+                description="Submitting results is currently disabled because there is no active season.",
+                color=0xFF4444,
+            )
+            embed.add_field(
+                name="💡 Information",
+                value=f"Please wait for Season {next_season_number} to start.",
+                inline=False,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
         modal = MatchIDModal(self.target_channel_id)
         await interaction.response.send_modal(modal)
 

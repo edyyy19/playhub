@@ -263,6 +263,28 @@ class Leaderboard(commands.Cog):
         self, interaction: discord.Interaction, channel: discord.TextChannel = None
     ):
         """Create or update a leaderboard embed in the specified channel"""
+
+        # Check if there's an active season
+        from models.season import Season
+
+        if not await Season.is_season_active():
+            # Get the next season number
+            last_season_id = await Season.get_last_season_id()
+            next_season_number = last_season_id + 1
+
+            embed = discord.Embed(
+                title="❌ Season Not Active",
+                description="Leaderboard is currently unavailable.",
+                color=0xFF4444,
+            )
+            embed.add_field(
+                name="💡 Information",
+                value=f"Please wait for Season {next_season_number} to start.",
+                inline=False,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
         # Use current channel if none specified
         target_channel = channel or interaction.channel
 
