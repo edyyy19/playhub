@@ -7,6 +7,9 @@ load_dotenv()
 
 
 class Config:
+    # Application configuration
+    APP_NAME = os.getenv("APP_NAME", "PlayHub")
+
     # Discord configuration
     TOKEN = os.getenv("DISCORD_TOKEN")
     REGISTERED_ROLE = "Registered"

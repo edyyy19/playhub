@@ -260,6 +260,9 @@ class Seasons(commands.Cog):
             ongoing_season = await Season.get_ongoing_season()
 
             if ongoing_season:
+                # Get completed matches count
+                matches_count = await Season.get_completed_matches_count()
+
                 embed = discord.Embed(
                     title="📅 Current Season Status",
                     description=f"**Season {ongoing_season['season_id']} is currently ACTIVE**",
@@ -267,13 +270,13 @@ class Seasons(commands.Cog):
                 )
                 embed.add_field(
                     name="📅 Started",
-                    value=f"<t:{self._parse_timestamp(ongoing_season['started_at'])}:F>\n(<t:{self._parse_timestamp(ongoing_season['started_at'])}:R>)",
-                    inline=True,
+                    value=f"<t:{self._parse_timestamp(ongoing_season['started_at'])}:F>",
+                    inline=False,
                 )
                 embed.add_field(
-                    name="🎮 Features",
-                    value="✅ Submit Results\n✅ Leaderboard\n✅ Matchmaking",
-                    inline=True,
+                    name="🎮 Matches Played",
+                    value=f"**{matches_count}** completed matches",
+                    inline=False,
                 )
             else:
                 # Get the next season number
@@ -281,18 +284,17 @@ class Seasons(commands.Cog):
                 next_season_number = last_season_id + 1
 
                 embed = discord.Embed(
-                    title="📅 Current Season Status",
-                    description="**No active season**",
+                    title="📅 No Active Season",
                     color=0xFF4444,
                 )
                 embed.add_field(
-                    name="🎮 Features",
-                    value="❌ Submit Results\n❌ Leaderboard\n✅ Matchmaking",
-                    inline=True,
+                    name="⚠️ Matchmaking Notice",
+                    value="Matchmaking is available, but matches **will not be counted** towards stats or leaderboard until a new season starts.",
+                    inline=False,
                 )
                 embed.add_field(
                     name="💡 Note",
-                    value=f"Please wait for Season {next_season_number} to start.",
+                    value=f"Please wait for Season {next_season_number} to start for ranked matches.",
                     inline=False,
                 )
 

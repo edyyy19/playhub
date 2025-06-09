@@ -175,3 +175,21 @@ class Season:
             return response.data[0]["season_id"] if response.data else 0
 
         return await loop.run_in_executor(None, db_select)
+
+    @classmethod
+    async def get_completed_matches_count(cls):
+        """Get the count of completed matches"""
+        loop = asyncio.get_running_loop()
+
+        def db_count():
+            response = (
+                Config.supabase()
+                .table("matches")
+                .select("match_id", count="exact")
+                .eq("results_submitted", True)
+                .not_.is_("ended_at", None)
+                .execute()
+            )
+            return response.count if hasattr(response, "count") else 0
+
+        return await loop.run_in_executor(None, db_count)

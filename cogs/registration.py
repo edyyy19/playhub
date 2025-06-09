@@ -12,7 +12,7 @@ REGISTRATION_BANNER = "https://res.cloudinary.com/dzhebhupq/image/upload/v174878
 EMBED_COLOR = 0xB2FA19  # Vibrant green color
 
 
-class RegisterModal(discord.ui.Modal, title="PlayHub Registration"):
+class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
     nickname = discord.ui.TextInput(
         label="In-Game Nickname",
         placeholder="Enter your in game nickname",
@@ -138,7 +138,7 @@ class RegisterModal(discord.ui.Modal, title="PlayHub Registration"):
                 )
 
             embed.set_thumbnail(url=interaction.user.display_avatar.url)
-            embed.set_footer(text="Welcome to PlayHub competitive!")
+            embed.set_footer(text=f"Welcome to {Config.APP_NAME} competitive!")
 
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -240,12 +240,12 @@ class Registration(commands.Cog):
                 logger.info(f"Updated permissions for existing registration channel")
 
             embed = discord.Embed(
-                title="PlayHub Registration",
-                description="Click below to register for PlayHub — your gateway to 5v5 matchmaking!",
+                title=f"{Config.APP_NAME} Registration",
+                description=f"Click below to register for {Config.APP_NAME} — your gateway to 5v5 matchmaking!",
                 color=EMBED_COLOR,
             )
             embed.set_image(url=REGISTRATION_BANNER)
-            embed.set_footer(text="PlayHub Matchmaking")
+            embed.set_footer(text=f"{Config.APP_NAME} Matchmaking")
 
             await channel.send(embed=embed, view=RegisterView())
 
@@ -479,7 +479,7 @@ class Registration(commands.Cog):
                 # Send a welcome back message to the user via DM
                 try:
                     embed = discord.Embed(
-                        title="🎉 Welcome Back to PlayHub!",
+                        title=f"🎉 Welcome Back to {Config.APP_NAME}!",
                         description=f"Your registration has been automatically restored.",
                         color=EMBED_COLOR,
                     )

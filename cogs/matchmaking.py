@@ -14,7 +14,6 @@ from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
-LOBBY_CATEGORY_PREFIX = "PlayHub | Lobby #"
 LOBBY_VOICE_NAME = "Lobby"
 LOBBY_TEXT_NAME = "Lobby"
 CT_VOICE_NAME = "CT Voice"
@@ -970,7 +969,11 @@ class Matchmaking(commands.Cog):
         env = Environment(loader=FileSystemLoader(os.path.dirname(__file__) + "/../"))
         template = env.get_template("final_match_template.html")
         html_content = template.render(
-            match_id=match_id, ct_team=ct_team, t_team=t_team, map_name=final_map
+            app_name=Config.APP_NAME,
+            match_id=match_id,
+            ct_team=ct_team,
+            t_team=t_team,
+            map_name=final_map,
         )
         # Render HTML to image
         hti = Html2Image(output_path=tempfile.gettempdir())
@@ -983,7 +986,7 @@ class Matchmaking(commands.Cog):
         # Upload image to Discord CDN by sending it as a file
         file = discord.File(image_path, filename="final_match.png")
         embed = discord.Embed(
-            title=f"PlayHub | {match_id}", color=EMBED_COLORS["final"]
+            title=f"{Config.APP_NAME} | {match_id}", color=EMBED_COLORS["final"]
         )
         embed.set_image(url=f"attachment://final_match.png")
         embed.set_footer(text=f"Match Created: {now}")
@@ -1618,7 +1621,9 @@ class Matchmaking(commands.Cog):
                         value="🟢 You can now join lobbies again",
                         inline=False,
                     )
-                    user_embed.set_footer(text="Welcome back to PlayHub matchmaking!")
+                    user_embed.set_footer(
+                        text=f"Welcome back to {Config.APP_NAME} matchmaking!"
+                    )
 
                     await user.send(embed=user_embed)
                     embed.set_footer(text="User has been notified.")

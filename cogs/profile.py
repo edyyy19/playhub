@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+from config import Config
 from models.user import User
 from models.match import Match
 import logging
@@ -295,7 +296,7 @@ class Profile(commands.Cog):
                 formatted_matches.append(formatted_match)
 
             # Prepare template variables
-            current_date = datetime.now().strftime("%H:%M | %d/%m/%Y")
+            current_date = datetime.datetime.now().strftime("%H:%M | %d/%m/%Y")
             registered_date = (
                 user_data.get("registered_at", "Unknown")[:10]
                 if user_data.get("registered_at")
@@ -303,6 +304,7 @@ class Profile(commands.Cog):
             )
 
             template_vars = {
+                "app_name": Config.APP_NAME,
                 "nickname": user_data["nickname"],
                 "player_id": user_data["so2_id"],
                 "avatar_url": str(target_user.display_avatar.url),

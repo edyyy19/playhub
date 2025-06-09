@@ -857,6 +857,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                     player["assists"] = 0
 
             template_vars = {
+                "app_name": Config.APP_NAME,
                 "match_id": match_data["match_id"],
                 "map_name": match_data.get("map", "Unknown"),
                 "ct_score": ct_score,
