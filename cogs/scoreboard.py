@@ -849,7 +849,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             # Prepare template variables
             ct_won = ct_score > t_score
             winner = "Counter-Terrorists" if ct_won else "Terrorists"
-            current_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+            current_date = datetime.now().strftime("%H:%M | %d/%m/%Y")
 
             # Ensure all players have assists field (for backward compatibility)
             for player in ct_team + t_team:
@@ -1167,7 +1167,7 @@ class Scoreboard(commands.Cog):
             logger.error(f"Error recreating persistent scoreboard views: {e}")
 
     @app_commands.command(
-        name="setscoreboardchannel",
+        name="set_scoreboard_channel",
         description="Set a target channel for scoreboard results",
     )
     @app_commands.describe(
@@ -1220,7 +1220,7 @@ class Scoreboard(commands.Cog):
                 f"**Results Channel:** {target_channel.mention}\n\n"
                 f"Users can now submit match results using the button above.\n"
                 f"This configuration will persist across bot restarts.",
-                color=0x00FF00,
+                color=discord.Color.green(),
             )
             await interaction.response.send_message(embed=success_embed, ephemeral=True)
 

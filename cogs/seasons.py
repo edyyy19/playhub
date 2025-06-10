@@ -88,7 +88,7 @@ class Seasons(commands.Cog):
 
                 # Success embed
                 embed = discord.Embed(
-                    title="🎉 Season Started!",
+                    title="🏁 Season Started!",
                     description=f"**Season {new_season['season_id']}** has begun!",
                     color=EMBED_COLOR,
                 )

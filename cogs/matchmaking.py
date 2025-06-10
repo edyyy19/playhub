@@ -958,7 +958,7 @@ class Matchmaking(commands.Cog):
         ct_team = [m.display_name for m in lobby["ct_team"]]
         t_team = [m.display_name for m in lobby["t_team"]]
         final_map = lobby["remaining_maps"][0]
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        now = datetime.datetime.now().strftime("%H:%M | %d/%m/%Y")
 
         # Create match in Supabase first to get the auto-generated ID
         match_result = await self.add_match_to_supabase(lobby, final_map)

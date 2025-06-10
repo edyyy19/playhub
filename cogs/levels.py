@@ -303,7 +303,7 @@ class LevelsCog(commands.Cog):
             embed = discord.Embed(
                 title="✅ Level System Setup Complete",
                 description="All level roles have been created successfully!",
-                color=0x00FF00,
+                color=discord.Color.green(),
             )
 
             if created_roles:
@@ -411,7 +411,7 @@ class LevelsCog(commands.Cog):
             final_embed = discord.Embed(
                 title="✅ Level Update Complete",
                 description="All player levels have been updated!",
-                color=0x00FF00,
+                color=discord.Color.green(),
             )
 
             final_embed.add_field(

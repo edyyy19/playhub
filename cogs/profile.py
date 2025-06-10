@@ -281,7 +281,7 @@ class Profile(commands.Cog):
                         dt = datetime.fromisoformat(
                             match["ended_at"].replace("Z", "+00:00")
                         )
-                        match_date = dt.strftime("%d/%m/%Y")
+                        match_date = dt.strftime("%H:%M | %d/%m/%Y")
                     except:
                         match_date = "Unknown"
 
@@ -344,7 +344,8 @@ class Profile(commands.Cog):
             # Upload image to Discord
             file = discord.File(image_path, filename="profile.png")
             embed = discord.Embed(
-                title=f"🎮 {user_data['nickname']}'s Profile", color=EMBED_COLOR
+                title=f"{Config.APP_NAME} Matchmaking | {user_data['nickname']}'s Profile",
+                color=EMBED_COLOR,
             )
             embed.set_image(url="attachment://profile.png")
             embed.set_footer(text=f"Profile generated at {current_date}")
