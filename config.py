@@ -15,6 +15,7 @@ class Config:
     REGISTERED_ROLE = "Registered"
     REGISTRATION_CHANNEL = "registration"
     MAP_POOL = os.getenv("MAP_POOL", "Sandstone,Rust,Province").split(",")
+    PLAYERS_REQUIRED = 4
 
     # Supabase configuration
     SUPABASE_URL = os.getenv("SUPABASE_URL")

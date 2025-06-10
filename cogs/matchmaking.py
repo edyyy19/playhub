@@ -144,12 +144,12 @@ class Matchmaking(commands.Cog):
                     category_name, overwrites=overwrites
                 )
                 voice = await category.create_voice_channel(
-                    f"Lobby #{lobby_number}", user_limit=4
+                    f"Lobby #{lobby_number}", user_limit=Config.PLAYERS_REQUIRED
                 )
                 text = await category.create_text_channel(LOBBY_TEXT_NAME)
                 embed = discord.Embed(
                     title=f"LOBBY #{lobby_number} STATUS",
-                    description="Players in Queue: 0/4\nPhase: Waiting for players...",
+                    description=f"Players in Queue: 0/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
                     color=EMBED_COLORS["waiting"],
                 )
                 msg = await text.send(embed=embed)
@@ -182,7 +182,9 @@ class Matchmaking(commands.Cog):
                 embed.add_field(
                     name="Lobby Number", value=f"#{lobby_number}", inline=True
                 )
-                embed.add_field(name="Players", value="0/4", inline=True)
+                embed.add_field(
+                    name="Players", value=f"0/{Config.PLAYERS_REQUIRED}", inline=True
+                )
                 embed.add_field(name="Status", value="Waiting for players", inline=True)
                 embed.add_field(
                     name="Access",
@@ -660,7 +662,10 @@ class Matchmaking(commands.Cog):
 
                     lobby["players"].add(member)
                 await self.update_lobby_status(lobby)
-                if len(lobby["players"]) == 4 and lobby["phase"] == 1:
+                if (
+                    len(lobby["players"]) == Config.PLAYERS_REQUIRED
+                    and lobby["phase"] == 1
+                ):
                     await self.start_captain_selection(lobby)
             if (
                 before.channel
@@ -759,7 +764,7 @@ class Matchmaking(commands.Cog):
             try:
                 embed = discord.Embed(
                     title=f"LOBBY #{lobby.get('lobby_number', 'X')} STATUS",
-                    description=f"Players in Queue: {len(lobby['players'])}/4\nPhase: Waiting for players...",
+                    description=f"Players in Queue: {len(lobby['players'])}/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
                     color=EMBED_COLORS["waiting"],
                 )
 
@@ -1087,7 +1092,7 @@ class Matchmaking(commands.Cog):
         if not lobby.get("message") or lobby.pop("just_finalized", False):
             embed = discord.Embed(
                 title=f"LOBBY #{lobby.get('lobby_number', 'X')} STATUS",
-                description=f"Players in Queue: {len(lobby['players'])}/4\nPhase: Waiting for players...",
+                description=f"Players in Queue: {len(lobby['players'])}/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
                 color=EMBED_COLORS["waiting"],
             )
             if lobby.get("message"):
@@ -1100,7 +1105,7 @@ class Matchmaking(commands.Cog):
             # Update existing message with proper waiting phase embed properties
             embed = discord.Embed(
                 title=f"LOBBY #{lobby.get('lobby_number', 'X')} STATUS",
-                description=f"Players in Queue: {len(lobby['players'])}/4\nPhase: Waiting for players...",
+                description=f"Players in Queue: {len(lobby['players'])}/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
                 color=EMBED_COLORS["waiting"],
             )
             await lobby["message"].edit(embed=embed, view=None)
@@ -1231,7 +1236,7 @@ class Matchmaking(commands.Cog):
                     # Create new message if old one doesn't exist
                     embed = discord.Embed(
                         title="LOBBY STATUS",
-                        description="Players in Queue: 0/4\nPhase: Waiting for players...",
+                        description=f"Players in Queue: 0/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
                         color=EMBED_COLORS["waiting"],
                     )
                     message = await text_channel.send(embed=embed)

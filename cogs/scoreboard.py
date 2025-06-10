@@ -892,7 +892,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             # Upload image to Discord
             file = discord.File(image_path, filename="scoreboard_results.png")
             embed = discord.Embed(
-                title=f"🏆 Match {match_data['match_id']} Results", color=0x00FF00
+                title=f"✅ Match #{match_data['match_id']} Results", color=0xB2FA19
             )
             embed.set_image(url="attachment://scoreboard_results.png")
             embed.set_footer(text=f"Results processed at {current_date}")
@@ -909,7 +909,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             logger.error(f"Error sending final results image: {e}")
             # Fallback to text message if image generation fails
             winner = "Counter-Terrorists" if ct_score > t_score else "Terrorists"
-            fallback_msg = f"🏆 **Match {match_data['match_id']} Results**\n"
+            fallback_msg = f"✅ **Match {match_data['match_id']} Results**\n"
             fallback_msg += f"**Map:** {match_data.get('map', 'Unknown')}\n"
             fallback_msg += f"**Score:** {ct_score} - {t_score}\n"
             fallback_msg += f"**Winner:** {winner}\n\n"
