@@ -1173,6 +1173,7 @@ class Scoreboard(commands.Cog):
     @app_commands.describe(
         target_channel="The channel where scoreboard results will be posted"
     )
+    @app_commands.default_permissions(administrator=True)
     async def set_scoreboard_channel(
         self, interaction: discord.Interaction, target_channel: discord.TextChannel
     ):

@@ -259,6 +259,7 @@ class Leaderboard(commands.Cog):
         description="Display the leaderboard in the specified channel.",
     )
     @app_commands.describe(channel="The channel where the leaderboard should be posted")
+    @app_commands.default_permissions(administrator=True)
     async def leaderboard(
         self, interaction: discord.Interaction, channel: discord.TextChannel = None
     ):
@@ -502,7 +503,7 @@ class Leaderboard(commands.Cog):
         name="leaderboard_stop",
         description="Stop auto-updating leaderboards in this channel.",
     )
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.default_permissions(administrator=True)
     async def stop_leaderboard(self, interaction: discord.Interaction):
         """Stop auto-updating leaderboards in the current channel"""
         channel_id = interaction.channel.id
@@ -530,7 +531,7 @@ class Leaderboard(commands.Cog):
         name="leaderboard_status",
         description="Check the status of active leaderboards.",
     )
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.default_permissions(administrator=True)
     async def leaderboard_status(self, interaction: discord.Interaction):
         """Show status of all active leaderboards"""
         if not self.leaderboard_messages:

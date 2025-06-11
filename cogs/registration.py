@@ -173,7 +173,7 @@ class Registration(commands.Cog):
         self.bot.add_view(RegisterView())
 
     @app_commands.command(name="setup", description="Initialize registration system")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.default_permissions(administrator=True)
     async def setup(self, interaction: discord.Interaction):
         try:
             # Create or get the "Registered" role with proper permissions
@@ -306,7 +306,7 @@ class Registration(commands.Cog):
     @app_commands.command(
         name="restore_user", description="Manually restore a user's registration data"
     )
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.default_permissions(administrator=True)
     async def restore_user(
         self, interaction: discord.Interaction, member: discord.Member
     ):

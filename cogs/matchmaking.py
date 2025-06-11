@@ -53,6 +53,7 @@ class Matchmaking(commands.Cog):
     @app_commands.command(
         name="create_lobby", description="Create a new matchmaking lobby."
     )
+    @app_commands.default_permissions(administrator=True)
     async def create_lobby(
         self, interaction: discord.Interaction, required_role: discord.Role = None
     ):
@@ -1310,7 +1311,7 @@ class Matchmaking(commands.Cog):
         name="cleanup_lobbies",
         description="Admin command to clean up old lobby states.",
     )
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.default_permissions(administrator=True)
     async def cleanup_lobbies(self, interaction: discord.Interaction, days: int = 7):
         """Clean up lobby states older than specified days"""
         try:
@@ -1347,7 +1348,7 @@ class Matchmaking(commands.Cog):
         name="delete_lobby",
         description="Admin command to delete a lobby and its channels.",
     )
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.default_permissions(administrator=True)
     async def delete_lobby(self, interaction: discord.Interaction, lobby_number: int):
         """Delete a lobby and clean up its state"""
         # Defer the interaction immediately to prevent timeout
@@ -1581,7 +1582,7 @@ class Matchmaking(commands.Cog):
     @app_commands.command(
         name="clear_timeout", description="Admin command to clear a user's timeout."
     )
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.default_permissions(administrator=True)
     async def clear_timeout(
         self, interaction: discord.Interaction, user: discord.Member
     ):
@@ -1656,7 +1657,7 @@ class Matchmaking(commands.Cog):
         name="clear_all_timeouts",
         description="Admin command to clear all active timeouts.",
     )
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.default_permissions(administrator=True)
     async def clear_all_timeouts(self, interaction: discord.Interaction):
         """Clear all active timeouts"""
         await interaction.response.defer(ephemeral=True)
@@ -1707,7 +1708,7 @@ class Matchmaking(commands.Cog):
         name="cleanup_team_channels",
         description="Admin command to clean up orphaned team voice channels.",
     )
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.default_permissions(administrator=True)
     async def cleanup_team_channels_command(self, interaction: discord.Interaction):
         """Manually trigger cleanup of orphaned team voice channels"""
         await interaction.response.defer(ephemeral=True)
@@ -1936,7 +1937,7 @@ class Matchmaking(commands.Cog):
         name="lock_lobbies",
         description="Admin command to lock all lobbies - prevents Registered role from connecting to voice.",
     )
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.default_permissions(administrator=True)
     async def lock_lobbies(self, interaction: discord.Interaction):
         """Lock all lobbies to prevent Registered role from connecting"""
         await interaction.response.defer(ephemeral=True)
@@ -2044,7 +2045,7 @@ class Matchmaking(commands.Cog):
         name="unlock_lobbies",
         description="Admin command to unlock all lobbies - restores Registered role voice access.",
     )
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.default_permissions(administrator=True)
     async def unlock_lobbies(self, interaction: discord.Interaction):
         """Unlock all lobbies to restore Registered role voice access"""
         await interaction.response.defer(ephemeral=True)

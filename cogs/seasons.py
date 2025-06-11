@@ -46,6 +46,7 @@ class Seasons(commands.Cog):
     @app_commands.command(
         name="start_season", description="Start a new season (Founder only)"
     )
+    @app_commands.default_permissions(administrator=True)
     async def start_season(self, interaction: discord.Interaction):
         """Start a new season - Founder role only"""
         # Check if user has Founder role
@@ -134,6 +135,7 @@ class Seasons(commands.Cog):
     @app_commands.command(
         name="end_season", description="End the current season (Founder only)"
     )
+    @app_commands.default_permissions(administrator=True)
     async def end_season(self, interaction: discord.Interaction):
         """End the current season - Founder role only"""
         # Check if user has Founder role

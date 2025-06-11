@@ -244,6 +244,7 @@ class LevelsCog(commands.Cog):
         name="setup_levels", description="Create level roles in the server"
     )
     @app_commands.describe()
+    @app_commands.default_permissions(administrator=True)
     async def setup_levels(self, interaction: discord.Interaction):
         """Create all level roles with correct names and colors"""
         if not interaction.user.guild_permissions.administrator:
@@ -341,6 +342,7 @@ class LevelsCog(commands.Cog):
         name="update_players_levels",
         description="Update all players' level roles to match their current points",
     )
+    @app_commands.default_permissions(administrator=True)
     async def update_players_levels(self, interaction: discord.Interaction):
         """Update all players' roles to match their current points"""
         if not interaction.user.guild_permissions.administrator:
