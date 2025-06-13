@@ -38,9 +38,9 @@ class PartyInviteView(discord.ui.View):
             existing_party = await Party.find_user_party(str(interaction.user.id))
             if existing_party:
                 embed = discord.Embed(
-                    title="❌ Already in Party",
+                    title=f"{Config.ICONS['unsuccess']} Already in Party",
                     description="You are already in a party! Leave your current party first.",
-                    color=0xFF0000,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
@@ -68,9 +68,9 @@ class PartyInviteView(discord.ui.View):
             member_count = await Party.get_member_count(self.party_id)
             if member_count >= Config.MAX_PARTY_MEMBERS:
                 embed = discord.Embed(
-                    title="❌ Party Full",
+                    title=f"{Config.ICONS['unsuccess']} Party Full",
                     description=f"The party is already full! Maximum {Config.MAX_PARTY_MEMBERS} members allowed.",
-                    color=0xFF0000,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return  # Add user to party
@@ -79,9 +79,9 @@ class PartyInviteView(discord.ui.View):
             )
             if result:
                 embed = discord.Embed(
-                    title="✅ Joined Party",
+                    title=f"{Config.ICONS['success']} Joined Party",
                     description=f"{interaction.user.mention} has joined the party!",
-                    color=discord.Color.green(),
+                    color=Config.EMBED_COLORS["light_green"],
                 )
                 # Replace the original message with the response
                 await interaction.response.edit_message(embed=embed, view=None)
@@ -107,9 +107,9 @@ class PartyInviteView(discord.ui.View):
             return
 
         embed = discord.Embed(
-            title="❌ Invitation Declined",
+            title=f"{Config.ICONS['unsuccess']} Invitation Declined",
             description=f"{interaction.user.mention} has declined the party invitation.",
-            color=0xFF0000,
+            color=Config.EMBED_COLORS["red"],
         )
         # Replace the original message with the response
         await interaction.response.edit_message(embed=embed, view=None)
@@ -135,9 +135,9 @@ class Parties(commands.Cog):
 
             if not party:
                 embed = discord.Embed(
-                    title="❌ No Party",
+                    title=f"{Config.ICONS['unsuccess']} No Party",
                     description="You are not currently in a party.",
-                    color=0xFF0000,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
@@ -148,7 +148,9 @@ class Parties(commands.Cog):
             leader_name = leader_member.display_name if leader_member else "Unknown"
 
             # Create embed
-            embed = discord.Embed(title="👥 Party Information", color=EMBED_COLOR)
+            embed = discord.Embed(
+                title=f"{Config.ICONS['user']} Party Information", color=EMBED_COLOR
+            )
 
             embed.add_field(name="Party Leader", value=leader_name, inline=False)
 
@@ -181,7 +183,7 @@ class Parties(commands.Cog):
             )
 
             embed.add_field(
-                name="📅 Created",
+                name=f"{Config.ICONS['calendar']} Created",
                 value=f"<t:{int(datetime.now().timestamp())}:F>",
                 inline=True,
             )
@@ -191,9 +193,9 @@ class Parties(commands.Cog):
         except Exception as e:
             logger.error(f"Error in party_info: {e}")
             embed = discord.Embed(
-                title="❌ Error",
+                title=f"{Config.ICONS['unsuccess']} Error",
                 description="An error occurred while fetching party information.",
-                color=0xFF0000,
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -214,9 +216,9 @@ class Parties(commands.Cog):
             # Check if invited user is a bot
             if user.bot:
                 embed = discord.Embed(
-                    title="❌ Cannot Invite Bot",
+                    title=f"{Config.ICONS['unsuccess']} Cannot Invite Bot",
                     description="You cannot invite bots to parties!",
-                    color=0xFF0000,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
@@ -224,9 +226,9 @@ class Parties(commands.Cog):
             # Check if trying to invite themselves
             if interaction.user.id == user.id:
                 embed = discord.Embed(
-                    title="❌ Cannot Invite Yourself",
+                    title=f"{Config.ICONS['unsuccess']} Cannot Invite Yourself",
                     description="You cannot invite yourself to a party!",
-                    color=0xFF0000,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
@@ -235,9 +237,9 @@ class Parties(commands.Cog):
             invited_party = await Party.find_user_party(str(user.id))
             if invited_party:
                 embed = discord.Embed(
-                    title="❌ User Already in Party",
+                    title=f"{Config.ICONS['unsuccess']} User Already in Party",
                     description=f"{user.mention} is already in a party!",
-                    color=0xFF0000,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
@@ -251,16 +253,16 @@ class Parties(commands.Cog):
                 # Check if party is full
                 if len(inviter_party["members"]) >= Config.MAX_PARTY_MEMBERS:
                     embed = discord.Embed(
-                        title="❌ Party Full",
+                        title=f"{Config.ICONS['unsuccess']} Party Full",
                         description=f"Your party is already full! Maximum {Config.MAX_PARTY_MEMBERS} members allowed.",
-                        color=0xFF0000,
+                        color=Config.EMBED_COLORS["red"],
                     )
                     await interaction.response.send_message(embed=embed, ephemeral=True)
                     return
 
             # Create invitation embed
             embed = discord.Embed(
-                title="👥 Party Invitation",
+                title=f"{Config.ICONS['user']} Party Invitation",
                 description=f"{user.mention}, you have been invited to join {interaction.user.mention}'s party!",
                 color=EMBED_COLOR,
             )
@@ -280,9 +282,9 @@ class Parties(commands.Cog):
         except Exception as e:
             logger.error(f"Error in party_invite: {e}")
             embed = discord.Embed(
-                title="❌ Error",
+                title=f"{Config.ICONS['unsuccess']} Error",
                 description="An error occurred while sending the party invitation.",
-                color=0xFF0000,
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -295,9 +297,9 @@ class Parties(commands.Cog):
 
             if not party:
                 embed = discord.Embed(
-                    title="❌ No Party",
+                    title=f"{Config.ICONS['unsuccess']} No Party",
                     description="You are not currently in a party.",
-                    color=0xFF0000,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
@@ -309,27 +311,37 @@ class Parties(commands.Cog):
                 # If leader leaves, disband the party
                 await Party.delete_party(party_id)
                 embed = discord.Embed(
-                    title="👥 Party Disbanded",
+                    title=f"{Config.ICONS['user']} Party Disbanded",
                     description="You were the party leader, so the party has been disbanded.",
                     color=EMBED_COLOR,
                 )
             else:
                 # Remove member from party
                 await Party.remove_member(party_id, str(interaction.user.id))
-                embed = discord.Embed(
-                    title="👋 Left Party",
-                    description="You have successfully left the party.",
-                    color=EMBED_COLOR,
-                )
+
+                # Check if party was disbanded due to insufficient members
+                remaining_party = await Party.get_party(party_id)
+                if not remaining_party:
+                    embed = discord.Embed(
+                        title=f"{Config.ICONS['user']} Party Disbanded",
+                        description="You have left the party. Since there was only one member remaining, the party has been disbanded.",
+                        color=EMBED_COLOR,
+                    )
+                else:
+                    embed = discord.Embed(
+                        title=f"{Config.ICONS['leave']} Left Party",
+                        description="You have successfully left the party.",
+                        color=Config.EMBED_COLORS["light_green"],
+                    )
 
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f"Error in party_leave: {e}")
             embed = discord.Embed(
-                title="❌ Error",
+                title=f"{Config.ICONS['unsuccess']} Error",
                 description="An error occurred while leaving the party.",
-                color=0xFF0000,
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -345,9 +357,9 @@ class Parties(commands.Cog):
 
             if not party:
                 embed = discord.Embed(
-                    title="❌ No Party",
+                    title=f"{Config.ICONS['unsuccess']} No Party",
                     description="You are not currently in a party.",
-                    color=0xFF0000,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
@@ -355,9 +367,9 @@ class Parties(commands.Cog):
             # Check if user is the party leader
             if party["leader_id"] != str(interaction.user.id):
                 embed = discord.Embed(
-                    title="❌ Not Party Leader",
+                    title=f"{Config.ICONS['unsuccess']} Not Party Leader",
                     description="Only the party leader can kick members!",
-                    color=0xFF0000,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
@@ -365,9 +377,9 @@ class Parties(commands.Cog):
             # Check if trying to kick themselves
             if interaction.user.id == user.id:
                 embed = discord.Embed(
-                    title="❌ Cannot Kick Yourself",
+                    title=f"{Config.ICONS['unsuccess']} Cannot Kick Yourself",
                     description="You cannot kick yourself! Use `/party_leave` to leave the party.",
-                    color=0xFF0000,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
@@ -381,9 +393,9 @@ class Parties(commands.Cog):
 
             if not user_in_party:
                 embed = discord.Embed(
-                    title="❌ User Not in Party",
+                    title=f"{Config.ICONS['unsuccess']} User Not in Party",
                     description=f"{user.mention} is not in your party!",
-                    color=0xFF0000,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
@@ -392,25 +404,28 @@ class Parties(commands.Cog):
             party_id = party["party_id"]
             await Party.remove_member(party_id, str(user.id))
 
-            # Check if party should be disbanded (only leader left)
+            # Check if party was disbanded due to insufficient members
             updated_party = await Party.get_party(party_id)
-            if updated_party and len(updated_party["members"]) == 1:
-                # Only leader left, but we don't auto-disband in this case
-                pass
-
-            embed = discord.Embed(
-                title="👢 Member Kicked",
-                description=f"{user.mention} has been kicked from the party.",
-                color=EMBED_COLOR,
-            )
+            if not updated_party:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['user']} Party Disbanded",
+                    description=f"{user.mention} has been kicked from the party. Since there was only one member remaining, the party has been disbanded.",
+                    color=EMBED_COLOR,
+                )
+            else:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['leaving']} Member Kicked",
+                    description=f"{user.mention} has been kicked from the party.",
+                    color=EMBED_COLOR,
+                )
             await interaction.response.send_message(embed=embed)
 
         except Exception as e:
             logger.error(f"Error in party_kick: {e}")
             embed = discord.Embed(
-                title="❌ Error",
+                title=f"{Config.ICONS['unsuccess']} Error",
                 description="An error occurred while kicking the member.",
-                color=0xFF0000,
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
 

@@ -6,6 +6,7 @@ from models.match import Match
 from models.lobby_state import LobbyState
 from models.timeout import timeout_manager
 from models.user import User
+from models.party import Party
 from cogs.levels import LevelsCog
 import random
 import asyncio
@@ -18,13 +19,6 @@ LOBBY_VOICE_NAME = "Lobby"
 LOBBY_TEXT_NAME = "Lobby"
 CT_VOICE_NAME = "CT Voice"
 T_VOICE_NAME = "T Voice"
-
-EMBED_COLORS = {
-    "waiting": 0xFFFF00,  # Yellow
-    "draft": 0x6969E7,  # Blue
-    "veto": 0xFB5B29,  # Orange
-    "final": 0xB2FA19,  # Green
-}
 
 
 class Matchmaking(commands.Cog):
@@ -151,7 +145,7 @@ class Matchmaking(commands.Cog):
                 embed = discord.Embed(
                     title=f"LOBBY #{lobby_number} STATUS",
                     description=f"Players in Queue: 0/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
-                    color=EMBED_COLORS["waiting"],
+                    color=Config.EMBED_COLORS["waiting"],
                 )
                 msg = await text.send(embed=embed)
 
@@ -176,9 +170,9 @@ class Matchmaking(commands.Cog):
                 await self.save_lobby_state(category.id)
                 # Create success embed
                 embed = discord.Embed(
-                    title="✅ Lobby Created Successfully",
+                    title=f"{Config.ICONS['success']} Lobby Created Successfully",
                     description=f"A new lobby has been created and is ready for {lobby_role_name} players!",
-                    color=EMBED_COLORS["waiting"],
+                    color=Config.EMBED_COLORS["light_green"],
                 )
                 embed.add_field(
                     name="Lobby Number", value=f"#{lobby_number}", inline=True
@@ -189,7 +183,7 @@ class Matchmaking(commands.Cog):
                 embed.add_field(name="Status", value="Waiting for players", inline=True)
                 embed.add_field(
                     name="Access",
-                    value=f"🔒 {lobby_role_name} players only",
+                    value=f"{Config.ICONS['lock']} {lobby_role_name} players only",
                     inline=False,
                 )
                 embed.set_footer(
@@ -210,17 +204,28 @@ class Matchmaking(commands.Cog):
                 )
 
     # --- DRAFT PICK UI ---
-
     class DraftDropdown(discord.ui.Select):
-        def __init__(self, lobby, cog, options_with_stats):
+        def __init__(self, lobby, cog, options_with_stats, picks_needed=1):
+            # Calculate how many players this captain can pick
+            max_picks = min(
+                picks_needed, len(options_with_stats), 25
+            )  # Discord limit is 25
+
+            # Set placeholder based on number of picks needed
+            if picks_needed == 1:
+                placeholder = "Select a player to draft..."
+            else:
+                placeholder = f"Select {picks_needed} players to draft..."
+
             super().__init__(
-                placeholder="Select a player to draft...",
-                min_values=1,
-                max_values=1,
+                placeholder=placeholder,
+                min_values=min(picks_needed, len(options_with_stats)),
+                max_values=max_picks,
                 options=options_with_stats,
             )
             self.lobby = lobby
             self.cog = cog
+            self.picks_needed = picks_needed
 
         async def callback(self, interaction: discord.Interaction):
             # Only allow the captain whose turn it is
@@ -231,15 +236,21 @@ class Matchmaking(commands.Cog):
                 )
                 return
 
-            picked_id = int(self.values[0])
-            picked_member = discord.utils.get(
-                self.lobby["available_players"], id=picked_id
-            )
+            # Get all selected players
+            picked_members = []
+            for value in self.values:
+                picked_id = int(value)
+                picked_member = discord.utils.get(
+                    self.lobby["available_players"], id=picked_id
+                )
+                if picked_member:
+                    picked_members.append(picked_member)
 
             # Acknowledge the interaction
             await interaction.response.defer(ephemeral=True)
 
-            await self.cog.handle_draft_pick(self.lobby, picked_member)
+            # Handle multiple picks
+            await self.cog.handle_draft_picks(self.lobby, picked_members)
 
     class DraftView(discord.ui.View):
         def __init__(self, lobby, cog, draft_dropdown):
@@ -336,7 +347,7 @@ class Matchmaking(commands.Cog):
 
                 if interaction.user not in all_players:
                     await interaction.followup.send(
-                        "❌ You are not part of this match! Only match participants can view the host ID.",
+                        f"{Config.ICONS['unsuccess']} You are not part of this match! Only match participants can view the host ID.",
                         ephemeral=True,
                     )
                     return
@@ -344,7 +355,7 @@ class Matchmaking(commands.Cog):
                 # Check if we have a host selected
                 if not self.host_player:
                     await interaction.followup.send(
-                        "❌ No host could be selected for this match. Please contact an administrator.",
+                        f"{Config.ICONS['unsuccess']} No host could be selected for this match. Please contact an administrator.",
                         ephemeral=True,
                     )
                     return
@@ -357,14 +368,14 @@ class Matchmaking(commands.Cog):
 
                 if not self.host_data:
                     await interaction.followup.send(
-                        f"❌ The selected host ({self.host_player.display_name}) is not registered in the database.",
+                        f"{Config.ICONS['unsuccess']} The selected host ({self.host_player.display_name}) is not registered in the database.",
                         ephemeral=True,
                     )
                     return
 
                 # Create a simple message with the host's ID (easy to copy)
                 message = (
-                    f"🎯 **Lobby Host:** {self.host_player.display_name}\n"
+                    f"{Config.ICONS['crosshair']} **Lobby Host:** {self.host_player.display_name}\n"
                     f"**Host's SO2 ID:** `{self.host_data['so2_id']}`\n\n"
                     f"*Click to copy the ID above*"
                 )
@@ -374,7 +385,7 @@ class Matchmaking(commands.Cog):
             except Exception as e:
                 logger.error(f"Failed to get host ID for {interaction.user}: {e}")
                 await interaction.followup.send(
-                    "❌ An error occurred while retrieving the host ID. Please try again.",
+                    f"{Config.ICONS['unsuccess']} An error occurred while retrieving the host ID. Please try again.",
                     ephemeral=True,
                 )
 
@@ -387,7 +398,10 @@ class Matchmaking(commands.Cog):
         options_with_stats = await self.create_draft_options_with_stats(
             lobby["available_players"]
         )
-        draft_dropdown = Matchmaking.DraftDropdown(lobby, self, options_with_stats)
+        picks_needed = await self.calculate_picks_needed(lobby)
+        draft_dropdown = Matchmaking.DraftDropdown(
+            lobby, self, options_with_stats, picks_needed
+        )
         return Matchmaking.DraftView(lobby, self, draft_dropdown)
 
     def get_veto_view(self, lobby):
@@ -437,9 +451,9 @@ class Matchmaking(commands.Cog):
             if success:
                 # Create timeout notification embed for the captain
                 embed = discord.Embed(
-                    title="⏰ Captain Timeout Applied",
+                    title=f"{Config.ICONS['clock']} Captain Timeout Applied",
                     description="You have been removed from the lobby and timeouted for failing to act within the time limit.",
-                    color=discord.Color.red(),
+                    color=Config.EMBED_COLORS["red"],
                 )
                 embed.add_field(
                     name="Reason",
@@ -453,7 +467,7 @@ class Matchmaking(commands.Cog):
                 )
                 embed.add_field(
                     name="Status",
-                    value="🚫 Cannot join any lobbies during timeout",
+                    value=f"{Config.ICONS['not_allowed']} Cannot join any lobbies during timeout",
                     inline=True,
                 )
                 embed.set_footer(
@@ -464,9 +478,9 @@ class Matchmaking(commands.Cog):
             else:
                 # Fallback embed for database failure
                 embed = discord.Embed(
-                    title="⏰ Captain Timeout Applied",
+                    title=f"{Config.ICONS['clock']} Captain Timeout Applied",
                     description="You have been removed from the lobby and timeouted for failing to act within the time limit.",
-                    color=discord.Color.red(),
+                    color=Config.EMBED_COLORS["red"],
                 )
                 embed.add_field(
                     name="Reason",
@@ -511,9 +525,9 @@ class Matchmaking(commands.Cog):
         for player in remaining_players:
             try:
                 notification_embed = discord.Embed(
-                    title="⚠️ Captain Timeout",
+                    title=f"{Config.ICONS['info']} Captain Timeout",
                     description=f"Captain {captain_to_timeout.display_name} has been timeouted for not acting within the time limit.\n\n**The lobby has been reset to waiting phase.** You can stay and wait for new players to join, or leave to find another lobby.",
-                    color=discord.Color.orange(),
+                    color=Config.EMBED_COLORS["yellow"],
                 )
                 notification_embed.add_field(
                     name="Phase Reset",
@@ -590,9 +604,9 @@ class Matchmaking(commands.Cog):
 
                             # Create timeout notification embed
                             embed = discord.Embed(
-                                title="⏰ Lobby Access Denied",
+                                title=f"{Config.ICONS['clock']} Lobby Access Denied",
                                 description="You are currently timeouted and cannot join lobbies.",
-                                color=discord.Color.red(),
+                                color=Config.EMBED_COLORS["red"],
                             )
                             embed.add_field(
                                 name="Time Remaining",
@@ -601,7 +615,7 @@ class Matchmaking(commands.Cog):
                             )
                             embed.add_field(
                                 name="Status",
-                                value="🚫 Lobby access blocked",
+                                value=f"{Config.ICONS['not_allowed']} Lobby access blocked",
                                 inline=True,
                             )
                             embed.set_footer(
@@ -634,13 +648,13 @@ class Matchmaking(commands.Cog):
                                 )
                                 # Create lobby locked notification embed
                                 embed = discord.Embed(
-                                    title="🔒 Lobbies Currently Locked",
+                                    title=f"{Config.ICONS['lock']} Lobbies Currently Locked",
                                     description=f"All lobbies are currently locked by administrators. {lobby_role_name} players cannot connect to lobby voice channels at this time.",
-                                    color=discord.Color.red(),
+                                    color=Config.EMBED_COLORS["red"],
                                 )
                                 embed.add_field(
                                     name="Status",
-                                    value="🚫 Voice access temporarily restricted",
+                                    value=f"{Config.ICONS['not_allowed']} Voice access temporarily restricted",
                                     inline=True,
                                 )
                                 embed.add_field(
@@ -700,9 +714,9 @@ class Matchmaking(commands.Cog):
                         if success:
                             # Create mid-game leave timeout embed
                             embed = discord.Embed(
-                                title="⏰ Mid-Game Leave Penalty",
+                                title=f"{Config.ICONS['clock']} Mid-Game Leave Penalty",
                                 description="You have been removed from the lobby due to leaving mid-game.",
-                                color=discord.Color.red(),
+                                color=Config.EMBED_COLORS["red"],
                             )
                             embed.add_field(
                                 name="Phase Left During",
@@ -716,7 +730,7 @@ class Matchmaking(commands.Cog):
                             )
                             embed.add_field(
                                 name="Status",
-                                value="🚫 Cannot join any lobbies during timeout",
+                                value=f"{Config.ICONS['not_allowed']} Cannot join any lobbies during timeout",
                                 inline=True,
                             )
                             embed.set_footer(
@@ -727,9 +741,9 @@ class Matchmaking(commands.Cog):
                         else:
                             # Fallback embed for database failure
                             embed = discord.Embed(
-                                title="⏰ Mid-Game Leave Penalty",
+                                title=f"{Config.ICONS['clock']} Mid-Game Leave Penalty",
                                 description="You have been removed from the lobby due to leaving mid-game.",
-                                color=discord.Color.red(),
+                                color=Config.EMBED_COLORS["red"],
                             )
                             embed.add_field(
                                 name="Timeout Duration",
@@ -766,7 +780,7 @@ class Matchmaking(commands.Cog):
                 embed = discord.Embed(
                     title=f"LOBBY #{lobby.get('lobby_number', 'X')} STATUS",
                     description=f"Players in Queue: {len(lobby['players'])}/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
-                    color=EMBED_COLORS["waiting"],
+                    color=Config.EMBED_COLORS["waiting"],
                 )
 
                 # Check if text channel still exists and we have permissions
@@ -836,48 +850,95 @@ class Matchmaking(commands.Cog):
     async def start_captain_selection(self, lobby):
         lobby["phase"] = 2
         players = list(lobby["players"])
-        captains = random.sample(players, 2)
+
+        # Use party-based captain selection
+        captains, party_info, party_groups = await self.select_party_based_captains(
+            lobby
+        )
+
         ct_captain, t_captain = captains[0], captains[1]
+
         lobby["ct_team"] = [ct_captain]
         lobby["t_team"] = [t_captain]
         lobby["available_players"] = [p for p in players if p not in captains]
-        lobby["next_pick"] = ct_captain
+
+        # Auto-assign party members to their leader's teams
+        await self.assign_party_members_to_teams(lobby, party_info, party_groups)
+
+        # Only auto-assign the last remaining player if there's exactly 1 left
+        # Let the draft process handle team balancing through multiple picks
+        if len(lobby["available_players"]) == 1:
+            last_player = lobby["available_players"][0]
+            ct_size = len(lobby["ct_team"])
+            t_size = len(lobby["t_team"])
+
+            if ct_size <= t_size:
+                lobby["ct_team"].append(last_player)
+            else:
+                lobby["t_team"].append(last_player)
+            lobby["available_players"].remove(last_player)
+
+        # Determine next pick based on team balance after party assignments
+        lobby["next_pick"] = await self.determine_next_pick_balanced(lobby)
+
         # --- New Draft UI ---
         ct_lines = await self.format_team_list(lobby["ct_team"])
         t_lines = await self.format_team_list(lobby["t_team"])
         desc = (
-            f"**Counter-Terrorists**\n{ct_lines}\n\n"
-            f"**Terrorists**\n{t_lines}\n\n"
-            f"Captain {lobby['next_pick'].mention} is currently picking…"
+            f"**Counter-Terrorists**\n{ct_lines}\n\n" f"**Terrorists**\n{t_lines}\n\n"
         )
+
+        if lobby["available_players"]:
+            picks_needed = await self.calculate_picks_needed(lobby)
+            if picks_needed > 1:
+                desc += f"Captain {lobby['next_pick'].mention} needs to pick {picks_needed} players…"
+            else:
+                desc += f"Captain {lobby['next_pick'].mention} is currently picking…"
+        else:
+            desc += "All players have been assigned to teams."
+
         embed = discord.Embed(
             title="Drafting Players Phase",
             description=desc,
-            color=EMBED_COLORS["draft"],
+            color=Config.EMBED_COLORS["draft"],
         )
         embed.set_footer(text="Next Phase: Map Veto")
-        view = await self.get_draft_view(lobby)
+
+        if lobby["available_players"]:
+            view = await self.get_draft_view(lobby)
+        else:
+            view = None
+
         await lobby["message"].edit(embed=embed, view=view)
+        # If no players left to draft, immediately proceed to map veto
+        if not lobby["available_players"]:
+            await self.start_map_veto(lobby)
 
     async def handle_draft_pick(self, lobby, picked_member):
         async with self.lobby_locks[lobby["category"].guild.id]:
             # Add picked player to the correct team
             if lobby["next_pick"] == lobby["ct_team"][0]:
                 lobby["ct_team"].append(picked_member)
-                lobby["next_pick"] = lobby["t_team"][0]
             else:
                 lobby["t_team"].append(picked_member)
-                lobby["next_pick"] = lobby["ct_team"][0]
             lobby["available_players"].remove(picked_member)
 
             # If there's only 1 player left, automatically assign them to the other team
             if len(lobby["available_players"]) == 1:
                 last_player = lobby["available_players"][0]
-                if lobby["next_pick"] == lobby["ct_team"][0]:
+                ct_size = len(lobby["ct_team"])
+                t_size = len(lobby["t_team"])
+
+                # Assign to the smaller team
+                if ct_size <= t_size:
                     lobby["ct_team"].append(last_player)
                 else:
                     lobby["t_team"].append(last_player)
                 lobby["available_players"].remove(last_player)
+
+            # Update next pick based on balanced team logic
+            if lobby["available_players"]:
+                lobby["next_pick"] = await self.determine_next_pick_balanced(lobby)
 
             # --- New Draft UI ---
             ct_lines = await self.format_team_list(lobby["ct_team"])
@@ -893,7 +954,7 @@ class Matchmaking(commands.Cog):
             embed = discord.Embed(
                 title="Drafting Players Phase",
                 description=desc,
-                color=EMBED_COLORS["draft"],
+                color=Config.EMBED_COLORS["draft"],
             )
             embed.set_footer(text="Next Phase: Map Veto")
             if lobby["available_players"]:
@@ -918,7 +979,7 @@ class Matchmaking(commands.Cog):
         desc += f"{maps_str}\n\n"
         desc += f"Captain {lobby['veto_turn'].mention} is currently banning…"
         embed = discord.Embed(
-            title="Map Veto Phase", description=desc, color=EMBED_COLORS["veto"]
+            title="Map Veto Phase", description=desc, color=Config.EMBED_COLORS["veto"]
         )
         embed.set_footer(text="Next Phase: Final Match Data")
         view = self.get_veto_view(lobby)
@@ -943,7 +1004,9 @@ class Matchmaking(commands.Cog):
             else:
                 desc += "Map veto complete."
             embed = discord.Embed(
-                title="Map Veto Phase", description=desc, color=EMBED_COLORS["veto"]
+                title="Map Veto Phase",
+                description=desc,
+                color=Config.EMBED_COLORS["veto"],
             )
             embed.set_footer(text="Next Phase: Final Match Data")
             view = (
@@ -992,7 +1055,7 @@ class Matchmaking(commands.Cog):
         # Upload image to Discord CDN by sending it as a file
         file = discord.File(image_path, filename="final_match.png")
         embed = discord.Embed(
-            title=f"{Config.APP_NAME} | {match_id}", color=EMBED_COLORS["final"]
+            title=f"{Config.APP_NAME} | {match_id}", color=Config.EMBED_COLORS["final"]
         )
         embed.set_image(url=f"attachment://final_match.png")
         embed.set_footer(text=f"Match Created: {now}")
@@ -1094,7 +1157,7 @@ class Matchmaking(commands.Cog):
             embed = discord.Embed(
                 title=f"LOBBY #{lobby.get('lobby_number', 'X')} STATUS",
                 description=f"Players in Queue: {len(lobby['players'])}/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
-                color=EMBED_COLORS["waiting"],
+                color=Config.EMBED_COLORS["waiting"],
             )
             if lobby.get("message"):
                 try:
@@ -1107,7 +1170,7 @@ class Matchmaking(commands.Cog):
             embed = discord.Embed(
                 title=f"LOBBY #{lobby.get('lobby_number', 'X')} STATUS",
                 description=f"Players in Queue: {len(lobby['players'])}/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
-                color=EMBED_COLORS["waiting"],
+                color=Config.EMBED_COLORS["waiting"],
             )
             await lobby["message"].edit(embed=embed, view=None)
         if hasattr(lobby, "_just_finalized"):
@@ -1238,7 +1301,7 @@ class Matchmaking(commands.Cog):
                     embed = discord.Embed(
                         title="LOBBY STATUS",
                         description=f"Players in Queue: 0/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
-                        color=EMBED_COLORS["waiting"],
+                        color=Config.EMBED_COLORS["waiting"],
                     )
                     message = await text_channel.send(embed=embed)
 
@@ -1319,9 +1382,9 @@ class Matchmaking(commands.Cog):
 
             # Create success embed
             embed = discord.Embed(
-                title="✅ Lobby Cleanup Completed",
+                title=f"{Config.ICONS['success']} Lobby Cleanup Completed",
                 description=f"Successfully cleaned up old lobby states from the database.",
-                color=discord.Color.green(),
+                color=Config.EMBED_COLORS["light_green"],
             )
             embed.add_field(name="Cleanup Period", value=f"{days} days", inline=True)
             embed.add_field(name="Status", value="All old states removed", inline=True)
@@ -1333,9 +1396,9 @@ class Matchmaking(commands.Cog):
 
             # Create error embed
             embed = discord.Embed(
-                title="❌ Cleanup Failed",
+                title=f"{Config.ICONS['unsuccess']} Cleanup Failed",
                 description="An error occurred while cleaning up old lobby states.",
-                color=discord.Color.red(),
+                color=Config.EMBED_COLORS["red"],
             )
             embed.add_field(
                 name="Error", value="Database cleanup operation failed", inline=False
@@ -1368,9 +1431,9 @@ class Matchmaking(commands.Cog):
             if not target_lobby:
                 # Create not found embed
                 embed = discord.Embed(
-                    title="❌ Lobby Not Found",
+                    title=f"{Config.ICONS['info']} Lobby Not Found",
                     description=f"**Lobby #{lobby_number}** could not be found.",
-                    color=discord.Color.orange(),
+                    color=Config.EMBED_COLORS["yellow"],
                 )
                 embed.add_field(
                     name="Suggestion",
@@ -1431,9 +1494,9 @@ class Matchmaking(commands.Cog):
 
             # Create success embed
             embed = discord.Embed(
-                title="✅ Lobby Deleted Successfully",
+                title=f"{Config.ICONS['success']} Lobby Deleted Successfully",
                 description=f"**Lobby #{lobby_number}** has been permanently deleted.",
-                color=discord.Color.green(),
+                color=Config.EMBED_COLORS["light_green"],
             )
             embed.add_field(
                 name="Channels Deleted",
@@ -1451,9 +1514,9 @@ class Matchmaking(commands.Cog):
             try:
                 # Create error embed
                 embed = discord.Embed(
-                    title="❌ Failed to Delete Lobby",
+                    title=f"{Config.ICONS['unsuccess']} Failed to Delete Lobby",
                     description=f"An error occurred while deleting **Lobby #{lobby_number}**.",
-                    color=discord.Color.red(),
+                    color=Config.EMBED_COLORS["red"],
                 )
                 embed.add_field(
                     name="Error", value="Lobby deletion operation failed", inline=False
@@ -1491,7 +1554,7 @@ class Matchmaking(commands.Cog):
             # Admin checking another user's status
             if not interaction.user.guild_permissions.administrator:
                 await interaction.response.send_message(
-                    "❌ You don't have permission to check other users' timeout status.",
+                    f"{Config.ICONS['unsuccess']} You don't have permission to check other users' timeout status.",
                     ephemeral=True,
                 )
                 return
@@ -1506,15 +1569,15 @@ class Matchmaking(commands.Cog):
 
                 if not timeouts:
                     embed = discord.Embed(
-                        title="⏰ Timeout Status",
+                        title=f"{Config.ICONS['clock_lightgreen']} Timeout Status",
                         description="No users are currently timeouted.",
-                        color=discord.Color.green(),
+                        color=Config.EMBED_COLORS["light_green"],
                     )
                 else:
                     embed = discord.Embed(
-                        title="⏰ Active Timeouts",
+                        title=f"{Config.ICONS['clock']} Active Timeouts",
                         description=f"Found {len(timeouts)} active timeout(s):",
-                        color=discord.Color.orange(),
+                        color=Config.EMBED_COLORS["yellow"],
                     )
 
                     for timeout in timeouts[:10]:  # Limit to 10 to avoid embed limits
@@ -1547,9 +1610,9 @@ class Matchmaking(commands.Cog):
                         target_user.id
                     )
                     embed = discord.Embed(
-                        title="⏰ Timeout Status",
+                        title=f"{Config.ICONS['clock']} Timeout Status",
                         description=f"{'You are' if target_user == interaction.user else f'{target_user.display_name} is'} currently timeouted.",
-                        color=discord.Color.red(),
+                        color=Config.EMBED_COLORS["red"],
                     )
                     embed.add_field(
                         name="Time Remaining",
@@ -1563,9 +1626,9 @@ class Matchmaking(commands.Cog):
                     )
                 else:
                     embed = discord.Embed(
-                        title="⏰ Timeout Status",
+                        title=f"{Config.ICONS['clock_lightgreen']} Timeout Status",
                         description=f"{'You are' if target_user == interaction.user else f'{target_user.display_name} is'} not currently timeouted.",
-                        color=discord.Color.green(),
+                        color=Config.EMBED_COLORS["light_green"],
                     )
 
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -1573,9 +1636,9 @@ class Matchmaking(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to check timeout status: {e}")
             embed = discord.Embed(
-                title="❌ Error",
+                title=f"{Config.ICONS['unsuccess']} Error",
                 description="Failed to check timeout status. Please try again.",
-                color=discord.Color.red(),
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -1597,9 +1660,9 @@ class Matchmaking(commands.Cog):
 
             if not is_timeouted:
                 embed = discord.Embed(
-                    title="⏰ Timeout Status",
+                    title=f"{Config.ICONS['clock_yellow']} Timeout Status",
                     description=f"{user.display_name} is not currently timeouted.",
-                    color=discord.Color.yellow(),
+                    color=Config.EMBED_COLORS["yellow"],
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
@@ -1609,18 +1672,18 @@ class Matchmaking(commands.Cog):
 
             if success:
                 embed = discord.Embed(
-                    title="✅ Timeout Cleared",
+                    title=f"{Config.ICONS['success']} Timeout Cleared",
                     description=f"Successfully cleared timeout for {user.display_name}.",
-                    color=discord.Color.green(),
+                    color=Config.EMBED_COLORS["light_green"],
                 )
 
                 # Try to notify the user
                 try:
                     # Create timeout cleared notification embed
                     user_embed = discord.Embed(
-                        title="✅ Timeout Cleared",
+                        title=f"{Config.ICONS['success']} Timeout Cleared",
                         description="Your timeout has been cleared by an administrator.",
-                        color=discord.Color.green(),
+                        color=Config.EMBED_COLORS["light_green"],
                     )
                     user_embed.add_field(
                         name="Status",
@@ -1637,9 +1700,9 @@ class Matchmaking(commands.Cog):
                     embed.set_footer(text="User could not be notified (DMs disabled).")
             else:
                 embed = discord.Embed(
-                    title="❌ Failed to Clear Timeout",
+                    title=f"{Config.ICONS['unsuccess']} Failed to Clear Timeout",
                     description=f"Failed to clear timeout for {user.display_name}. Please try again.",
-                    color=discord.Color.red(),
+                    color=Config.EMBED_COLORS["red"],
                 )
 
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -1647,9 +1710,9 @@ class Matchmaking(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to clear timeout for user {user.id}: {e}")
             embed = discord.Embed(
-                title="❌ Error",
+                title=f"{Config.ICONS['unsuccess']} Error",
                 description="Failed to clear timeout. Please try again.",
-                color=discord.Color.red(),
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -1669,9 +1732,9 @@ class Matchmaking(commands.Cog):
 
             if timeout_count == 0:
                 embed = discord.Embed(
-                    title="⏰ No Timeouts",
+                    title=f"{Config.ICONS['clock_yellow']} No Timeouts",
                     description="There are no active timeouts to clear.",
-                    color=discord.Color.yellow(),
+                    color=Config.EMBED_COLORS["yellow"],
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
@@ -1681,16 +1744,16 @@ class Matchmaking(commands.Cog):
 
             if success:
                 embed = discord.Embed(
-                    title="✅ All Timeouts Cleared",
+                    title=f"{Config.ICONS['success']} All Timeouts Cleared",
                     description=f"Successfully cleared {timeout_count} timeout(s).",
-                    color=discord.Color.green(),
+                    color=Config.EMBED_COLORS["light_green"],
                 )
                 embed.set_footer(text="All users can now join lobbies again.")
             else:
                 embed = discord.Embed(
-                    title="❌ Failed to Clear Timeouts",
+                    title=f"{Config.ICONS['unsuccess']} Failed to Clear Timeouts",
                     description="Failed to clear all timeouts. Please try again.",
-                    color=discord.Color.red(),
+                    color=Config.EMBED_COLORS["red"],
                 )
 
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -1698,9 +1761,9 @@ class Matchmaking(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to clear all timeouts: {e}")
             embed = discord.Embed(
-                title="❌ Error",
+                title=f"{Config.ICONS['unsuccess']} Error",
                 description="Failed to clear all timeouts. Please try again.",
-                color=discord.Color.red(),
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -1765,9 +1828,9 @@ class Matchmaking(commands.Cog):
             # Create response embed
             if total_deleted > 0:
                 embed = discord.Embed(
-                    title="✅ Team Channels Cleaned Up",
+                    title=f"{Config.ICONS['success']} Team Channels Cleaned Up",
                     description=f"Successfully deleted **{total_deleted}** orphaned team voice channels.",
-                    color=discord.Color.green(),
+                    color=Config.EMBED_COLORS["light_green"],
                 )
 
                 if guild_summary:
@@ -1784,9 +1847,9 @@ class Matchmaking(commands.Cog):
                 )
             else:
                 embed = discord.Embed(
-                    title="✅ No Cleanup Needed",
+                    title=f"{Config.ICONS['success']} No Cleanup Needed",
                     description="No orphaned team voice channels were found.",
-                    color=discord.Color.green(),
+                    color=Config.EMBED_COLORS["light_green"],
                 )
                 embed.set_footer(text="All team voice channels are properly tracked.")
 
@@ -1795,9 +1858,9 @@ class Matchmaking(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to cleanup team channels: {e}")
             embed = discord.Embed(
-                title="❌ Cleanup Failed",
+                title=f"{Config.ICONS['unsuccess']} Cleanup Failed",
                 description="An error occurred while cleaning up team voice channels.",
-                color=discord.Color.red(),
+                color=Config.EMBED_COLORS["red"],
             )
             embed.add_field(
                 name="Error",
@@ -1945,9 +2008,9 @@ class Matchmaking(commands.Cog):
         try:
             if self.lobbies_locked:
                 embed = discord.Embed(
-                    title="⚠️ Lobbies Already Locked",
+                    title=f"{Config.ICONS['info']} Lobbies Already Locked",
                     description="Lobbies are already locked. Registered players cannot connect to lobby voice channels.",
-                    color=discord.Color.orange(),
+                    color=Config.EMBED_COLORS["yellow"],
                 )
                 embed.set_footer(text="Use /unlock_lobbies to restore access.")
                 await interaction.followup.send(embed=embed, ephemeral=True)
@@ -2003,9 +2066,9 @@ class Matchmaking(commands.Cog):
 
             # Create success embed
             embed = discord.Embed(
-                title="🔒 Lobbies Locked Successfully",
+                title=f"{Config.ICONS['lock']} Lobbies Locked Successfully",
                 description="All lobbies have been locked. Registered players can see but cannot connect to lobby voice channels.",
-                color=discord.Color.red(),
+                color=Config.EMBED_COLORS["red"],
             )
             embed.add_field(
                 name="Lobbies Updated",
@@ -2014,7 +2077,7 @@ class Matchmaking(commands.Cog):
             )
             embed.add_field(
                 name="Effect",
-                value="🚫 Registered role cannot connect to voice",
+                value=f"{Config.ICONS['not_allowed']} Registered role cannot connect to voice",
                 inline=True,
             )
             embed.set_footer(
@@ -2029,9 +2092,9 @@ class Matchmaking(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to lock lobbies: {e}")
             embed = discord.Embed(
-                title="❌ Failed to Lock Lobbies",
+                title=f"{Config.ICONS['unsuccess']} Failed to Lock Lobbies",
                 description="An error occurred while locking lobbies.",
-                color=discord.Color.red(),
+                color=Config.EMBED_COLORS["red"],
             )
             embed.add_field(
                 name="Error",
@@ -2053,9 +2116,9 @@ class Matchmaking(commands.Cog):
         try:
             if not self.lobbies_locked:
                 embed = discord.Embed(
-                    title="⚠️ Lobbies Already Unlocked",
+                    title=f"{Config.ICONS['info']} Lobbies Already Unlocked",
                     description="Lobbies are already unlocked. Registered players have full access to lobby voice channels.",
-                    color=discord.Color.orange(),
+                    color=Config.EMBED_COLORS["yellow"],
                 )
                 embed.set_footer(text="Use /lock_lobbies to restrict access.")
                 await interaction.followup.send(embed=embed, ephemeral=True)
@@ -2111,9 +2174,9 @@ class Matchmaking(commands.Cog):
 
             # Create success embed
             embed = discord.Embed(
-                title="🔓 Lobbies Unlocked Successfully",
+                title=f"{Config.ICONS['unlock']} Lobbies Unlocked Successfully",
                 description="All lobbies have been unlocked. Registered players now have full voice access to lobby channels.",
-                color=discord.Color.green(),
+                color=Config.EMBED_COLORS["light_green"],
             )
             embed.add_field(
                 name="Lobbies Updated",
@@ -2122,7 +2185,7 @@ class Matchmaking(commands.Cog):
             )
             embed.add_field(
                 name="Effect",
-                value="✅ Registered role can connect to voice",
+                value=f"{Config.ICONS['success']} Registered role can connect to voice",
                 inline=True,
             )
             embed.set_footer(
@@ -2137,9 +2200,9 @@ class Matchmaking(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to unlock lobbies: {e}")
             embed = discord.Embed(
-                title="❌ Failed to Unlock Lobbies",
+                title=f"{Config.ICONS['unsuccess']} Failed to Unlock Lobbies",
                 description="An error occurred while unlocking lobbies.",
-                color=discord.Color.red(),
+                color=Config.EMBED_COLORS["red"],
             )
             embed.add_field(
                 name="Error",
@@ -2148,6 +2211,270 @@ class Matchmaking(commands.Cog):
             )
             embed.set_footer(text="Please try again or contact an administrator.")
             await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # --- PARTY-BASED MATCHMAKING HELPERS ---
+
+    async def get_party_info_for_players(self, players):
+        """Get party information for all players in the lobby"""
+        party_info = {}
+        party_leaders = []
+        party_groups = {}
+
+        for player in players:
+            party = await Party.find_user_party(str(player.id))
+            if party:
+                party_id = party["party_id"]
+                leader_id = party["leader_id"]
+
+                # Store party info for this player
+                party_info[player.id] = {
+                    "party_id": party_id,
+                    "leader_id": leader_id,
+                    "is_leader": str(player.id) == leader_id,
+                    "party": party,
+                }
+
+                # Track party leaders
+                if str(player.id) == leader_id:
+                    party_leaders.append(player)
+
+                # Group players by party
+                if party_id not in party_groups:
+                    party_groups[party_id] = []
+                party_groups[party_id].append(player)
+
+        return party_info, party_leaders, party_groups
+
+    async def select_party_based_captains(self, lobby):
+        """Select captains prioritizing party leaders when parties are present"""
+        players = list(lobby["players"])
+        party_info, party_leaders, party_groups = await self.get_party_info_for_players(
+            players
+        )
+
+        # If no parties present, use original random selection
+        if not party_leaders:
+            return random.sample(players, 2), party_info, party_groups
+
+        # If only one party leader, select them and one random player from non-party members
+        if len(party_leaders) == 1:
+            captain1 = party_leaders[0]
+            # Get all players not in any party
+            non_party_players = [p for p in players if p.id not in party_info]
+            if non_party_players:
+                captain2 = random.choice(non_party_players)
+            else:
+                # Fallback to random selection if all players are in parties
+                remaining_players = [p for p in players if p != captain1]
+                captain2 = random.choice(remaining_players)
+            return [captain1, captain2], party_info, party_groups
+
+        # If two or more party leaders, select the first two as captains
+        return party_leaders[:2], party_info, party_groups
+
+    async def assign_party_members_to_teams(self, lobby, party_info, party_groups):
+        """Automatically assign party members to their leader's team"""
+        ct_captain = lobby["ct_team"][0]
+        t_captain = lobby["t_team"][0]
+
+        # Assign party members to their captain's team
+        for party_id, party_members in party_groups.items():
+            # Find which captain is the leader of this party
+            party_leader_id = None
+            for member in party_members:
+                if party_info[member.id]["is_leader"]:
+                    party_leader_id = member.id
+                    break
+
+            if party_leader_id:
+                # Assign all party members to the same team as their leader
+                if party_leader_id == ct_captain.id:
+                    # Leader is CT captain, assign all members to CT team
+                    for member in party_members:
+                        if (
+                            member != ct_captain
+                            and member in lobby["available_players"]
+                        ):
+                            lobby["ct_team"].append(member)
+                            lobby["available_players"].remove(member)
+                elif party_leader_id == t_captain.id:
+                    # Leader is T captain, assign all members to T team
+                    for member in party_members:
+                        if member != t_captain and member in lobby["available_players"]:
+                            lobby["t_team"].append(member)
+                            lobby["available_players"].remove(member)
+                else:
+                    # Party leader is not a captain, assign the whole party to the smaller team
+                    ct_size = len(lobby["ct_team"])
+                    t_size = len(lobby["t_team"])
+
+                    if ct_size <= t_size:  # Assign to CT team
+                        for member in party_members:
+                            if member in lobby["available_players"]:
+                                lobby["ct_team"].append(member)
+                                lobby["available_players"].remove(member)
+                    else:
+                        # Assign to T team
+                        for member in party_members:
+                            if member in lobby["available_players"]:
+                                lobby["t_team"].append(member)
+                                lobby["available_players"].remove(member)
+
+    async def determine_next_pick_balanced(self, lobby):
+        """Determine which captain should pick next following proper draft flow"""
+        ct_size = len(lobby["ct_team"])
+        t_size = len(lobby["t_team"])
+        ct_captain = lobby["ct_team"][0]
+        t_captain = lobby["t_team"][0]
+        current_pick = lobby.get("next_pick")
+
+        # If teams are unbalanced, the smaller team ALWAYS picks to balance
+        if ct_size != t_size:
+            # Clear any balancing flags since we're in imbalanced state
+            lobby.pop("just_balanced", None)
+            # Return the captain of the smaller team
+            if ct_size < t_size:
+                return ct_captain
+            else:
+                return t_captain
+
+        # Teams are balanced, use standard alternating draft
+        # Check if we just finished balancing (teams just became equal)
+        if lobby.get("just_balanced"):
+            # Clear the flag and switch to the other captain
+            lobby.pop("just_balanced", None)
+            if current_pick == ct_captain:
+                return t_captain
+            else:
+                return ct_captain
+
+        # Standard case: If no current pick set, CT captain starts
+        if not current_pick:
+            return ct_captain
+
+        # Standard alternating: switch to the other captain
+        if current_pick == ct_captain:
+            return t_captain
+        else:
+            return ct_captain
+
+    async def calculate_picks_needed(self, lobby):
+        """Calculate how many players the current captain needs to pick based on proper draft flow"""
+        if not lobby["available_players"]:
+            return 0
+
+        ct_size = len(lobby["ct_team"])
+        t_size = len(lobby["t_team"])
+        current_captain = lobby["next_pick"]
+
+        # Determine which team the current captain belongs to
+        is_ct_captain = current_captain == lobby["ct_team"][0]
+
+        if is_ct_captain:
+            team_size = ct_size
+            other_team_size = t_size
+        else:
+            team_size = t_size
+            other_team_size = ct_size
+
+        # Calculate the team size difference
+        team_diff = other_team_size - team_size
+
+        # If the current captain's team is smaller, they need to pick multiple players to balance
+        if team_diff > 0:
+            # Pick enough players to balance the teams (but not exceed the other team size)
+            picks_needed = team_diff
+        else:
+            # Standard draft: pick 1 player (teams are equal or current team is larger)
+            picks_needed = 1
+
+        # Don't pick more players than available
+        picks_needed = min(picks_needed, len(lobby["available_players"]))
+
+        # If only 1 player left, they'll be auto-assigned anyway
+        if len(lobby["available_players"]) == 1:
+            return 1
+
+        return picks_needed
+
+    async def handle_draft_picks(self, lobby, picked_members):
+        """Handle multiple draft picks at once"""
+        async with self.lobby_locks[lobby["category"].guild.id]:
+            current_captain = lobby["next_pick"]
+
+            # Check if teams were imbalanced before this pick
+            ct_size_before = len(lobby["ct_team"])
+            t_size_before = len(lobby["t_team"])
+            was_imbalanced = ct_size_before != t_size_before
+
+            # Add all picked players to the correct team
+            for picked_member in picked_members:
+                if current_captain == lobby["ct_team"][0]:
+                    lobby["ct_team"].append(picked_member)
+                else:
+                    lobby["t_team"].append(picked_member)
+                lobby["available_players"].remove(picked_member)
+
+            # Check if teams are now balanced after the pick
+            ct_size_after = len(lobby["ct_team"])
+            t_size_after = len(lobby["t_team"])
+            is_now_balanced = ct_size_after == t_size_after
+
+            # If we just transitioned from imbalanced to balanced, set flag
+            if was_imbalanced and is_now_balanced:
+                lobby["just_balanced"] = True
+
+            # Handle automatic assignment of last player if only one remains
+            if len(lobby["available_players"]) == 1:
+                last_player = lobby["available_players"][0]
+                ct_size = len(lobby["ct_team"])
+                t_size = len(lobby["t_team"])
+
+                # Assign to the smaller team
+                if ct_size <= t_size:
+                    lobby["ct_team"].append(last_player)
+                else:
+                    lobby["t_team"].append(last_player)
+                lobby["available_players"].remove(last_player)
+
+            # Update next pick based on balanced team logic
+            if lobby["available_players"]:
+                lobby["next_pick"] = await self.determine_next_pick_balanced(lobby)
+
+            # --- New Draft UI ---
+            ct_lines = await self.format_team_list(lobby["ct_team"])
+            t_lines = await self.format_team_list(lobby["t_team"])
+            desc = (
+                f"**Counter-Terrorists**\n{ct_lines}\n\n"
+                f"**Terrorists**\n{t_lines}\n\n"
+            )
+            if lobby["available_players"]:
+                picks_needed = await self.calculate_picks_needed(lobby)
+                if picks_needed > 1:
+                    desc += f"Captain {lobby['next_pick'].mention} needs to pick {picks_needed} players…"
+                else:
+                    desc += (
+                        f"Captain {lobby['next_pick'].mention} is currently picking…"
+                    )
+            else:
+                desc += "All players have been drafted."
+
+            embed = discord.Embed(
+                title="Drafting Players Phase",
+                description=desc,
+                color=Config.EMBED_COLORS["draft"],
+            )
+            embed.set_footer(text="Next Phase: Map Veto")
+
+            if lobby["available_players"]:
+                view = await self.get_draft_view(lobby)
+            else:
+                view = None
+
+            await lobby["message"].edit(embed=embed, view=view)
+
+            if not lobby["available_players"]:
+                await self.start_map_veto(lobby)
 
 
 async def setup(bot):

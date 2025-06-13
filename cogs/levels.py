@@ -249,7 +249,7 @@ class LevelsCog(commands.Cog):
         """Create all level roles with correct names and colors"""
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(
-                "❌ You need administrator permissions to use this command.",
+                f"{Config.ICONS['unsuccess']} You need administrator permissions to use this command.",
                 ephemeral=True,
             )
             return
@@ -302,27 +302,27 @@ class LevelsCog(commands.Cog):
 
             # Create response embed
             embed = discord.Embed(
-                title="✅ Level System Setup Complete",
+                title=f"{Config.ICONS['success']} Level System Setup Complete",
                 description="All level roles have been created successfully!",
-                color=discord.Color.green(),
+                color=Config.EMBED_COLORS["light_green"],
             )
 
             if created_roles:
                 embed.add_field(
-                    name="🆕 Created Roles",
+                    name=f"{Config.ICONS['success']} Created Roles",
                     value="\n".join(f"• {role}" for role in created_roles),
                     inline=False,
                 )
 
             if existing_roles:
                 embed.add_field(
-                    name="✅ Existing Roles (Updated if needed)",
+                    name=f"{Config.ICONS['success']} Existing Roles (Updated if needed)",
                     value="\n".join(f"• {role}" for role in existing_roles),
                     inline=False,
                 )
 
             embed.add_field(
-                name="📊 Role Colors",
+                name="Role Colors",
                 value="• Level 1: Gray\n• Level 2-3: Green\n• Level 4-7: Gold\n• Level 8-9: Orange\n• Level 10 & Challenger: Red",
                 inline=False,
             )
@@ -332,9 +332,9 @@ class LevelsCog(commands.Cog):
         except Exception as e:
             logger.error(f"Error in setup_levels: {e}")
             embed = discord.Embed(
-                title="❌ Setup Failed",
+                title=f"{Config.ICONS['unsuccess']} Setup Failed",
                 description=f"An error occurred while setting up level roles:\n```{str(e)}```",
-                color=0xFF0000,
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -347,7 +347,7 @@ class LevelsCog(commands.Cog):
         """Update all players' roles to match their current points"""
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(
-                "❌ You need administrator permissions to use this command.",
+                f"{Config.ICONS['unsuccess']} You need administrator permissions to use this command.",
                 ephemeral=True,
             )
             return
@@ -371,7 +371,8 @@ class LevelsCog(commands.Cog):
 
             if not all_users:
                 await interaction.followup.send(
-                    "❌ No users found in database.", ephemeral=True
+                    f"{Config.ICONS['unsuccess']} No users found in database.",
+                    ephemeral=True,
                 )
                 return
 
@@ -381,9 +382,9 @@ class LevelsCog(commands.Cog):
 
             # Create processing embed
             processing_embed = discord.Embed(
-                title="🔄 Updating Player Levels",
+                title=f"{Config.ICONS['updating']} Updating Player Levels",
                 description=f"Processing {len(all_users)} players...",
-                color=0xFFAA00,
+                color=Config.EMBED_COLORS["yellow"],
             )
             message = await interaction.followup.send(
                 embed=processing_embed, ephemeral=True
@@ -403,28 +404,28 @@ class LevelsCog(commands.Cog):
                 # Update progress every 10 players
                 if (i + 1) % 10 == 0:
                     progress_embed = discord.Embed(
-                        title="🔄 Updating Player Levels",
+                        title=f"{Config.ICONS['updating']} Updating Player Levels",
                         description=f"Progress: {i + 1}/{len(all_users)} players processed",
-                        color=0xFFAA00,
+                        color=Config.EMBED_COLORS["yellow"],
                     )
                     await message.edit(embed=progress_embed)
 
             # Create final results embed
             final_embed = discord.Embed(
-                title="✅ Level Update Complete",
+                title=f"{Config.ICONS['success']} Level Update Complete",
                 description="All player levels have been updated!",
-                color=discord.Color.green(),
+                color=Config.EMBED_COLORS["light_green"],
             )
 
             final_embed.add_field(
-                name="📊 Results",
+                name="Results",
                 value=f"• Successfully updated: {updated_count}\n• Errors: {error_count}\n• Total processed: {len(all_users)}",
                 inline=False,
             )
 
             if error_count > 0:
                 final_embed.add_field(
-                    name="⚠️ Note",
+                    name=f"{Config.ICONS['info']} Note",
                     value="Some players may not be in the server or roles may not exist. Check server logs for details.",
                     inline=False,
                 )
@@ -434,9 +435,9 @@ class LevelsCog(commands.Cog):
         except Exception as e:
             logger.error(f"Error in update_players_levels: {e}")
             embed = discord.Embed(
-                title="❌ Update Failed",
+                title=f"{Config.ICONS['unsuccess']} Update Failed",
                 description=f"An error occurred while updating player levels:\n```{str(e)}```",
-                color=0xFF0000,
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 

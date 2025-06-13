@@ -274,7 +274,7 @@ class Leaderboard(commands.Cog):
             next_season_number = last_season_id + 1
 
             embed = discord.Embed(
-                title="❌ Season Not Active",
+                title=f"{Config.ICONS['unsuccess']} Season Not Active",
                 description="Leaderboard is currently unavailable.",
                 color=0xFF4444,
             )
@@ -292,7 +292,7 @@ class Leaderboard(commands.Cog):
         # Check if bot has permissions in the target channel
         if not target_channel.permissions_for(interaction.guild.me).send_messages:
             await interaction.response.send_message(
-                f"❌ I don't have permission to send messages in {target_channel.mention}",
+                f"{Config.ICONS['unsuccess']} I don't have permission to send messages in {target_channel.mention}",
                 ephemeral=True,
             )
             return
@@ -304,7 +304,9 @@ class Leaderboard(commands.Cog):
             embed, error_msg = await self.create_leaderboard_embed()
 
             if error_msg:
-                await interaction.followup.send(f"❌ {error_msg}", ephemeral=True)
+                await interaction.followup.send(
+                    f"{Config.ICONS['unsuccess']} {error_msg}", ephemeral=True
+                )
                 return
 
             # Send the leaderboard to the target channel
@@ -324,9 +326,9 @@ class Leaderboard(commands.Cog):
 
             # Success response
             embed_response = discord.Embed(
-                title="✅ Leaderboard Posted",
+                title=f"{Config.ICONS['success']} Leaderboard Posted",
                 description=f"Leaderboard has been posted in {target_channel.mention}",
-                color=EMBED_COLOR,
+                color=Config.EMBED_COLORS["light_green"],
             )
             embed_response.add_field(
                 name="Auto-Update",
@@ -338,7 +340,7 @@ class Leaderboard(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to create leaderboard: {e}")
             await interaction.followup.send(
-                "❌ An error occurred while creating the leaderboard. Please try again.",
+                f"{Config.ICONS['unsuccess']} An error occurred while creating the leaderboard. Please try again.",
                 ephemeral=True,
             )
 
@@ -401,7 +403,7 @@ class Leaderboard(commands.Cog):
 
                 leaderboard_text += (
                     f"{medal}**{i}.** {user['nickname']}\n"
-                    f"   📊 **{user['points']}** pts | "
+                    f"   {Config.ICONS['stats']} **{user['points']}** pts | "
                     f"🏆 {user['wins']}W | "
                     f"💀 {user['losses']}L | "
                     f"📈 {user['win_rate']}%\n\n"
@@ -514,16 +516,16 @@ class Leaderboard(commands.Cog):
             await self.remove_leaderboard_from_database(channel_id)
 
             embed = discord.Embed(
-                title="✅ Leaderboard Auto-Update Stopped",
+                title=f"{Config.ICONS['success']} Leaderboard Auto-Update Stopped",
                 description="The leaderboard in this channel will no longer auto-update.",
-                color=EMBED_COLOR,
+                color=Config.EMBED_COLORS["light_green"],
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
             embed = discord.Embed(
-                title="❌ No Active Leaderboard",
+                title=f"{Config.ICONS['unsuccess']} No Active Leaderboard",
                 description="There is no active auto-updating leaderboard in this channel.",
-                color=discord.Color.red(),
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -536,13 +538,13 @@ class Leaderboard(commands.Cog):
         """Show status of all active leaderboards"""
         if not self.leaderboard_messages:
             embed = discord.Embed(
-                title="📊 Leaderboard Status",
+                title=f"{Config.ICONS['info']} Leaderboard Status",
                 description="No active auto-updating leaderboards found.",
-                color=discord.Color.orange(),
+                color=Config.EMBED_COLORS["yellow"],
             )
         else:
             embed = discord.Embed(
-                title="📊 Leaderboard Status",
+                title=f"{Config.ICONS['stats']} Leaderboard Status",
                 description=f"**{len(self.leaderboard_messages)}** active auto-updating leaderboard(s)",
                 color=EMBED_COLOR,
             )

@@ -143,8 +143,8 @@ class Party:
                 member for member in members if member["discord_id"] != discord_id
             ]
 
-            # If no members left, delete the party
-            if not members:
+            # If less than 2 members left, delete the party (minimum party size is 2)
+            if len(members) < 2:
                 return (
                     Config.supabase()
                     .table(cls.TABLE)

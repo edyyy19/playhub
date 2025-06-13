@@ -27,9 +27,9 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
             existing_user = await User.find(interaction.user.id)
             if existing_user:
                 embed = discord.Embed(
-                    title="❌ Already Registered",
+                    title=f"{Config.ICONS['unsuccess']} Already Registered",
                     description="You're already registered in our system!",
-                    color=discord.Color.red(),
+                    color=Config.EMBED_COLORS["red"],
                 )
                 embed.add_field(
                     name="Your Current Registration",
@@ -48,9 +48,9 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
             # Validate that SO2 ID contains only numbers
             if not self.so2_id.value.isdigit():
                 embed = discord.Embed(
-                    title="❌ Invalid Player ID",
+                    title=f"{Config.ICONS['unsuccess']} Invalid Player ID",
                     description="Standoff 2 Player ID must contain only numbers.",
-                    color=discord.Color.red(),
+                    color=Config.EMBED_COLORS["red"],
                 )
                 return await interaction.response.send_message(
                     embed=embed, ephemeral=True
@@ -70,23 +70,23 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                 if len(duplicate_issues) == 2:
                     # Both nickname and Player ID are taken
                     embed = discord.Embed(
-                        title="❌ Both Nickname and Player ID Already Taken",
+                        title=f"{Config.ICONS['unsuccess']} Both Nickname and Player ID Already Taken",
                         description=f"Both the nickname '{self.nickname.value}' and Player ID '{self.so2_id.value}' are already being used by other players.",
-                        color=discord.Color.red(),
+                        color=Config.EMBED_COLORS["red"],
                     )
                 elif "nickname" in duplicate_issues:
                     # Only nickname is taken
                     embed = discord.Embed(
-                        title="❌ Nickname Already Taken",
+                        title=f"{Config.ICONS['unsuccess']} Nickname Already Taken",
                         description=f"The nickname '{self.nickname.value}' is already being used by another player.",
-                        color=discord.Color.red(),
+                        color=Config.EMBED_COLORS["red"],
                     )
                 else:
                     # Only Player ID is taken
                     embed = discord.Embed(
-                        title="❌ Player ID Already Taken",
+                        title=f"{Config.ICONS['unsuccess']} Player ID Already Taken",
                         description=f"The Player ID '{self.so2_id.value}' is already being used by another player.",
-                        color=discord.Color.red(),
+                        color=Config.EMBED_COLORS["red"],
                     )
 
                 return await interaction.response.send_message(
@@ -121,7 +121,10 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                 logger.error(f"Error assigning level role during registration: {e}")
 
             # Create success embed
-            embed = discord.Embed(title="✅ Registration Successful", color=EMBED_COLOR)
+            embed = discord.Embed(
+                title=f"{Config.ICONS['success']} Registration Successful",
+                color=Config.EMBED_COLORS["light_green"],
+            )
             embed.add_field(name="Nickname", value=self.nickname.value, inline=True)
             embed.add_field(name="Player ID", value=self.so2_id.value, inline=True)
 
@@ -145,9 +148,9 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
         except Exception as e:
             logger.error(f"Registration error: {e}")
             embed = discord.Embed(
-                title="❌ Registration Failed",
+                title=f"{Config.ICONS['unsuccess']} Registration Failed",
                 description="An error occurred during registration. Please contact an admin.",
-                color=discord.Color.red(),
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -251,9 +254,9 @@ class Registration(commands.Cog):
 
             # Create success response with details
             embed = discord.Embed(
-                title="✅ Setup Completed Successfully",
+                title=f"{Config.ICONS['success']} Setup Completed Successfully",
                 description=f"Registration system initialized in {channel.mention}",
-                color=EMBED_COLOR,
+                color=Config.EMBED_COLORS["light_green"],
             )
 
             embed.add_field(
@@ -282,7 +285,7 @@ class Registration(commands.Cog):
         except Exception as e:
             logger.error(f"Setup error: {e}")
             await interaction.response.send_message(
-                f"❌ Setup failed: {e}", ephemeral=True
+                f"{Config.ICONS['unsuccess']} Setup failed: {e}", ephemeral=True
             )
 
     @commands.command(name="checkperms")
@@ -319,9 +322,9 @@ class Registration(commands.Cog):
 
             if not user_data:
                 embed = discord.Embed(
-                    title="❌ User Not Found",
+                    title=f"{Config.ICONS['unsuccess']} User Not Found",
                     description=f"{member.mention} is not registered in the database.",
-                    color=discord.Color.red(),
+                    color=Config.EMBED_COLORS["red"],
                 )
                 return await interaction.followup.send(embed=embed)
 
@@ -373,9 +376,9 @@ class Registration(commands.Cog):
                     pass
 
             embed = discord.Embed(
-                title="✅ User Restoration Complete",
+                title=f"{Config.ICONS['success']} User Restoration Complete",
                 description=f"Restored registration data for {member.mention}",
-                color=EMBED_COLOR,
+                color=Config.EMBED_COLORS["light_green"],
             )
             embed.add_field(name="Nickname", value=user_data["nickname"], inline=True)
             embed.add_field(name="Player ID", value=user_data["so2_id"], inline=True)
@@ -385,17 +388,17 @@ class Registration(commands.Cog):
 
             status_text = []
             if role_added:
-                status_text.append("✅ Role added")
+                status_text.append(f"{Config.ICONS['success']} Role added")
             else:
                 status_text.append("✓ Role already present")
 
             if level_role_updated:
-                status_text.append("✅ Level role updated")
+                status_text.append(f"{Config.ICONS['success']} Level role updated")
             else:
-                status_text.append("⚠️ Level role update failed")
+                status_text.append(f"{Config.ICONS['info']} Level role update failed")
 
             if nickname_updated:
-                status_text.append("✅ Nickname updated")
+                status_text.append(f"{Config.ICONS['success']} Nickname updated")
             else:
                 status_text.append("✓ Nickname already correct")
 
@@ -408,9 +411,9 @@ class Registration(commands.Cog):
         except Exception as e:
             logger.error(f"Error in restore_user command: {e}")
             embed = discord.Embed(
-                title="❌ Restoration Failed",
+                title=f"{Config.ICONS['unsuccess']} Restoration Failed",
                 description=f"An error occurred: {e}",
-                color=discord.Color.red(),
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.followup.send(embed=embed)
 

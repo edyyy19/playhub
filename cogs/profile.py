@@ -41,9 +41,9 @@ class EditProfileModal(discord.ui.Modal, title="Edit Profile"):
             # Validate that SO2 ID contains only numbers
             if not self.so2_id.value.isdigit():
                 embed = discord.Embed(
-                    title="❌ Invalid Player ID",
+                    title=f"{Config.ICONS['unsuccess']} Invalid Player ID",
                     description="Standoff 2 Player ID must contain only numbers.",
-                    color=discord.Color.red(),
+                    color=Config.EMBED_COLORS["red"],
                 )
                 return await interaction.response.send_message(
                     embed=embed, ephemeral=True
@@ -80,23 +80,23 @@ class EditProfileModal(discord.ui.Modal, title="Edit Profile"):
                 if len(duplicate_issues) == 2:
                     # Both nickname and Player ID are taken
                     embed = discord.Embed(
-                        title="❌ Both Nickname and Player ID Already Taken",
+                        title=f"{Config.ICONS['unsuccess']} Both Nickname and Player ID Already Taken",
                         description=f"Both the nickname '{self.nickname.value}' and Player ID '{self.so2_id.value}' are already being used by other players.",
-                        color=discord.Color.red(),
+                        color=Config.EMBED_COLORS["red"],
                     )
                 elif "nickname" in duplicate_issues:
                     # Only nickname is taken
                     embed = discord.Embed(
-                        title="❌ Nickname Already Taken",
+                        title=f"{Config.ICONS['unsuccess']} Nickname Already Taken",
                         description=f"The nickname '{self.nickname.value}' is already being used by another player.",
-                        color=discord.Color.red(),
+                        color=Config.EMBED_COLORS["red"],
                     )
                 else:
                     # Only Player ID is taken
                     embed = discord.Embed(
-                        title="❌ Player ID Already Taken",
+                        title=f"{Config.ICONS['unsuccess']} Player ID Already Taken",
                         description=f"The Player ID '{self.so2_id.value}' is already being used by another player.",
-                        color=discord.Color.red(),
+                        color=Config.EMBED_COLORS["red"],
                     )
 
                 return await interaction.response.send_message(
@@ -127,7 +127,8 @@ class EditProfileModal(discord.ui.Modal, title="Edit Profile"):
 
             # Create success embed
             embed = discord.Embed(
-                title="✅ Profile Updated Successfully", color=EMBED_COLOR
+                title=f"{Config.ICONS['success']} Profile Updated Successfully",
+                color=Config.EMBED_COLORS["light_green"],
             )
             embed.add_field(name="Nickname", value=self.nickname.value, inline=True)
             embed.add_field(name="Player ID", value=self.so2_id.value, inline=True)
@@ -136,13 +137,15 @@ class EditProfileModal(discord.ui.Modal, title="Edit Profile"):
             if not changes:
                 status_message = "No changes were made"
             else:
-                status_message = f"Updated: {', '.join(changes)}"
+                status_message = (
+                    f"{Config.ICONS['success']} Updated: {', '.join(changes)}"
+                )
 
                 if nickname_changed:
                     if discord_nickname_updated:
-                        status_message += "\n✅ Discord nickname updated successfully"
+                        status_message += f"\n{Config.ICONS['success']} Discord nickname updated successfully"
                     else:
-                        status_message += "\n⚠️ Discord nickname couldn't be changed (missing permissions)"
+                        status_message += f"\n{Config.ICONS['info']} Discord nickname couldn't be changed (missing permissions)"
 
             embed.add_field(
                 name="Status",
@@ -158,9 +161,9 @@ class EditProfileModal(discord.ui.Modal, title="Edit Profile"):
         except Exception as e:
             logger.error(f"Profile update error: {e}")
             embed = discord.Embed(
-                title="❌ Profile Update Failed",
+                title=f"{Config.ICONS['unsuccess']} Profile Update Failed",
                 description="An error occurred while updating your profile. Please contact an admin.",
-                color=discord.Color.red(),
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -180,9 +183,9 @@ class Profile(commands.Cog):
 
             if not user_data:
                 embed = discord.Embed(
-                    title="❌ Not Registered",
+                    title=f"{Config.ICONS['unsuccess']} Not Registered",
                     description="You need to register first before editing your profile!",
-                    color=discord.Color.red(),
+                    color=Config.EMBED_COLORS["red"],
                 )
                 embed.add_field(
                     name="How to Register",
@@ -203,9 +206,9 @@ class Profile(commands.Cog):
         except Exception as e:
             logger.error(f"Error in edit_profile command: {e}")
             embed = discord.Embed(
-                title="❌ Error",
+                title=f"{Config.ICONS['unsuccess']} Error",
                 description="An error occurred while loading your profile. Please contact an admin.",
-                color=discord.Color.red(),
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -230,9 +233,9 @@ class Profile(commands.Cog):
             if not user_data:
                 if target_user == interaction.user:
                     embed = discord.Embed(
-                        title="❌ Not Registered",
+                        title=f"{Config.ICONS['unsuccess']} Not Registered",
                         description="You haven't registered yet!",
-                        color=discord.Color.red(),
+                        color=Config.EMBED_COLORS["red"],
                     )
                     embed.add_field(
                         name="How to Register",
@@ -241,9 +244,9 @@ class Profile(commands.Cog):
                     )
                 else:
                     embed = discord.Embed(
-                        title="❌ User Not Found",
+                        title=f"{Config.ICONS['unsuccess']} User Not Found",
                         description=f"{target_user.mention} is not registered.",
-                        color=discord.Color.red(),
+                        color=Config.EMBED_COLORS["red"],
                     )
                 return await interaction.followup.send(embed=embed)
 
@@ -361,9 +364,9 @@ class Profile(commands.Cog):
         except Exception as e:
             logger.error(f"Error in profile command: {e}")
             embed = discord.Embed(
-                title="❌ Error",
+                title=f"{Config.ICONS['unsuccess']} Error",
                 description="An error occurred while loading the profile. Please contact an admin.",
-                color=discord.Color.red(),
+                color=Config.EMBED_COLORS["red"],
             )
             if interaction.response.is_done():
                 await interaction.followup.send(embed=embed)

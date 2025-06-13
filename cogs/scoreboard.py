@@ -68,9 +68,9 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
         # Check if results already submitted
         if match_data.get("results_submitted", False):
             embed = discord.Embed(
-                title="❌ Results Already Submitted",
+                title=f"{Config.ICONS['unsuccess']} Results Already Submitted",
                 description="Results have already been submitted for this match.",
-                color=0xFF0000,
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
@@ -82,9 +82,9 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
 
         if not submission_locked:
             embed = discord.Embed(
-                title="❌ Submission In Progress",
+                title=f"{Config.ICONS['unsuccess']} Submission In Progress",
                 description="This match is already being processed by another player or has been submitted. Please try again in a moment.",
-                color=0xFF4444,
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
@@ -133,8 +133,8 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
 
         # Ask for screenshot upload
         upload_embed = discord.Embed(
-            title="📷 Upload Scoreboard Screenshot",
-            description="Please upload the scoreboard screenshot in your next message.\n\n⏰ **Timeout:** 60 seconds",
+            title=f"{Config.ICONS['camera']} Upload Scoreboard Screenshot",
+            description=f"Please upload the scoreboard screenshot in your next message.\n\n{Config.ICONS['clock']} **Timeout:** 60 seconds",
             color=0x0099FF,
         )
         upload_embed.add_field(
@@ -168,12 +168,12 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
                 "message", check=check, timeout=60.0
             )  # Show processing embed
             processing_embed = discord.Embed(
-                title="🔄 Processing Screenshot",
+                title=f"{Config.ICONS['updating']} Processing Screenshot",
                 description="Analyzing screenshot data...",
-                color=0xFFAA00,
+                color=Config.EMBED_COLORS["yellow"],
             )
             processing_embed.add_field(
-                name="📊 Analysis Steps",
+                name=f"{Config.ICONS['stats']} Analysis Steps",
                 value="• Reading player statistics\n• Matching players to database\n• Calculating results\n• Generating final scoreboard",
                 inline=False,
             )
@@ -421,9 +421,9 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
 
                 # Create embed for player matching error
                 embed = discord.Embed(
-                    title="❌ Insufficient Player Matches",
+                    title=f"{Config.ICONS['unsuccess']} Insufficient Player Matches",
                     description=f"Found {matched_count}/{total_db_players} players ({match_rate:.1%}) - Need at least 50% to validate match.",
-                    color=0xFF0000,  # Red color
+                    color=Config.EMBED_COLORS["red"],  # Red color
                 )
 
                 # Expected players field
@@ -453,7 +453,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
 
                 # Solution field
                 embed.add_field(
-                    name="💡 Solution",
+                    name=f"{Config.ICONS['info']} Solution",
                     value="Please ensure the scoreboard shows players from your match with clear, readable names.",
                     inline=False,
                 )
@@ -481,9 +481,9 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
 
                 # Create embed for team validation failure
                 error_embed = discord.Embed(
-                    title="❌ Team Structure Validation Failed",
+                    title=f"{Config.ICONS['unsuccess']} Team Structure Validation Failed",
                     description="The team structure in the screenshot does not match the expected team structure for this match.",
-                    color=0xFF4444,
+                    color=Config.EMBED_COLORS["red"],
                 )
 
                 # Show expected team structure
@@ -709,12 +709,12 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                         "No permission to delete screenshot message"
                     )  # Update processing message or send new success embed
             success_embed = discord.Embed(
-                title="✅ Scoreboard Successfully Processed",
+                title=f"{Config.ICONS['success']} Scoreboard Successfully Processed",
                 description="Screenshot analysis completed successfully!",
-                color=0xB2FA19,
+                color=Config.EMBED_COLORS["light_green"],
             )
             success_embed.add_field(
-                name="📊 Match Results",
+                name=f"{Config.ICONS['stats']} Match Results",
                 value=f"**Matched:** {matched_count}/{total_db_players} players ({match_rate:.1%})\n"
                 f"**CT Team:** {len(updated_ct_team)} players\n"
                 f"**T Team:** {len(updated_t_team)} players",
@@ -786,18 +786,18 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 matched[db_player] = best_match
                 used_extracted.add(best_match["name"])
                 match_details.append(
-                    f"✅ '{db_player}' → '{best_match['name']}' ({best_ratio:.2f})"
+                    f"{Config.ICONS['success']} '{db_player}' → '{best_match['name']}' ({best_ratio:.2f})"
                 )
             else:
                 # Find closest match for debugging
                 if all_ratios:
                     closest = max(all_ratios, key=lambda x: x[1])
                     match_details.append(
-                        f"❌ '{db_player}' → closest: '{closest[0]}' ({closest[1]:.2f})"
+                        f"{Config.ICONS['unsuccess']} '{db_player}' → closest: '{closest[0]}' ({closest[1]:.2f})"
                     )
                 else:
                     match_details.append(
-                        f"❌ '{db_player}' → no extracted players found"
+                        f"{Config.ICONS['unsuccess']} '{db_player}' → no extracted players found"
                     )
 
         # Log matching details for debugging
@@ -892,7 +892,8 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             # Upload image to Discord
             file = discord.File(image_path, filename="scoreboard_results.png")
             embed = discord.Embed(
-                title=f"✅ Match #{match_data['match_id']} Results", color=0xB2FA19
+                title=f"{Config.ICONS['success_playcolor']} Match #{match_data['match_id']} Results",
+                color=0xB2FA19,
             )
             embed.set_image(url="attachment://scoreboard_results.png")
             embed.set_footer(text=f"Results processed at {current_date}")
@@ -909,7 +910,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             logger.error(f"Error sending final results image: {e}")
             # Fallback to text message if image generation fails
             winner = "Counter-Terrorists" if ct_score > t_score else "Terrorists"
-            fallback_msg = f"✅ **Match {match_data['match_id']} Results**\n"
+            fallback_msg = f"{Config.ICONS['success']} **Match {match_data['match_id']} Results**\n"
             fallback_msg += f"**Map:** {match_data.get('map', 'Unknown')}\n"
             fallback_msg += f"**Score:** {ct_score} - {t_score}\n"
             fallback_msg += f"**Winner:** {winner}\n\n"
@@ -1052,12 +1053,12 @@ class SubmitScoreboardView(discord.ui.View):
             next_season_number = last_season_id + 1
 
             embed = discord.Embed(
-                title="❌ Season Not Active",
+                title=f"{Config.ICONS['unsuccess']} Season Not Active",
                 description="Submitting results is currently disabled because there is no active season.",
-                color=0xFF4444,
+                color=Config.EMBED_COLORS["red"],
             )
             embed.add_field(
-                name="💡 Information",
+                name=f"{Config.ICONS['info']} Info",
                 value=f"Please wait for Season {next_season_number} to start.",
                 inline=False,
             )
@@ -1132,7 +1133,7 @@ class Scoreboard(commands.Cog):
                 )
 
                 embed = discord.Embed(
-                    title="📊 Scoreboard Submission",
+                    title=f"{Config.ICONS['stats']} Scoreboard Submission",
                     description=f"Scoreboard results will be posted to {results_channel_mention}",
                     color=0xB2FA19,
                 )
@@ -1191,7 +1192,7 @@ class Scoreboard(commands.Cog):
 
             # Create embed with button
             embed = discord.Embed(
-                title="📊 Scoreboard Submission",
+                title=f"{Config.ICONS['stats']} Scoreboard Submission",
                 description=f"Scoreboard results will be posted to {target_channel.mention}",
                 color=0xB2FA19,
             )
@@ -1215,22 +1216,22 @@ class Scoreboard(commands.Cog):
 
             # Confirm to admin
             success_embed = discord.Embed(
-                title="✅ Scoreboard Channel Configured",
+                title=f"{Config.ICONS['success']} Scoreboard Channel Configured",
                 description=f"Scoreboard submission set up successfully!\n\n"
                 f"**Submission Channel:** {submission_channel.mention}\n"
                 f"**Results Channel:** {target_channel.mention}\n\n"
                 f"Users can now submit match results using the button above.\n"
                 f"This configuration will persist across bot restarts.",
-                color=discord.Color.green(),
+                color=Config.EMBED_COLORS["light_green"],
             )
             await interaction.response.send_message(embed=success_embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f"Error setting scoreboard channel: {e}")
             embed = discord.Embed(
-                title="❌ Setup Error",
+                title=f"{Config.ICONS['unsuccess']} Setup Error",
                 description="An error occurred while setting up the scoreboard channel. Please try again.",
-                color=0xFF0000,
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
 

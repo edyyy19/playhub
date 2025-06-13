@@ -52,9 +52,9 @@ class Seasons(commands.Cog):
         # Check if user has Founder role
         if not self.has_founder_role(interaction):
             embed = discord.Embed(
-                title="❌ Permission Denied",
+                title=f"{Config.ICONS['unsuccess']} Permission Denied",
                 description="This command can only be used by users with the **Founder** role.",
-                color=0xFF4444,
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -66,12 +66,12 @@ class Seasons(commands.Cog):
             ongoing_season = await Season.get_ongoing_season()
             if ongoing_season:
                 embed = discord.Embed(
-                    title="❌ Season Already Active",
+                    title=f"{Config.ICONS['unsuccess']} Season Already Active",
                     description=f"Season {ongoing_season['season_id']} is already active and started on <t:{self._parse_timestamp(ongoing_season['started_at'])}:F>.",
-                    color=0xFF4444,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 embed.add_field(
-                    name="💡 Tip",
+                    name=f"{Config.ICONS['info']} Tip",
                     value="Use `/end_season` to end the current season before starting a new one.",
                     inline=False,
                 )
@@ -89,17 +89,17 @@ class Seasons(commands.Cog):
 
                 # Success embed
                 embed = discord.Embed(
-                    title="🏁 Season Started!",
+                    title=f"{Config.ICONS['season']} Season Started!",
                     description=f"**Season {new_season['season_id']}** has begun!",
                     color=EMBED_COLOR,
                 )
                 embed.add_field(
-                    name="📅 Started",
+                    name=f"{Config.ICONS['calendar']} Started",
                     value=f"<t:{self._parse_timestamp(new_season['started_at'])}:F>",
                     inline=True,
                 )
                 embed.add_field(
-                    name="🎮 Changes Made",
+                    name=f"{Config.ICONS['changes']} Changes Made",
                     value="• New season created\n• Match history cleared\n• Match IDs reset (start from #1)\n• Submit results enabled\n• Leaderboard enabled",
                     inline=False,
                 )
@@ -117,18 +117,18 @@ class Seasons(commands.Cog):
             except Exception as e:
                 logger.error(f"Error during season start transaction: {e}")
                 embed = discord.Embed(
-                    title="❌ Season Start Failed",
+                    title=f"{Config.ICONS['unsuccess']} Season Start Failed",
                     description="An error occurred while starting the new season. Please try again.",
-                    color=0xFF4444,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f"Error in start_season command: {e}")
             embed = discord.Embed(
-                title="❌ Command Error",
+                title=f"{Config.ICONS['unsuccess']} Command Error",
                 description="An unexpected error occurred. Please try again.",
-                color=0xFF4444,
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -141,9 +141,9 @@ class Seasons(commands.Cog):
         # Check if user has Founder role
         if not self.has_founder_role(interaction):
             embed = discord.Embed(
-                title="❌ Permission Denied",
+                title=f"{Config.ICONS['unsuccess']} Permission Denied",
                 description="This command can only be used by users with the **Founder** role.",
-                color=0xFF4444,
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -155,12 +155,12 @@ class Seasons(commands.Cog):
             ongoing_season = await Season.get_ongoing_season()
             if not ongoing_season:
                 embed = discord.Embed(
-                    title="❌ No Active Season",
+                    title=f"{Config.ICONS['unsuccess']} No Active Season",
                     description="There is no ongoing season to end.",
-                    color=0xFF4444,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 embed.add_field(
-                    name="💡 Tip",
+                    name=f"{Config.ICONS['info']} Tip",
                     value="Use `/start_season` to start a new season.",
                     inline=False,
                 )
@@ -169,12 +169,12 @@ class Seasons(commands.Cog):
 
             # Start archiving process
             processing_embed = discord.Embed(
-                title="🔄 Ending Season...",
+                title=f"{Config.ICONS['updating']} Ending Season...",
                 description=f"Ending Season {ongoing_season['season_id']} and archiving data...",
-                color=0xFFAA00,
+                color=Config.EMBED_COLORS["yellow"],
             )
             processing_embed.add_field(
-                name="📊 Progress",
+                name=f"{Config.ICONS['stats']} Progress",
                 value="• Retrieving matches...\n• Collecting player stats...\n• Resetting player statistics...\n• Updating season record...",
                 inline=False,
             )
@@ -200,27 +200,27 @@ class Seasons(commands.Cog):
 
                 # Success embed
                 embed = discord.Embed(
-                    title="🏁 Season Ended!",
+                    title=f"{Config.ICONS['season']} Season Ended!",
                     description=f"**Season {ongoing_season['season_id']}** has been completed and archived.",
                     color=EMBED_COLOR,
                 )
                 embed.add_field(
-                    name="📊 Season Statistics",
+                    name=f"{Config.ICONS['stats']} Season Statistics",
                     value=f"• **Matches Archived:** {len(all_matches)}\n• **Players Archived:** {len(all_users_stats)}",
                     inline=False,
                 )
                 embed.add_field(
-                    name="📅 Started",
+                    name=f"{Config.ICONS['calendar']} Started",
                     value=f"<t:{self._parse_timestamp(ongoing_season['started_at'])}:F>",
                     inline=True,
                 )
                 embed.add_field(
-                    name="📅 Ended",
+                    name=f"{Config.ICONS['calendar']} Ended",
                     value=f"<t:{int(datetime.now().timestamp())}:F>",
                     inline=True,
                 )
                 embed.add_field(
-                    name="🎮 Changes Made",
+                    name=f"{Config.ICONS['changes']} Changes Made",
                     value="• Season marked as completed\n• Match/player data archived\n• Player stats reset (200 pts, 0 K/D/W/L)\n• Match history cleared\n• Match IDs reset (start from #1)\n• Submit results disabled\n• Leaderboard disabled",
                     inline=False,
                 )
@@ -238,18 +238,18 @@ class Seasons(commands.Cog):
             except Exception as e:
                 logger.error(f"Error during season end transaction: {e}")
                 embed = discord.Embed(
-                    title="❌ Season End Failed",
+                    title=f"{Config.ICONS['unsuccess']} Season End Failed",
                     description="An error occurred while ending the season. Please try again.",
-                    color=0xFF4444,
+                    color=Config.EMBED_COLORS["red"],
                 )
                 await processing_message.edit(embed=embed)
 
         except Exception as e:
             logger.error(f"Error in end_season command: {e}")
             embed = discord.Embed(
-                title="❌ Command Error",
+                title=f"{Config.ICONS['unsuccess']} Command Error",
                 description="An unexpected error occurred. Please try again.",
-                color=0xFF4444,
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -266,17 +266,17 @@ class Seasons(commands.Cog):
                 matches_count = await Season.get_completed_matches_count()
 
                 embed = discord.Embed(
-                    title="📅 Current Season Status",
+                    title=f"{Config.ICONS['calendar']} Current Season Status",
                     description=f"**Season {ongoing_season['season_id']} is currently ACTIVE**",
                     color=EMBED_COLOR,
                 )
                 embed.add_field(
-                    name="📅 Started",
+                    name=f"{Config.ICONS['calendar']} Started",
                     value=f"<t:{self._parse_timestamp(ongoing_season['started_at'])}:F>",
                     inline=False,
                 )
                 embed.add_field(
-                    name="🎮 Matches Played",
+                    name=f"{Config.ICONS['changes']} Matches Played",
                     value=f"**{matches_count}** completed matches",
                     inline=False,
                 )
@@ -286,16 +286,16 @@ class Seasons(commands.Cog):
                 next_season_number = last_season_id + 1
 
                 embed = discord.Embed(
-                    title="📅 No Active Season",
-                    color=0xFF4444,
+                    title=f"{Config.ICONS['unsuccess']} No Active Season",
+                    color=Config.EMBED_COLORS["red"],
                 )
                 embed.add_field(
-                    name="⚠️ Matchmaking Notice",
+                    name=f"{Config.ICONS['info']} Matchmaking Notice",
                     value="Matchmaking is available, but matches **will not be counted** towards stats or leaderboard until a new season starts.",
                     inline=False,
                 )
                 embed.add_field(
-                    name="💡 Note",
+                    name=f"{Config.ICONS['info']} Note",
                     value=f"Please wait for Season {next_season_number} to start for ranked matches.",
                     inline=False,
                 )
@@ -305,9 +305,9 @@ class Seasons(commands.Cog):
         except Exception as e:
             logger.error(f"Error in season_status command: {e}")
             embed = discord.Embed(
-                title="❌ Command Error",
+                title=f"{Config.ICONS['unsuccess']} Command Error",
                 description="An unexpected error occurred while checking season status.",
-                color=0xFF4444,
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
