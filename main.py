@@ -40,6 +40,7 @@ async def on_ready():
             await bot.load_extension("cogs.levels")
             await bot.load_extension("cogs.seasons")
             await bot.load_extension("cogs.parties")
+            await bot.load_extension("cogs.leagues")
             synced = await bot.tree.sync()
             logger.info(f"Successfully synced {len(synced)} commands")
             for cmd in synced:

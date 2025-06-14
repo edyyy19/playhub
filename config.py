@@ -37,6 +37,10 @@ class Config:
         "updating": "<:discord_updating:1382911658250469407>",
         "lock": "<:discord_lock:1382911679074926602>",
         "unlock": "<:discord_unlock:1382911664982327376>",
+        "instructions": "<:discord_instructions:1383130937499455488>",
+        "league": "<:discord_league:1383226342358908998>",
+        "tag": "<:discord_tag:1383229700381605898>",
+        "sql": "<:discord_sql:1383230660814180466>",
     }
 
     EMBED_COLORS = {

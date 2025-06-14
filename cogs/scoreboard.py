@@ -138,7 +138,7 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
             color=0x0099FF,
         )
         upload_embed.add_field(
-            name="📋 Instructions",
+            name=f"{Config.ICONS['instructions']} Instructions",
             value="• Make sure the scoreboard shows all player stats\n• Supported formats: PNG, JPG, JPEG,\n• Clear image quality for best results",
             inline=False,
         )
@@ -491,7 +491,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 expected_t = [p["nickname"] for p in t_team]
 
                 error_embed.add_field(
-                    name="📋 Expected Team Structure",
+                    name=f"{Config.ICONS['instructions']} Expected Team Structure",
                     value=f"**Team 1:** {', '.join(expected_ct)}\n**Team 2:** {', '.join(expected_t)}",
                     inline=False,
                 )
@@ -786,18 +786,18 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 matched[db_player] = best_match
                 used_extracted.add(best_match["name"])
                 match_details.append(
-                    f"{Config.ICONS['success']} '{db_player}' → '{best_match['name']}' ({best_ratio:.2f})"
+                    f"✅ '{db_player}' → '{best_match['name']}' ({best_ratio:.2f})"
                 )
             else:
                 # Find closest match for debugging
                 if all_ratios:
                     closest = max(all_ratios, key=lambda x: x[1])
                     match_details.append(
-                        f"{Config.ICONS['unsuccess']} '{db_player}' → closest: '{closest[0]}' ({closest[1]:.2f})"
+                        f"❌ '{db_player}' → closest: '{closest[0]}' ({closest[1]:.2f})"
                     )
                 else:
                     match_details.append(
-                        f"{Config.ICONS['unsuccess']} '{db_player}' → no extracted players found"
+                        f"❌ '{db_player}' → no extracted players found"
                     )
 
         # Log matching details for debugging
