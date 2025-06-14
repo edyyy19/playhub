@@ -44,13 +44,28 @@ class Matchmaking(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to initialize timeout manager: {e}")
 
+    def get_leagues_cog(self):
+        """Get the leagues cog for accessing league methods"""
+        return self.bot.get_cog("Leagues")
+
+    async def league_name_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """
+        Autocomplete function for league names - delegates to leagues cog
+        """
+        leagues_cog = self.get_leagues_cog()
+        if leagues_cog:
+            return await leagues_cog.league_name_autocomplete(interaction, current)
+        return []
+
     @app_commands.command(
         name="create_lobby", description="Create a new matchmaking lobby."
     )
+    @app_commands.describe(league_name="The league to create the lobby for (required)")
+    @app_commands.autocomplete(league_name=league_name_autocomplete)
     @app_commands.default_permissions(administrator=True)
-    async def create_lobby(
-        self, interaction: discord.Interaction, required_role: discord.Role = None
-    ):
+    async def create_lobby(self, interaction: discord.Interaction, league_name: str):
         # Check if interaction has a valid guild
         if not interaction.guild:
             await interaction.response.send_message(
@@ -64,34 +79,91 @@ class Matchmaking(commands.Cog):
 
                 if not guild:
                     raise ValueError("Could not access the server.")
-
                 # Determine which role to use for the lobby
-                if required_role:
-                    lobby_role = required_role
-                    lobby_role_name = required_role.name
-                else:
-                    # Get the default Registered role
-                    lobby_role = discord.utils.get(
-                        guild.roles, name=Config.REGISTERED_ROLE
+                # Validate league name is provided
+                if not league_name or len(league_name.strip()) == 0:
+                    await interaction.response.send_message(
+                        f"{Config.ICONS['unsuccess']} **League selection is required**\n"
+                        "Please specify a league to create the lobby for. "
+                        "Use the autocomplete to select from available leagues.",
+                        ephemeral=True,
                     )
-                    if not lobby_role:
-                        # Create the role if it doesn't exist
-                        lobby_role = await guild.create_role(
-                            name=Config.REGISTERED_ROLE,
-                            color=0xB2FA19,  # Vibrant green color
-                            reason="Auto-created for registered players",
-                        )
-                    lobby_role_name = Config.REGISTERED_ROLE
+                    return
+
+                league_name = league_name.strip()
+                # Get league data from database using leagues cog
+                leagues_cog = self.get_leagues_cog()
+                if not leagues_cog:
+                    embed = discord.Embed(
+                        title=f"{Config.ICONS['unsuccess']} Leagues System Unavailable",
+                        description="The leagues system is currently not available. Please contact an administrator.",
+                        color=Config.EMBED_COLORS["red"],
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+
+                league_data = await leagues_cog.get_league_by_name(league_name)
+                if not league_data:
+                    embed = discord.Embed(
+                        title=f"{Config.ICONS['unsuccess']} League Not Found",
+                        description=f"The league **'{league_name}'** does not exist in the database.",
+                        color=Config.EMBED_COLORS["red"],
+                    )
+                    embed.add_field(
+                        name=f"{Config.ICONS['info']} Suggestions",
+                        value="• Use the autocomplete to select from available leagues\n• Check the spelling of the league name\n• Use `/list_leagues` to see all available leagues",
+                        inline=False,
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+
+                # Find the associated Discord role
+                lobby_role = await leagues_cog.find_discord_role_for_league(
+                    guild, league_data["league_name"]
+                )
+                if not lobby_role:
+                    embed = discord.Embed(
+                        title=f"{Config.ICONS['unsuccess']} Discord Role Not Found",
+                        description=f"The Discord role for league **'{league_name}'** could not be found.",
+                        color=Config.EMBED_COLORS["red"],
+                    )
+                    embed.add_field(
+                        name=f"{Config.ICONS['info']} What might be wrong",
+                        value="• The Discord role was deleted after the league was created\n• The role name was changed manually\n• League setup is incomplete",
+                        inline=False,
+                    )
+                    embed.add_field(
+                        name=f"{Config.ICONS['info']} Solutions",
+                        value="• Contact an administrator to recreate the role\n• Use `/list_leagues` to check league status\n• Try recreating the league if necessary",
+                        inline=False,
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+
+                lobby_role_name = lobby_role.name
 
                 lobby_number = self.lobby_counter
                 self.lobby_counter += 1
                 category_name = f"[5v5] | {lobby_role_name}"
-
                 # Check bot permissions
                 if not guild.me.guild_permissions.manage_channels:
-                    raise ValueError(
-                        "Bot doesn't have permission to manage channels in this server."
+                    embed = discord.Embed(
+                        title=f"{Config.ICONS['unsuccess']} Missing Permissions",
+                        description="I don't have permission to manage channels in this server.",
+                        color=Config.EMBED_COLORS["red"],
                     )
+                    embed.add_field(
+                        name=f"{Config.ICONS['info']} Required Permission",
+                        value="`Manage Channels` - Needed to create lobby categories and channels",
+                        inline=False,
+                    )
+                    embed.add_field(
+                        name=f"{Config.ICONS['info']} How to fix",
+                        value="• Go to Server Settings → Roles\n• Find my role and enable `Manage Channels`\n• Or contact an administrator",
+                        inline=False,
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
                 # Set up permission overwrites - everyone can see, only specific role can join
                 overwrites = {
                     guild.default_role: discord.PermissionOverwrite(
@@ -191,17 +263,80 @@ class Matchmaking(commands.Cog):
                 )
 
                 await interaction.response.send_message(embed=embed, ephemeral=True)
+            except discord.Forbidden:
+                logger.error(f"Forbidden error creating lobby: Missing permissions")
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Permission Denied",
+                    description="I don't have sufficient permissions to create the lobby.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Required Permissions",
+                    value="• `Manage Channels` - Create categories and channels\n• `Manage Roles` - Set up channel permissions\n• `Send Messages` - Send lobby information",
+                    inline=False,
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Contact",
+                    value="Please contact a server administrator to fix permissions.",
+                    inline=False,
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            except discord.HTTPException as he:
+                logger.error(f"Discord HTTP error creating lobby: {he}")
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Discord API Error",
+                    description="Failed to create lobby due to a Discord API issue.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Possible Causes",
+                    value="• Server has reached channel limits\n• Rate limited by Discord\n• Temporary Discord outage",
+                    inline=False,
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Solutions",
+                    value="• Wait a few minutes and try again\n• Check if server has too many channels\n• Contact support if issue persists",
+                    inline=False,
+                )
+                embed.set_footer(text=f"Error Code: {he.status}")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
             except ValueError as ve:
-                logger.error(f"Error creating lobby - validation error: {ve}")
-                await interaction.response.send_message(
-                    f"Failed to create lobby: {ve}", ephemeral=True
+                logger.error(f"Validation error creating lobby: {ve}")
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Configuration Error",
+                    description=f"There's an issue with the server or league configuration.",
+                    color=Config.EMBED_COLORS["red"],
                 )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Error Details",
+                    value=f"```{str(ve)}```",
+                    inline=False,
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} What to do",
+                    value="• Contact an administrator\n• Check server configuration\n• Verify league setup is complete",
+                    inline=False,
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
             except Exception as e:
-                logger.error(f"Error creating lobby - unexpected error: {e}")
-                await interaction.response.send_message(
-                    "Failed to create lobby due to an unexpected error. Please try again later.",
-                    ephemeral=True,
+                logger.error(f"Unexpected error creating lobby: {e}")
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Unexpected Error",
+                    description="An unexpected error occurred while creating the lobby.",
+                    color=Config.EMBED_COLORS["red"],
                 )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Error Information",
+                    value=f"```{str(e)[:1000]}```",
+                    inline=False,
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Next Steps",
+                    value="• Try again in a few minutes\n• Contact an administrator if the issue persists\n• Check that all required systems are working",
+                    inline=False,
+                )
+                embed.set_footer(text="Error logged for administrator review")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # --- DRAFT PICK UI ---
     class DraftDropdown(discord.ui.Select):
