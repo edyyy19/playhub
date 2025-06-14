@@ -6,6 +6,10 @@ from models.user import User
 import logging
 from datetime import datetime
 import asyncio
+import os
+import tempfile
+from jinja2 import Environment, FileSystemLoader
+from html2image import Html2Image
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +89,7 @@ class Leaderboard(commands.Cog):
                     guild_id = data.get("guild_id")
                     channel_id = data.get("channel_id")
                     message_id = data.get("message_id")
+                    league_name = data.get("league_name")
 
                     if not all([guild_id, channel_id, message_id]):
                         continue
@@ -112,11 +117,18 @@ class Leaderboard(commands.Cog):
                         )
                         continue
 
-                    # Store the message reference
-                    self.leaderboard_messages[channel_id] = {
+                    # Store the message reference using a compound key
+                    storage_key = (
+                        f"{channel_id}_{league_name}"
+                        if league_name
+                        else str(channel_id)
+                    )
+                    self.leaderboard_messages[storage_key] = {
                         "message": message,
                         "channel": channel,
                         "guild_id": guild_id,
+                        "league_name": league_name,
+                        "channel_id": channel_id,  # Keep for reference
                     }
 
                     valid_leaderboards.append(data)
@@ -135,34 +147,54 @@ class Leaderboard(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to load persistent leaderboards: {e}")
 
-    async def save_leaderboard_to_database(self, guild_id, channel_id, message_id):
+    async def save_leaderboard_to_database(
+        self, guild_id, channel_id, message_id, league_name=None
+    ):
         """Save a leaderboard message reference to the database"""
         try:
             loop = asyncio.get_running_loop()
 
             def save_to_db():
                 try:
-                    # First try to update existing record
-                    existing = (
+                    # Check for existing record with both channel_id and league_name
+                    query = (
                         Config.supabase()
                         .table("leaderboard_messages")
                         .select("*")
                         .eq("channel_id", channel_id)
-                        .execute()
                     )
+
+                    # Add league_name filter if provided
+                    if league_name:
+                        query = query.eq("league_name", league_name)
+                    else:
+                        query = query.is_("league_name", "null")
+
+                    existing = query.execute()
 
                     leaderboard_data = {
                         "guild_id": guild_id,
                         "channel_id": channel_id,
                         "message_id": message_id,
+                        "league_name": league_name,
                         "created_at": datetime.now().isoformat(),
                     }
 
                     if existing.data:
-                        # Update existing record
-                        Config.supabase().table("leaderboard_messages").update(
-                            leaderboard_data
-                        ).eq("channel_id", channel_id).execute()
+                        # Update existing record for this specific channel + league combination
+                        update_query = (
+                            Config.supabase()
+                            .table("leaderboard_messages")
+                            .update(leaderboard_data)
+                            .eq("channel_id", channel_id)
+                        )
+
+                        if league_name:
+                            update_query = update_query.eq("league_name", league_name)
+                        else:
+                            update_query = update_query.is_("league_name", "null")
+
+                        update_query.execute()
                     else:
                         # Insert new record
                         Config.supabase().table("leaderboard_messages").insert(
@@ -177,7 +209,7 @@ class Leaderboard(commands.Cog):
             success = await loop.run_in_executor(None, save_to_db)
             if success:
                 logger.info(
-                    f"Saved leaderboard reference to database: guild={guild_id}, channel={channel_id}"
+                    f"Saved leaderboard reference to database: guild={guild_id}, channel={channel_id}, league={league_name}"
                 )
 
         except Exception as e:
@@ -210,7 +242,13 @@ class Leaderboard(commands.Cog):
     async def cleanup_invalid_leaderboards(self):
         """Clean up invalid leaderboard references from database"""
         try:
-            valid_channel_ids = set(self.leaderboard_messages.keys())
+            # Extract valid channel+league combinations from memory
+            valid_combinations = set()
+            for storage_key, data in self.leaderboard_messages.items():
+                channel_id = data.get("channel_id")
+                league_name = data.get("league_name")
+                if channel_id:
+                    valid_combinations.add((channel_id, league_name))
 
             loop = asyncio.get_running_loop()
 
@@ -220,7 +258,7 @@ class Leaderboard(commands.Cog):
                     all_records = (
                         Config.supabase()
                         .table("leaderboard_messages")
-                        .select("channel_id")
+                        .select("channel_id, league_name, message_id")
                         .execute()
                     )
 
@@ -228,19 +266,41 @@ class Leaderboard(commands.Cog):
                         return 0
 
                     # Find invalid records
-                    invalid_channel_ids = []
+                    invalid_records = []
                     for record in all_records.data:
-                        if record["channel_id"] not in valid_channel_ids:
-                            invalid_channel_ids.append(record["channel_id"])
+                        channel_id = record["channel_id"]
+                        league_name = record.get("league_name")
+                        combination = (channel_id, league_name)
+
+                        if combination not in valid_combinations:
+                            invalid_records.append(record)
 
                     # Remove invalid records
-                    if invalid_channel_ids:
-                        for channel_id in invalid_channel_ids:
-                            Config.supabase().table("leaderboard_messages").delete().eq(
-                                "channel_id", channel_id
-                            ).execute()
+                    removed_count = 0
+                    for record in invalid_records:
+                        try:
+                            query = (
+                                Config.supabase()
+                                .table("leaderboard_messages")
+                                .delete()
+                                .eq("channel_id", record["channel_id"])
+                                .eq("message_id", record["message_id"])
+                            )
 
-                    return len(invalid_channel_ids)
+                            # Add league_name filter
+                            if record.get("league_name"):
+                                query = query.eq("league_name", record["league_name"])
+                            else:
+                                query = query.is_("league_name", "null")
+
+                            query.execute()
+                            removed_count += 1
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to remove invalid record {record}: {e}"
+                            )
+
+                    return removed_count
                 except Exception as e:
                     logger.error(f"Database cleanup error: {e}")
                     return 0
@@ -254,16 +314,148 @@ class Leaderboard(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to cleanup invalid leaderboards: {e}")
 
+    async def league_name_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """
+        Autocomplete function for league names - reused from leagues cog
+        """
+        try:
+            loop = asyncio.get_running_loop()
+
+            def get_leagues():
+                try:
+                    response = (
+                        Config.supabase()
+                        .table("leagues")
+                        .select("league_name")
+                        .order("created_at", desc=True)
+                        .execute()
+                    )
+                    return response.data
+                except Exception as e:
+                    logger.error(f"Failed to fetch leagues for autocomplete: {e}")
+                    return []
+
+            leagues = await loop.run_in_executor(None, get_leagues)
+
+            if not leagues:
+                return []
+
+            # Convert sanitized names to display names and filter based on current input
+            choices = []
+            for league in leagues:
+                league_name = league["league_name"]
+                # Convert sanitized name to display name
+                display_name = league_name.replace("_", " ").title()
+
+                # Filter based on current input
+                if (
+                    current.lower() in display_name.lower()
+                    or current.lower() in league_name.lower()
+                ):
+                    choices.append(
+                        app_commands.Choice(name=display_name, value=league_name)
+                    )
+                # Limit to 25 choices (Discord limit)
+                if len(choices) >= 25:
+                    break
+
+            return choices
+
+        except Exception as e:
+            logger.error(f"Error in league autocomplete: {e}")
+            return []
+
+    async def leaderboard_exists_for_league_and_channel(
+        self, channel_id: int, league_name: str
+    ) -> bool:
+        """
+        Check if a leaderboard already exists for a specific league in a specific channel
+        """
+        try:
+            loop = asyncio.get_running_loop()
+
+            def check_exists():
+                try:
+                    response = (
+                        Config.supabase()
+                        .table("leaderboard_messages")
+                        .select("*")
+                        .eq("channel_id", channel_id)
+                        .eq("league_name", league_name)
+                        .execute()
+                    )
+                    return len(response.data) > 0
+                except Exception as e:
+                    logger.error(f"Failed to check leaderboard existence: {e}")
+                    return False
+
+            return await loop.run_in_executor(None, check_exists)
+
+        except Exception as e:
+            logger.error(f"Failed to check leaderboard existence: {e}")
+            return False
+
     @app_commands.command(
         name="leaderboard",
-        description="Display the leaderboard in the specified channel.",
+        description="Display the league-specific leaderboard in the specified channel.",
     )
-    @app_commands.describe(channel="The channel where the leaderboard should be posted")
+    @app_commands.describe(
+        channel="The channel where the leaderboard should be posted",
+        league_name="The league to display the leaderboard for",
+    )
+    @app_commands.autocomplete(league_name=league_name_autocomplete)
     @app_commands.default_permissions(administrator=True)
     async def leaderboard(
-        self, interaction: discord.Interaction, channel: discord.TextChannel = None
+        self,
+        interaction: discord.Interaction,
+        league_name: str,
+        channel: discord.TextChannel = None,
     ):
-        """Create or update a leaderboard embed in the specified channel"""
+        """Create or update a league-specific leaderboard embed in the specified channel"""
+
+        # Validate league name
+        if not league_name or len(league_name.strip()) == 0:
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Invalid League Name",
+                description="League name cannot be empty.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        league_name = league_name.strip()
+
+        # Get league data from leagues cog
+        from cogs.leagues import Leagues
+
+        leagues_cog = self.bot.get_cog("Leagues")
+        if not leagues_cog:
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} System Error",
+                description="Leagues system is not available.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        league_data = await leagues_cog.get_league_by_name(league_name)
+        if not league_data:
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} League Not Found",
+                description=f"No league found with the name '{league_name}'.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            embed.add_field(
+                name="Available Leagues",
+                value="Use the autocomplete to select from available leagues.",
+                inline=False,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        sanitized_name = league_data["league_name"]
 
         # Check if there's an active season
         from models.season import Season
@@ -297,11 +489,30 @@ class Leaderboard(commands.Cog):
             )
             return
 
+        # Check if a leaderboard for this league already exists in this channel
+        if await self.leaderboard_exists_for_league_and_channel(
+            target_channel.id, sanitized_name
+        ):
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Leaderboard Already Exists",
+                description=f"A leaderboard for league '{league_name}' already exists in {target_channel.mention}.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            embed.add_field(
+                name="Tip",
+                value="Use `/leaderboard_stop` in that channel first to remove the existing leaderboard.",
+                inline=False,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
         await interaction.response.defer(ephemeral=True)
 
         try:
-            # Create the leaderboard embed
-            embed, error_msg = await self.create_leaderboard_embed()
+            # Create the league-specific leaderboard embed
+            embed, file, error_msg = await self.create_league_leaderboard_embed(
+                sanitized_name, league_name
+            )
 
             if error_msg:
                 await interaction.followup.send(
@@ -310,24 +521,30 @@ class Leaderboard(commands.Cog):
                 return
 
             # Send the leaderboard to the target channel
-            message = await target_channel.send(embed=embed)
+            if file:
+                message = await target_channel.send(embed=embed, file=file)
+            else:
+                message = await target_channel.send(embed=embed)
 
-            # Store the message reference for auto-updates
-            self.leaderboard_messages[target_channel.id] = {
+            # Store the message reference for auto-updates using compound key
+            storage_key = f"{target_channel.id}_{sanitized_name}"
+            self.leaderboard_messages[storage_key] = {
                 "message": message,
                 "channel": target_channel,
                 "guild_id": interaction.guild.id,
+                "league_name": sanitized_name,  # Store league name for future reference
+                "channel_id": target_channel.id,  # Keep for reference
             }
 
             # Save to database for persistence
             await self.save_leaderboard_to_database(
-                interaction.guild.id, target_channel.id, message.id
+                interaction.guild.id, target_channel.id, message.id, sanitized_name
             )
 
             # Success response
             embed_response = discord.Embed(
                 title=f"{Config.ICONS['success']} Leaderboard Posted",
-                description=f"Leaderboard has been posted in {target_channel.mention}",
+                description=f"Leaderboard for **{league_name}** has been posted in {target_channel.mention}",
                 color=Config.EMBED_COLORS["light_green"],
             )
             embed_response.add_field(
@@ -344,14 +561,13 @@ class Leaderboard(commands.Cog):
                 ephemeral=True,
             )
 
-    async def create_leaderboard_embed(self):
-        """Create the leaderboard embed with player data"""
+    async def create_league_leaderboard_embed(
+        self, league_table_name: str, display_name: str
+    ):
+        """Create the leaderboard as an HTML image with league-specific player data"""
         try:
-            # Fetch all users from database
-            users_data = await self.get_all_users()
-
-            if not users_data:
-                return None, "No registered users found in the database."
+            # Fetch all users from the specific league table
+            users_data = await self.get_league_users(league_table_name)
 
             # Process and sort users by points
             processed_users = []
@@ -378,123 +594,221 @@ class Leaderboard(commands.Cog):
                     logger.warning(f"Error processing user data: {user}, error: {e}")
                     continue
 
-            # Sort by points (descending)
+            # Sort by points (descending) and take top 15
             processed_users.sort(key=lambda x: x["points"], reverse=True)
+            top_players = processed_users[:15]
 
-            # Create embed
+            # Prepare template variables
+            template_vars = {
+                "app_name": Config.APP_NAME,
+                "league_display_name": display_name.replace("_", " ").title(),
+                "players": top_players,
+                "last_updated": datetime.now().strftime("%H:%M | %d/%m/%Y"),
+            }
+
+            # Render HTML with Jinja2
+            template_dir = os.path.dirname(
+                os.path.dirname(__file__)
+            )  # Go up from cogs/ to project root
+            env = Environment(loader=FileSystemLoader(template_dir))
+            template = env.get_template("leaderboard_template.html")
+            html_content = template.render(**template_vars)  # Render HTML to image
+            hti = Html2Image(output_path=tempfile.gettempdir())
+            image_path = os.path.join(
+                tempfile.gettempdir(),
+                f"leaderboard_{league_table_name}_{int(datetime.now().timestamp())}.png",
+            )
+            hti.screenshot(
+                html_str=html_content,
+                save_as=os.path.basename(image_path),
+                size=(940, 1200),  # Larger size for leaderboard
+            )  # Create Discord file
+            file = discord.File(image_path, filename="leaderboard.png")
+
+            # Schedule cleanup of temp file after a delay
+            asyncio.create_task(self.cleanup_temp_file(image_path, delay=10))
+
+            # Create simple embed to accompany the image
             embed = discord.Embed(
-                title="🏆 Leaderboard",
+                title=f"🏆 {display_name.replace('_', ' ').title()} Leaderboard",
                 description="Top players ranked by points",
                 color=EMBED_COLOR,
             )
-
-            # Add players to embed (top 15 to avoid Discord limits)
-            leaderboard_text = ""
-            for i, user in enumerate(
-                processed_users[:15], 1
-            ):  # Add medal emojis for top 3
-                medal = ""
-                if i == 1:
-                    medal = "🥇 "
-                elif i == 2:
-                    medal = "🥈 "
-                elif i == 3:
-                    medal = "🥉 "
-
-                leaderboard_text += (
-                    f"{medal}**{i}.** {user['nickname']}\n"
-                    f"   {Config.ICONS['stats']} **{user['points']}** pts | "
-                    f"🏆 {user['wins']}W | "
-                    f"💀 {user['losses']}L | "
-                    f"📈 {user['win_rate']}%\n\n"
-                )
-
-            if leaderboard_text:
-                embed.description = leaderboard_text
-            else:
-                embed.description = "No player data available."
-
+            embed.set_image(url="attachment://leaderboard.png")
             embed.set_footer(
                 text=f"Last Updated: {datetime.now().strftime('%H:%M | %d/%m/%Y')}"
             )
 
-            return embed, None
+            return embed, file, None
 
         except Exception as e:
-            logger.error(f"Failed to create leaderboard embed: {e}")
-            return None, f"Database error: {str(e)}"
+            logger.error(f"Failed to create league leaderboard image: {e}")
+            return None, None, f"Error generating leaderboard: {str(e)}"
 
-    async def get_all_users(self):
-        """Fetch all users from the database"""
+    async def get_league_users(self, league_table_name: str):
+        """Fetch all users from a specific league table"""
         loop = asyncio.get_running_loop()
 
         def db_select():
             try:
                 response = (
                     Config.supabase()
-                    .table(User.TABLE)
+                    .table(league_table_name)
                     .select("nickname, points, wins, loses")
                     .order("points", desc=True)
                     .execute()
                 )
                 return response.data if response.data else []
             except Exception as e:
-                logger.error(f"Failed to fetch users from database: {e}")
+                logger.error(
+                    f"Failed to fetch users from league table {league_table_name}: {e}"
+                )
                 raise
 
         return await loop.run_in_executor(None, db_select)
+
+    async def cleanup_temp_file(self, file_path: str, delay: int = 10):
+        """Safely cleanup a temporary file after a delay to allow Discord to process it"""
+        try:
+            await asyncio.sleep(delay)  # Wait for Discord to process the file
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logger.debug(f"Cleaned up temporary file: {file_path}")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup temporary file {file_path}: {e}")
 
     @tasks.loop(hours=1)
     async def update_leaderboards(self):
         """Automatically update all active leaderboard messages every 1 hour"""
         if not self.leaderboard_messages:
-            return
+            return logger.info(
+                f"Updating {len(self.leaderboard_messages)} leaderboard messages"
+            )
 
-        logger.info(f"Updating {len(self.leaderboard_messages)} leaderboard messages")
-
-        # Create new embed
-        embed, error_msg = await self.create_leaderboard_embed()
-
-        if error_msg:
-            logger.error(f"Failed to create leaderboard for auto-update: {error_msg}")
-            return
-
-        # Update each active leaderboard message
+        # Update each active leaderboard message by deleting and recreating
         messages_to_remove = []
-        for channel_id, data in self.leaderboard_messages.items():
+        messages_to_update = []
+        for storage_key, data in self.leaderboard_messages.items():
             try:
                 message = data["message"]
                 channel = data["channel"]
+                channel_id = data.get("channel_id", channel.id if channel else None)
+                league_name = data.get("league_name")
+                guild_id = data.get("guild_id")
 
                 # Check if message and channel still exist
                 if not channel or not message:
-                    messages_to_remove.append(channel_id)
+                    messages_to_remove.append(storage_key)
                     continue
 
-                # Try to edit the message
-                await message.edit(embed=embed)
-                logger.info(f"Updated leaderboard in channel {channel.name}")
+                # Validate league_name exists
+                if not league_name:
+                    logger.warning(
+                        f"Leaderboard with key {storage_key} has no league_name, removing"
+                    )
+                    messages_to_remove.append(storage_key)
+                    continue
+
+                # Check if we have necessary data for recreation
+                if not guild_id or not channel_id:
+                    logger.warning(
+                        f"Leaderboard with key {storage_key} missing guild_id or channel_id, removing"
+                    )
+                    messages_to_remove.append(storage_key)
+                    continue
+
+                # Store info for recreation
+                messages_to_update.append(
+                    {
+                        "storage_key": storage_key,
+                        "channel": channel,
+                        "channel_id": channel_id,
+                        "league_name": league_name,
+                        "guild_id": guild_id,
+                        "old_message": message,
+                    }
+                )
+
+            except Exception as e:
+                logger.error(f"Error processing leaderboard {storage_key}: {e}")
+                messages_to_remove.append(storage_key)
+
+        # Delete old messages and create new ones
+        for update_data in messages_to_update:
+            try:
+                storage_key = update_data["storage_key"]
+                channel = update_data["channel"]
+                channel_id = update_data["channel_id"]
+                league_name = update_data["league_name"]
+                guild_id = update_data["guild_id"]
+                old_message = update_data["old_message"]
+
+                # Create new leaderboard image
+                display_name = league_name.replace("_", " ").title()
+                embed, file, error_msg = await self.create_league_leaderboard_embed(
+                    league_name, display_name
+                )
+
+                if error_msg:
+                    logger.error(
+                        f"Failed to create leaderboard for auto-update: {error_msg}"
+                    )
+                    continue
+
+                # Delete old message first
+                try:
+                    await old_message.delete()
+                    logger.info(f"Deleted old leaderboard message in {channel.name}")
+                except discord.NotFound:
+                    # Message was already deleted
+                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to delete old message: {e}")
+
+                # Send new leaderboard
+                if file:
+                    new_message = await channel.send(embed=embed, file=file)
+                else:
+                    new_message = await channel.send(embed=embed)
+
+                # Update storage with new message reference
+                self.leaderboard_messages[storage_key] = {
+                    "message": new_message,
+                    "channel": channel,
+                    "guild_id": guild_id,
+                    "league_name": league_name,
+                    "channel_id": channel_id,
+                }
+
+                # Update database with new message_id
+                await self.save_leaderboard_to_database(
+                    guild_id, channel_id, new_message.id, league_name
+                )
+
+                logger.info(f"Recreated leaderboard in channel {channel.name}")
 
             except discord.NotFound:
-                # Message was deleted
-                logger.info(f"Leaderboard message in channel {channel_id} was deleted")
-                messages_to_remove.append(channel_id)
+                # Channel was deleted
+                logger.info(f"Channel for leaderboard {storage_key} was deleted")
+                messages_to_remove.append(storage_key)
             except discord.Forbidden:
-                # No permission to edit
-                logger.warning(
-                    f"No permission to edit leaderboard in channel {channel_id}"
-                )
-                messages_to_remove.append(channel_id)
+                # No permission
+                logger.warning(f"No permission to update leaderboard in {storage_key}")
+                messages_to_remove.append(storage_key)
             except Exception as e:
-                logger.error(
-                    f"Failed to update leaderboard in channel {channel_id}: {e}"
-                )
+                logger.error(f"Failed to recreate leaderboard {storage_key}: {e}")
+                messages_to_remove.append(storage_key)
 
         # Remove invalid message references
-        for channel_id in messages_to_remove:
-            del self.leaderboard_messages[channel_id]
-            # Also remove from database
-            await self.remove_leaderboard_from_database(channel_id)
+        for storage_key in messages_to_remove:
+            data = self.leaderboard_messages.get(storage_key, {})
+            channel_id = data.get("channel_id")
+
+            del self.leaderboard_messages[storage_key]
+
+            # Remove from database using channel_id
+            if channel_id:
+                await self.remove_leaderboard_from_database(channel_id)
 
     @update_leaderboards.before_loop
     async def before_update_leaderboards(self):
@@ -507,24 +821,106 @@ class Leaderboard(commands.Cog):
     )
     @app_commands.default_permissions(administrator=True)
     async def stop_leaderboard(self, interaction: discord.Interaction):
-        """Stop auto-updating leaderboards in the current channel"""
+        """Stop auto-updating leaderboards in the current channel and delete the messages"""
         channel_id = interaction.channel.id
 
-        if channel_id in self.leaderboard_messages:
-            del self.leaderboard_messages[channel_id]
-            # Also remove from database
-            await self.remove_leaderboard_from_database(channel_id)
+        # Get all leaderboard messages for this channel from database
+        try:
+            loop = asyncio.get_running_loop()
+
+            def get_channel_leaderboards():
+                try:
+                    response = (
+                        Config.supabase()
+                        .table("leaderboard_messages")
+                        .select("*")
+                        .eq("channel_id", channel_id)
+                        .execute()
+                    )
+                    return response.data if response.data else []
+                except Exception as e:
+                    logger.error(f"Failed to fetch channel leaderboards: {e}")
+                    return []
+
+            channel_leaderboards = await loop.run_in_executor(
+                None, get_channel_leaderboards
+            )
+
+            # Also check in memory for this channel
+            memory_keys_to_remove = []
+            for storage_key, data in self.leaderboard_messages.items():
+                if data.get("channel_id") == channel_id:
+                    memory_keys_to_remove.append(storage_key)
+
+            if not channel_leaderboards and not memory_keys_to_remove:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} No Active Leaderboard",
+                    description="There is no active auto-updating leaderboard in this channel.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            deleted_count = 0
+
+            # Delete messages and remove from memory
+            for leaderboard in channel_leaderboards:
+                try:
+                    message_id = leaderboard.get("message_id")
+                    if message_id:
+                        try:
+                            message = await interaction.channel.fetch_message(
+                                message_id
+                            )
+                            await message.delete()
+                            deleted_count += 1
+                        except discord.NotFound:
+                            # Message was already deleted
+                            pass
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to delete message {message_id}: {e}"
+                            )
+
+                except Exception as e:
+                    logger.warning(f"Error processing leaderboard deletion: {e}")
+
+            # Remove from memory
+            for storage_key in memory_keys_to_remove:
+                if storage_key in self.leaderboard_messages:
+                    del self.leaderboard_messages[storage_key]
+
+            # Remove all entries for this channel from database
+            def remove_channel_leaderboards():
+                try:
+                    Config.supabase().table("leaderboard_messages").delete().eq(
+                        "channel_id", channel_id
+                    ).execute()
+                    return True
+                except Exception as e:
+                    logger.error(f"Database delete error: {e}")
+                    return False
+
+            await loop.run_in_executor(None, remove_channel_leaderboards)
 
             embed = discord.Embed(
-                title=f"{Config.ICONS['success']} Leaderboard Auto-Update Stopped",
-                description="The leaderboard in this channel will no longer auto-update.",
+                title=f"{Config.ICONS['success']} Leaderboards Stopped",
+                description=f"All leaderboards in this channel have been stopped and removed.",
                 color=Config.EMBED_COLORS["light_green"],
             )
+            if deleted_count > 0:
+                embed.add_field(
+                    name="Messages Deleted",
+                    value=f"{deleted_count} leaderboard message(s) were deleted.",
+                    inline=False,
+                )
             await interaction.response.send_message(embed=embed, ephemeral=True)
-        else:
+
+        except Exception as e:
+            logger.error(f"Error in stop_leaderboard: {e}")
             embed = discord.Embed(
-                title=f"{Config.ICONS['unsuccess']} No Active Leaderboard",
-                description="There is no active auto-updating leaderboard in this channel.",
+                title=f"{Config.ICONS['unsuccess']} Error",
+                description="An error occurred while stopping the leaderboards.",
                 color=Config.EMBED_COLORS["red"],
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -550,12 +946,18 @@ class Leaderboard(commands.Cog):
             )
 
             channels_list = []
-            for channel_id, data in self.leaderboard_messages.items():
+            for storage_key, data in self.leaderboard_messages.items():
                 channel = data["channel"]
+                league_name = data.get("league_name")
                 if channel:
-                    channels_list.append(f"• {channel.mention}")
+                    league_info = (
+                        f" ({league_name.replace('_', ' ').title()})"
+                        if league_name
+                        else ""
+                    )
+                    channels_list.append(f"• {channel.mention}{league_info}")
                 else:
-                    channels_list.append(f"• Channel ID: {channel_id} (deleted)")
+                    channels_list.append(f"• Storage key: {storage_key} (deleted)")
 
             if channels_list:
                 embed.add_field(

@@ -41,6 +41,7 @@ class Config:
         "league": "<:discord_league:1383226342358908998>",
         "tag": "<:discord_tag:1383229700381605898>",
         "sql": "<:discord_sql:1383230660814180466>",
+        "fix": "<:discord_fix:1383465331648888883>",
     }
 
     EMBED_COLORS = {

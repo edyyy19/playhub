@@ -1,0 +1,252 @@
+<!-- Leaderboard template for {{ app_name }}. Rendered with Jinja2 and html2image. -->
+<html>
+
+<head>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #181c20;
+            color: #fff;
+            margin: 0;
+            padding: 0;
+        }
+
+        .container {
+            width: 900px;
+            margin: 0 auto;
+            background: #23272b;
+            border-radius: 16px;
+            box-shadow: 0 2px 16px #0008;
+            padding: 32px 24px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .title {
+            font-size: 2.5em;
+            font-weight: bold;
+            margin-bottom: 8px;
+            letter-spacing: 1px;
+            color: #b2fa19;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+        }
+
+        .trophy-icon {
+            font-size: 1.2em;
+        }
+
+        .subtitle {
+            font-size: 1.2em;
+            color: #aaa;
+            margin-bottom: 8px;
+        }
+
+        .league-name {
+            font-size: 1.4em;
+            color: #b2fa19;
+            font-weight: bold;
+            margin-bottom: 16px;
+        }
+
+        .leaderboard {
+            background: #2c2f33;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+
+        .player-row {
+            display: flex;
+            align-items: center;
+            padding: 16px 20px;
+            margin: 8px 0;
+            background: #36393f;
+            border-radius: 8px;
+            border-left: 4px solid #b2fa19;
+            transition: all 0.3s ease;
+        }
+
+        .player-row:hover {
+            background: #40444b;
+        }
+
+        .rank {
+            font-size: 1.8em;
+            font-weight: bold;
+            width: 60px;
+            text-align: center;
+            margin-right: 20px;
+        }
+
+        .rank.gold {
+            color: #FFD700;
+        }
+
+        .rank.silver {
+            color: #C0C0C0;
+        }
+
+        .rank.bronze {
+            color: #CD7F32;
+        }
+
+        .medal {
+            font-size: 1.5em;
+            margin-right: 8px;
+        }
+
+        .player-info {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .player-name {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+
+        .player-stats {
+            display: flex;
+            gap: 20px;
+            font-size: 1em;
+            color: #aaa;
+        }
+
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .stat-icon {
+            color: #b2fa19;
+        }
+
+        .points {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #b2fa19;
+            text-align: right;
+            min-width: 120px;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 24px;
+            padding-top: 20px;
+            border-top: 1px solid #40444b;
+            color: #aaa;
+            font-size: 0.9em;
+        }
+
+        .update-time {
+            color: #b2fa19;
+            font-weight: bold;
+        }
+
+        .no-players {
+            text-align: center;
+            padding: 40px;
+            color: #aaa;
+            font-size: 1.2em;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .stat-box {
+            background: #40444b;
+            padding: 8px 12px;
+            border-radius: 4px;
+            text-align: center;
+            font-size: 0.9em;
+        }
+
+        .stat-value {
+            color: #b2fa19;
+            font-weight: bold;
+        }
+
+        .stat-label {
+            color: #aaa;
+            font-size: 0.8em;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="title">
+                <span class="trophy-icon">🏆</span>
+                {{ app_name }} Leaderboard
+            </div>
+            <div class="league-name">{{ league_display_name }}</div>
+            <div class="subtitle">Top players ranked by points</div>
+        </div>
+
+        <div class="leaderboard">
+            {% if players %}
+            {% for player in players %}
+            <div class="player-row">
+                <div
+                    class="rank {% if loop.index == 1 %}gold{% elif loop.index == 2 %}silver{% elif loop.index == 3 %}bronze{% endif %}">
+                    {% if loop.index == 1 %}
+                    <span class="medal">🥇</span>
+                    {% elif loop.index == 2 %}
+                    <span class="medal">🥈</span>
+                    {% elif loop.index == 3 %}
+                    <span class="medal">🥉</span>
+                    {% else %}
+                    {{ loop.index }}.
+                    {% endif %}
+                </div>
+
+                <div class="player-info">
+                    <div class="player-name">{{ player.nickname }}</div>
+                    <div class="stats-grid">
+                        <div class="stat-box">
+                            <div class="stat-value">{{ player.wins }}</div>
+                            <div class="stat-label">Wins</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-value">{{ player.losses }}</div>
+                            <div class="stat-label">Losses</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-value">{{ player.win_rate }}%</div>
+                            <div class="stat-label">Win Rate</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="points">{{ player.points }} pts</div>
+            </div>
+            {% endfor %}
+            {% else %}
+            <div class="no-players">
+                No players found in this league yet.
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="footer">
+            Last Updated: <span class="update-time">{{ last_updated }}</span>
+        </div>
+    </div>
+</body>
+
+</html>

@@ -953,6 +953,777 @@ class Leagues(commands.Cog):
             )
             await safe_edit_response(error_embed)
 
+    @app_commands.command(
+        name="league_promote",
+        description="Promote a user to a specific league by giving them the league role",
+    )
+    @app_commands.describe(
+        league_name="The league to promote the user to",
+        user="The user to promote to the league",
+    )
+    @app_commands.autocomplete(league_name=league_name_autocomplete)
+    @app_commands.default_permissions(administrator=True)
+    async def league_promote(
+        self, interaction: discord.Interaction, league_name: str, user: discord.Member
+    ):
+        """
+        Promote a user to a specific league by giving them the league's Discord role
+        """
+        # Check if user has admin permissions
+        if not interaction.user.guild_permissions.administrator:
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Access Denied",
+                description="You need administrator permissions to assign users to leagues.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # Initialize variables to avoid linter warnings
+        league_data = None
+        league_role = None
+
+        try:
+            # Validate league name is provided
+            if not league_name or len(league_name.strip()) == 0:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} League Required",
+                    description="Please specify a league to assign the user to.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Tip",
+                    value="Use the autocomplete to select from available leagues.",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            league_name = league_name.strip()
+
+            # Get league data from database
+            league_data = await self.get_league_by_name(league_name)
+            if not league_data:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} League Not Found",
+                    description=f"The league **'{league_name}'** does not exist in the database.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Suggestions",
+                    value="• Use the autocomplete to select from available leagues\n• Check the spelling of the league name\n• Use `/list_leagues` to see all available leagues",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Find the associated Discord role
+            league_role = await self.find_discord_role_for_league(
+                interaction.guild, league_data["league_name"]
+            )
+            if not league_role:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Discord Role Not Found",
+                    description=f"The Discord role for league **'{league_name}'** could not be found.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['fix']} What might be wrong",
+                    value="• The Discord role was deleted after the league was created\n• The role name was changed manually\n• League setup is incomplete",
+                    inline=False,
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Solutions",
+                    value="• Contact an administrator to recreate the role\n• Use `/list_leagues` to check league status\n• Try recreating the league if necessary",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Check if user already has the role
+            if league_role in user.roles:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['info']} Already Promoted",
+                    description=f"**{user.display_name}** is already promoted to the **{league_role.name}** league.",
+                    color=Config.EMBED_COLORS["yellow"],
+                )
+                embed.add_field(
+                    name="Current Status",
+                    value=f"{Config.ICONS['success']} User already has the {league_role.mention} role",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Check if user is already in the league database table
+            try:
+                is_in_table = await self.check_user_in_league_table(
+                    league_name, user.id
+                )
+                if is_in_table:
+                    # User is in database but doesn't have role - this is an inconsistent state
+                    # Add the role and show appropriate message
+                    try:
+                        await user.add_roles(
+                            league_role,
+                            reason=f"Syncing inconsistent state: user already in {league_role.name} database",
+                        )
+
+                        embed = discord.Embed(
+                            title=f"{Config.ICONS['info']} Role Added (Sync Fix)",
+                            description=f"**{user.display_name}** was already in the **{league_role.name}** league database but missing the Discord role.",
+                            color=Config.EMBED_COLORS["yellow"],
+                        )
+                        embed.add_field(
+                            name=f"{Config.ICONS['info']} Inconsistent State Fixed",
+                            value="User was in league database but didn't have Discord role. The role has been added to sync with the database state.",
+                            inline=False,
+                        )
+                        embed.add_field(
+                            name=f"{Config.ICONS['fix']} Action Taken",
+                            value=f"• Added {league_role.mention} to user\n• No database changes needed (user already in league table)\n• Discord and database are now synchronized",
+                            inline=False,
+                        )
+                        embed.add_field(
+                            name=f"{Config.ICONS['info']} Note",
+                            value="User retains their existing league stats and progress.",
+                            inline=False,
+                        )
+                        embed.set_thumbnail(url=user.display_avatar.url)
+                        embed.set_footer(
+                            text=f"Sync fix by {interaction.user.display_name}"
+                        )
+
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                        logger.info(
+                            f"Sync fix: Added role {league_role.name} to {user} who was already in {league_role.name} database"
+                        )
+                        return
+
+                    except discord.Forbidden:
+                        embed = discord.Embed(
+                            title=f"{Config.ICONS['unsuccess']} Permission Denied",
+                            description="Cannot add the Discord role due to insufficient permissions.",
+                            color=Config.EMBED_COLORS["red"],
+                        )
+                        embed.add_field(
+                            name=f"{Config.ICONS['info']} Issue",
+                            value="User is in league database but doesn't have Discord role, but I cannot fix this automatically.",
+                            inline=False,
+                        )
+                        embed.add_field(
+                            name=f"{Config.ICONS['fix']} Manual Fix Required",
+                            value="An administrator with higher permissions needs to add the role manually.",
+                            inline=False,
+                        )
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                        return
+
+                    except Exception as e:
+                        logger.error(f"Failed to add missing role: {e}")
+                        embed = discord.Embed(
+                            title=f"{Config.ICONS['unsuccess']} Sync Fix Failed",
+                            description="Failed to add the missing Discord role.",
+                            color=Config.EMBED_COLORS["red"],
+                        )
+                        embed.add_field(
+                            name=f"{Config.ICONS['info']} Issue",
+                            value="User is in league database but doesn't have Discord role, and automatic fix failed.",
+                            inline=False,
+                        )
+                        embed.add_field(
+                            name=f"{Config.ICONS['fix']} Error",
+                            value=f"```{str(e)[:500]}```",
+                            inline=False,
+                        )
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                        return
+
+                skip_db_insert = False  # User not in database, proceed normally
+            except Exception as e:
+                logger.error(f"Failed to check user in league table: {e}")
+                skip_db_insert = False  # Default to attempting database insert
+
+            # Check bot permissions
+            if not interaction.guild.me.guild_permissions.manage_roles:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Missing Permissions",
+                    description="I don't have permission to manage roles in this server.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['fix']} Required Permission",
+                    value="`Manage Roles` - Needed to assign league roles to users",
+                    inline=False,
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} How to fix",
+                    value="• Go to Server Settings → Roles\n• Find my role and enable `Manage Roles`\n• Or contact an administrator",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Check if bot's role is high enough to assign the league role
+            if league_role.position >= interaction.guild.me.top_role.position:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Role Hierarchy Issue",
+                    description="I cannot assign this league role because it's higher than or equal to my highest role.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['fix']} What's wrong",
+                    value=f"The {league_role.mention} role is positioned too high in the role hierarchy.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} How to fix",
+                    value="• Move my bot role higher in the server role hierarchy\n• Or move the league role lower\n• Contact an administrator for help",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Assign the role to the user
+            await user.add_roles(
+                league_role,
+                reason=f"Assigned to {league_role.name} league by {interaction.user}",
+            )
+
+            # Add user to league database table
+            user_data = None
+            if not skip_db_insert:
+                try:
+                    # Get user's nickname from the main users table
+                    from models.user import User
+
+                    user_data = await User.find(user.id)
+                    nickname = user_data["nickname"] if user_data else user.display_name
+
+                    # Add user to league-specific table
+                    db_success = await self.add_user_to_league_table(
+                        league_name, user.id, nickname
+                    )
+                    if not db_success:
+                        logger.warning(
+                            f"Failed to add user {user.id} to league table {league_name}"
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"Database operation failed for user promotion: {e}"
+                    )  # Create success embed
+            embed = discord.Embed(
+                title=f"{Config.ICONS['success']} League Promotion Successful",
+                description=f"**{user.display_name}** has been successfully promoted to the **{league_role.name}** league!",
+                color=Config.EMBED_COLORS["light_green"],
+            )
+            embed.add_field(
+                name="User", value=f"{user.mention} ({user.display_name})", inline=True
+            )
+            embed.add_field(name="League", value=f"{league_role.name}", inline=True)
+            embed.add_field(
+                name="Role Assigned", value=f"{league_role.mention}", inline=True
+            )
+            embed.add_field(
+                name=f"{Config.ICONS['success']} What this means",
+                value=f"• User can now join {league_name} lobbies\n• User has access to league-specific features\n• Role will be visible in their profile",
+                inline=False,
+            )
+            embed.set_thumbnail(url=user.display_avatar.url)
+            embed.set_footer(
+                text=f"Assigned by {interaction.user.display_name} • League ID: #{league_data['league_id']}"
+            )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        except discord.Forbidden:
+            logger.error(f"Forbidden error assigning league role: Missing permissions")
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Permission Denied",
+                description="I don't have sufficient permissions to assign roles.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            embed.add_field(
+                name=f"{Config.ICONS['fix']} Required Permissions",
+                value="• `Manage Roles` - Assign league roles to users\n• Role hierarchy must be properly configured",
+                inline=False,
+            )
+            embed.add_field(
+                name=f"{Config.ICONS['info']} Contact",
+                value="Please contact a server administrator to fix permissions.",
+                inline=False,
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except discord.HTTPException as he:
+            logger.error(f"Discord HTTP error assigning league role: {he}")
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Discord API Error",
+                description="Failed to assign league role due to a Discord API issue.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            embed.add_field(
+                name=f"{Config.ICONS['fix']} Possible Causes",
+                value="• Role hierarchy issues\n• Rate limited by Discord\n• Temporary Discord outage",
+                inline=False,
+            )
+            embed.add_field(
+                name=f"{Config.ICONS['info']} Solutions",
+                value="• Check role hierarchy settings\n• Wait a few minutes and try again\n• Contact support if issue persists",
+                inline=False,
+            )
+            embed.set_footer(text=f"Error Code: {he.status}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            logger.error(f"Unexpected error assigning league role: {e}")
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Unexpected Error",
+                description="An unexpected error occurred while assigning the league role.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            embed.add_field(
+                name=f"{Config.ICONS['fix']} Error Information",
+                value=f"```{str(e)[:1000]}```",
+                inline=False,
+            )
+            embed.add_field(
+                name=f"{Config.ICONS['info']} Next Steps",
+                value="• Try again in a few minutes\n• Contact an administrator if the issue persists\n• Check that all required systems are working",
+                inline=False,
+            )
+            embed.set_footer(text="Error logged for administrator review")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="league_demote",
+        description="Remove a user from a specific league by removing their league role",
+    )
+    @app_commands.describe(
+        league_name="The league to remove the user from",
+        user="The user to remove from the league",
+    )
+    @app_commands.autocomplete(league_name=league_name_autocomplete)
+    @app_commands.default_permissions(administrator=True)
+    async def league_demote(
+        self, interaction: discord.Interaction, league_name: str, user: discord.Member
+    ):
+        """
+        Remove a user from a specific league by removing their league's Discord role
+        """
+        # Check if user has admin permissions
+        if not interaction.user.guild_permissions.administrator:
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Access Denied",
+                description="You need administrator permissions to remove users from leagues.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # Initialize variables to avoid linter warnings
+        league_data = None
+        league_role = None
+
+        try:
+            # Validate league name is provided
+            if not league_name or len(league_name.strip()) == 0:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} League Required",
+                    description="Please specify a league to remove the user from.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Tip",
+                    value="Use the autocomplete to select from available leagues.",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            league_name = league_name.strip()
+
+            # Get league data from database
+            league_data = await self.get_league_by_name(league_name)
+            if not league_data:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} League Not Found",
+                    description=f"The league **'{league_name}'** does not exist in the database.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Suggestions",
+                    value="• Use the autocomplete to select from available leagues\n• Check the spelling of the league name\n• Use `/list_leagues` to see all available leagues",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Find the associated Discord role
+            league_role = await self.find_discord_role_for_league(
+                interaction.guild, league_data["league_name"]
+            )
+            if not league_role:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Discord Role Not Found",
+                    description=f"The Discord role for league **'{league_name}'** could not be found.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['fix']} What might be wrong",
+                    value="• The Discord role was deleted after the league was created\n• The role name was changed manually\n• League setup is incomplete",
+                    inline=False,
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Solutions",
+                    value="• Contact an administrator to recreate the role\n• Use `/list_leagues` to check league status\n• Try recreating the league if necessary",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return  # Check if user doesn't have the role
+            if league_role not in user.roles:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['info']} Not in League",
+                    description=f"**{user.display_name}** is not currently in the **{league_role.name}** league.",
+                    color=Config.EMBED_COLORS["yellow"],
+                )
+                embed.add_field(
+                    name="Current Status",
+                    value=f"{Config.ICONS['unsuccess']} User doesn't have the {league_role.mention} role",
+                    inline=False,
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Did you mean to",
+                    value=f"• Use `/league_promote` to add them to the league?\n• Check a different league?\n• Verify the correct user?",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return  # Check if user is in the league database table
+            try:
+                is_in_table = await self.check_user_in_league_table(
+                    league_name, user.id
+                )
+                if not is_in_table:
+                    # User has role but not in database - this is an inconsistent state
+                    # Remove the role and show appropriate message
+                    try:
+                        await user.remove_roles(
+                            league_role,
+                            reason=f"Syncing inconsistent state: user not in {league_role.name} database",
+                        )
+
+                        embed = discord.Embed(
+                            title=f"{Config.ICONS['info']} Role Removed (Sync Fix)",
+                            description=f"**{user.display_name}** had the **{league_role.name}** Discord role but was not in the league database.",
+                            color=Config.EMBED_COLORS["yellow"],
+                        )
+                        embed.add_field(
+                            name=f"{Config.ICONS['info']} Inconsistent State Fixed",
+                            value="User had Discord role but wasn't in league database. The role has been removed to sync with the database state.",
+                            inline=False,
+                        )
+                        embed.add_field(
+                            name=f"{Config.ICONS['fix']} Action Taken",
+                            value=f"• Removed {league_role.mention} from user\n• No database changes needed (user wasn't in league table)\n• Discord and database are now synchronized",
+                            inline=False,
+                        )
+                        embed.add_field(
+                            name=f"{Config.ICONS['info']} Note",
+                            value="If the user should be in this league, use `/league_promote` to properly add them.",
+                            inline=False,
+                        )
+                        embed.set_thumbnail(url=user.display_avatar.url)
+                        embed.set_footer(
+                            text=f"Sync fix by {interaction.user.display_name}"
+                        )
+
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                        logger.info(
+                            f"Sync fix: Removed role {league_role.name} from {user} who wasn't in {league_role.name} database"
+                        )
+                        return
+
+                    except discord.Forbidden:
+                        embed = discord.Embed(
+                            title=f"{Config.ICONS['unsuccess']} Permission Denied",
+                            description="Cannot remove the Discord role due to insufficient permissions.",
+                            color=Config.EMBED_COLORS["red"],
+                        )
+                        embed.add_field(
+                            name=f"{Config.ICONS['info']} Issue",
+                            value="User has Discord role but isn't in league database, but I cannot fix this automatically.",
+                            inline=False,
+                        )
+                        embed.add_field(
+                            name=f"{Config.ICONS['fix']} Manual Fix Required",
+                            value="An administrator with higher permissions needs to remove the role manually.",
+                            inline=False,
+                        )
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                        return
+
+                    except Exception as e:
+                        logger.error(f"Failed to remove inconsistent role: {e}")
+                        embed = discord.Embed(
+                            title=f"{Config.ICONS['unsuccess']} Sync Fix Failed",
+                            description="Failed to remove the inconsistent Discord role.",
+                            color=Config.EMBED_COLORS["red"],
+                        )
+                        embed.add_field(
+                            name=f"{Config.ICONS['info']} Issue",
+                            value="User has Discord role but isn't in league database, and automatic fix failed.",
+                            inline=False,
+                        )
+                        embed.add_field(
+                            name=f"{Config.ICONS['fix']} Error",
+                            value=f"```{str(e)[:500]}```",
+                            inline=False,
+                        )
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                        return
+
+                skip_db_delete = False  # User is in database, proceed normally
+            except Exception as e:
+                logger.error(f"Failed to check user in league table: {e}")
+                skip_db_delete = False  # Default to attempting database deletion
+
+            # Check bot permissions
+            if not interaction.guild.me.guild_permissions.manage_roles:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Missing Permissions",
+                    description="I don't have permission to manage roles in this server.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['fix']} Required Permission",
+                    value="`Manage Roles` - Needed to remove league roles from users",
+                    inline=False,
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} How to fix",
+                    value="• Go to Server Settings → Roles\n• Find my role and enable `Manage Roles`\n• Or contact an administrator",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Check if bot's role is high enough to remove the league role
+            if league_role.position >= interaction.guild.me.top_role.position:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Role Hierarchy Issue",
+                    description="I cannot remove this league role because it's higher than or equal to my highest role.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['fix']} What's wrong",
+                    value=f"The {league_role.mention} role is positioned too high in the role hierarchy.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} How to fix",
+                    value="• Move my bot role higher in the server role hierarchy\n• Or move the league role lower\n• Contact an administrator for help",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return  # Remove the role from the user
+            await user.remove_roles(
+                league_role,
+                reason=f"Removed from {league_role.name} league by {interaction.user}",
+            )  # Remove user from league database table
+            if not skip_db_delete:
+                try:
+                    # Remove user from league-specific table
+                    db_success = await self.remove_user_from_league_table(
+                        league_name, user.id
+                    )
+                    if not db_success:
+                        logger.warning(
+                            f"Failed to remove user {user.id} from league table {league_name}"
+                        )
+                except Exception as e:
+                    logger.error(f"Database operation failed for user demotion: {e}")
+
+            # Create success embed
+            embed = discord.Embed(
+                title=f"{Config.ICONS['success']} League Demotion Successful",
+                description=f"**{user.display_name}** has been successfully demoted from the **{league_role.name}** league!",
+                color=Config.EMBED_COLORS["light_green"],
+            )
+            embed.add_field(
+                name="User", value=f"{user.mention} ({user.display_name})", inline=True
+            )
+            embed.add_field(name="League", value=f"{league_role.name}", inline=True)
+            embed.add_field(
+                name="Role Removed", value=f"{league_role.mention}", inline=True
+            )
+            embed.add_field(
+                name=f"{Config.ICONS['info']} What this means",
+                value=f"• User can no longer join {league_name} lobbies\n• User lost access to league-specific features\n• Role is no longer visible in their profile\n• User removed from league database (stats preserved)",
+                inline=False,
+            )
+            embed.set_thumbnail(url=user.display_avatar.url)
+            embed.set_footer(
+                text=f"Demoted by {interaction.user.display_name} • League ID: #{league_data['league_id']}"
+            )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        except discord.Forbidden:
+            logger.error(f"Forbidden error removing league role: Missing permissions")
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Permission Denied",
+                description="I don't have sufficient permissions to remove roles.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            embed.add_field(
+                name=f"{Config.ICONS['fix']} Required Permissions",
+                value="• `Manage Roles` - Remove league roles from users\n• Role hierarchy must be properly configured",
+                inline=False,
+            )
+            embed.add_field(
+                name=f"{Config.ICONS['info']} Contact",
+                value="Please contact a server administrator to fix permissions.",
+                inline=False,
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except discord.HTTPException as he:
+            logger.error(f"Discord HTTP error removing league role: {he}")
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Discord API Error",
+                description="Failed to remove league role due to a Discord API issue.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            embed.add_field(
+                name=f"{Config.ICONS['fix']} Possible Causes",
+                value="• Role hierarchy issues\n• Rate limited by Discord\n• Temporary Discord outage",
+                inline=False,
+            )
+            embed.add_field(
+                name=f"{Config.ICONS['info']} Solutions",
+                value="• Check role hierarchy settings\n• Wait a few minutes and try again\n• Contact support if issue persists",
+                inline=False,
+            )
+            embed.set_footer(text=f"Error Code: {he.status}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            logger.error(f"Unexpected error removing league role: {e}")
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Unexpected Error",
+                description="An unexpected error occurred while removing the league role.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            embed.add_field(
+                name=f"{Config.ICONS['fix']} Error Information",
+                value=f"```{str(e)[:1000]}```",
+                inline=False,
+            )
+            embed.add_field(
+                name=f"{Config.ICONS['info']} Next Steps",
+                value="• Try again in a few minutes\n• Contact an administrator if the issue persists\n• Check that all required systems are working",
+                inline=False,
+            )
+            embed.set_footer(text="Error logged for administrator review")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def add_user_to_league_table(
+        self, league_name: str, discord_id: int, nickname: str
+    ) -> bool:
+        """
+        Add a user to a specific league table
+        """
+        loop = asyncio.get_running_loop()
+
+        def db_insert():
+            try:
+                # Sanitize the league name to get the table name
+                table_name = self.sanitize_league_name(league_name)
+
+                # Insert user with initial stats
+                response = (
+                    Config.supabase()
+                    .table(table_name)
+                    .insert(
+                        {
+                            "discord_id": str(discord_id),
+                            "nickname": nickname,
+                            "points": 200,  # Starting points
+                            "kills": 0,
+                            "deaths": 0,
+                            "wins": 0,
+                            "loses": 0,
+                        }
+                    )
+                    .execute()
+                )
+                return True
+            except Exception as e:
+                logger.error(f"Failed to add user to league table '{table_name}': {e}")
+                return False
+
+        return await loop.run_in_executor(None, db_insert)
+
+    async def remove_user_from_league_table(
+        self, league_name: str, discord_id: int
+    ) -> bool:
+        """
+        Remove a user from a specific league table
+        """
+        loop = asyncio.get_running_loop()
+
+        def db_delete():
+            try:
+                # Sanitize the league name to get the table name
+                table_name = self.sanitize_league_name(league_name)
+
+                # Remove user from league table
+                response = (
+                    Config.supabase()
+                    .table(table_name)
+                    .delete()
+                    .eq("discord_id", str(discord_id))
+                    .execute()
+                )
+                return True
+            except Exception as e:
+                logger.error(
+                    f"Failed to remove user from league table '{table_name}': {e}"
+                )
+                return False
+
+        return await loop.run_in_executor(None, db_delete)
+
+    async def check_user_in_league_table(
+        self, league_name: str, discord_id: int
+    ) -> bool:
+        """
+        Check if a user exists in a specific league table
+        """
+        loop = asyncio.get_running_loop()
+
+        def db_check():
+            try:
+                # Sanitize the league name to get the table name
+                table_name = self.sanitize_league_name(league_name)
+
+                # Check if user exists in league table
+                response = (
+                    Config.supabase()
+                    .table(table_name)
+                    .select("discord_id")
+                    .eq("discord_id", str(discord_id))
+                    .execute()
+                )
+                return len(response.data) > 0
+            except Exception as e:
+                logger.error(
+                    f"Failed to check user in league table '{table_name}': {e}"
+                )
+                return False
+
+        return await loop.run_in_executor(None, db_check)
+
 
 class DeleteLeagueConfirmationView(discord.ui.View):
     def __init__(
