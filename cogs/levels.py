@@ -13,6 +13,26 @@ class LevelsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot  # Level configuration with point ranges and colors
 
+    async def get_default_league_from_config(self):
+        """Get the default league from the config table"""
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+
+        def db_get():
+            try:
+                response = (
+                    Config.supabase().table("config").select("default_league").execute()
+                )
+                if response.data and len(response.data) > 0:
+                    return response.data[0].get("default_league")
+                return None
+            except Exception as e:
+                logger.error(f"Failed to get default league from config: {e}")
+                return None
+
+        return await loop.run_in_executor(None, db_get)
+
     LEVEL_CONFIG = {
         1: {
             "min_points": 0,
@@ -142,7 +162,6 @@ class LevelsCog(commands.Cog):
         # Check if player is Challenger level
         if points >= LevelsCog.CHALLENGER_CONFIG["min_points"]:
             return LevelsCog.CHALLENGER_CONFIG["emoji"]
-
         # Otherwise, get the regular level emoji
         for level, config in LevelsCog.LEVEL_CONFIG.items():
             if config["min_points"] <= points <= config["max_points"]:
@@ -153,12 +172,18 @@ class LevelsCog(commands.Cog):
 
     async def get_top_10_players(self):
         """Get the top 10 players by points from database"""
+        # Get default league from config
+        default_league = await self.get_default_league_from_config()
+        if not default_league:
+            logger.error("No default league found in config")
+            return []
+
         loop = asyncio.get_running_loop()
 
         def db_query():
             response = (
                 Config.supabase()
-                .table("users")
+                .table(default_league)
                 .select("discord_id, points")
                 .order("points", desc=True)
                 .limit(10)
@@ -179,7 +204,12 @@ class LevelsCog(commands.Cog):
         return discord_id in top_10_ids
 
     async def update_player_roles(self, guild, discord_id, new_points):
-        """Update a player's level roles based on their new points"""
+        """
+        Update a player's level roles based on their new points.
+
+        IMPORTANT: Level roles are only assigned based on points from the DEFAULT LEAGUE.
+        Players in other leagues do not receive level roles regardless of their points.
+        """
         try:
             member = guild.get_member(discord_id)
             if not member:
@@ -340,11 +370,11 @@ class LevelsCog(commands.Cog):
 
     @app_commands.command(
         name="update_players_levels",
-        description="Update all players' level roles to match their current points",
+        description="Update all players' level roles to match their current points (default league only)",
     )
     @app_commands.default_permissions(administrator=True)
     async def update_players_levels(self, interaction: discord.Interaction):
-        """Update all players' roles to match their current points"""
+        """Update all players' roles to match their current points from the default league only"""
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(
                 f"{Config.ICONS['unsuccess']} You need administrator permissions to use this command.",
@@ -353,15 +383,34 @@ class LevelsCog(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True)
-
         try:
-            # Get all users from database
+            # Get default league from config - only default league players get level roles
+            default_league = await self.get_default_league_from_config()
+            if not default_league:
+                await interaction.followup.send(
+                    f"{Config.ICONS['unsuccess']} No default league found in config.",
+                    ephemeral=True,
+                )
+                return
+
+            # Get the display name for the default league using leagues cog's function
+            leagues_cog = self.bot.get_cog("Leagues")
+            if leagues_cog:
+                league_data = await leagues_cog.get_league_by_name(default_league)
+                default_league_display = (
+                    league_data.get("original_league_name") if league_data else None
+                ) or default_league.replace("_", " ").title()
+            else:
+                # Fallback if leagues cog not available
+                default_league_display = default_league.replace("_", " ").title()
+
+            # Get all users from default league only
             loop = asyncio.get_running_loop()
 
             def db_query():
                 response = (
                     Config.supabase()
-                    .table("users")
+                    .table(default_league)
                     .select("discord_id, points")
                     .execute()
                 )
@@ -371,20 +420,23 @@ class LevelsCog(commands.Cog):
 
             if not all_users:
                 await interaction.followup.send(
-                    f"{Config.ICONS['unsuccess']} No users found in database.",
+                    f"{Config.ICONS['unsuccess']} No users found in the default league '**{default_league_display}**'.",
                     ephemeral=True,
                 )
                 return
 
             guild = interaction.guild
             updated_count = 0
-            error_count = 0
-
-            # Create processing embed
+            error_count = 0  # Create processing embed
             processing_embed = discord.Embed(
                 title=f"{Config.ICONS['updating']} Updating Player Levels",
-                description=f"Processing {len(all_users)} players...",
+                description=f"Processing {len(all_users)} players from '**{default_league_display}**' (default league only)...",
                 color=Config.EMBED_COLORS["yellow"],
+            )
+            processing_embed.add_field(
+                name=f"{Config.ICONS['info']} Note",
+                value="Only players in the default league receive level roles.",
+                inline=False,
             )
             message = await interaction.followup.send(
                 embed=processing_embed, ephemeral=True
@@ -413,13 +465,19 @@ class LevelsCog(commands.Cog):
             # Create final results embed
             final_embed = discord.Embed(
                 title=f"{Config.ICONS['success']} Level Update Complete",
-                description="All player levels have been updated!",
+                description=f"All player levels have been updated for '**{default_league_display}**' (default league)!",
                 color=Config.EMBED_COLORS["light_green"],
             )
 
             final_embed.add_field(
                 name="Results",
                 value=f"• Successfully updated: {updated_count}\n• Errors: {error_count}\n• Total processed: {len(all_users)}",
+                inline=False,
+            )
+
+            final_embed.add_field(
+                name=f"{Config.ICONS['info']} League Policy",
+                value="Only players in the default league receive level roles. Other leagues do not affect Discord roles.",
                 inline=False,
             )
 

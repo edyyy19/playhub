@@ -12,7 +12,9 @@ class Match:
     TABLE = "matches"
 
     @classmethod
-    async def create(cls, ct_team: list, t_team: list, map_name: str):
+    async def create(
+        cls, ct_team: list, t_team: list, map_name: str, league: str = None
+    ):
         # Get player data for CT team
         ct_team_data = []
         for member in ct_team:
@@ -69,6 +71,7 @@ class Match:
             "ct_team": json.dumps(ct_team_data),
             "t_team": json.dumps(t_team_data),
             "map": map_name,
+            "league": league,  # Add league column
             "created_at": datetime.now().isoformat(),
             "results_submitted": False,
             "ended_at": None,

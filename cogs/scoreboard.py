@@ -11,6 +11,7 @@ from difflib import SequenceMatcher
 from datetime import datetime
 from models.match import Match
 from models.user import User
+from models.stats import Stats
 from models.scoreboard_config import ScoreboardConfig
 
 logger = logging.getLogger(__name__)
@@ -592,18 +593,29 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                     db_player["assists"] = screenshot_player.get("assists", 0)
                     db_player["deaths"] = screenshot_player["deaths"]
 
-                    # Calculate level-based points for CT team
+                    # Calculate points based on league type
                     discord_id = int(db_player["discord_id"])
-                    current_points = await self.get_player_current_points(discord_id)
-                    is_challenger = await self.check_challenger_status(
-                        discord_id, current_points
-                    )
-                    ct_won = ct_team_won
-                    db_player[
-                        "points_received"
-                    ] = await self.calculate_level_based_points(
-                        discord_id, ct_won, is_challenger
-                    )
+                    match_league = match_data.get("league")
+                    default_league = await self.get_default_league_from_config()
+
+                    if match_league == default_league:
+                        # Default league: use level-based point calculation
+                        current_points = await self.get_player_current_points(
+                            discord_id, match_league
+                        )
+                        is_challenger = await self.check_challenger_status(
+                            discord_id, current_points
+                        )
+                        ct_won = ct_team_won
+                        db_player[
+                            "points_received"
+                        ] = await self.calculate_level_based_points(
+                            discord_id, ct_won, match_league, is_challenger
+                        )
+                    else:
+                        # Non-default league: use fixed points
+                        ct_won = ct_team_won
+                        db_player["points_received"] = 25 if ct_won else -25
 
                     updated_ct_team.append(db_player)
 
@@ -626,18 +638,29 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                     db_player["assists"] = screenshot_player.get("assists", 0)
                     db_player["deaths"] = screenshot_player["deaths"]
 
-                    # Calculate level-based points for T team
+                    # Calculate points based on league type
                     discord_id = int(db_player["discord_id"])
-                    current_points = await self.get_player_current_points(discord_id)
-                    is_challenger = await self.check_challenger_status(
-                        discord_id, current_points
-                    )
-                    t_won = not ct_team_won
-                    db_player[
-                        "points_received"
-                    ] = await self.calculate_level_based_points(
-                        discord_id, t_won, is_challenger
-                    )
+                    match_league = match_data.get("league")
+                    default_league = await self.get_default_league_from_config()
+
+                    if match_league == default_league:
+                        # Default league: use level-based point calculation
+                        current_points = await self.get_player_current_points(
+                            discord_id, match_league
+                        )
+                        is_challenger = await self.check_challenger_status(
+                            discord_id, current_points
+                        )
+                        t_won = not ct_team_won
+                        db_player[
+                            "points_received"
+                        ] = await self.calculate_level_based_points(
+                            discord_id, t_won, match_league, is_challenger
+                        )
+                    else:
+                        # Non-default league: use fixed points
+                        t_won = not ct_team_won
+                        db_player["points_received"] = 25 if t_won else -25
 
                     updated_t_team.append(db_player)
 
@@ -647,7 +670,6 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 p["name"]
                 for p in ct_data.get("players", []) + t_data.get("players", [])
             }
-            unmatched_db_players = []
 
             for db_player in all_db_players:
                 player_matched = False
@@ -685,7 +707,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             )
 
             # Update user statistics
-            await self.update_user_stats(updated_ct_team + updated_t_team)
+            await self.update_user_stats(updated_ct_team + updated_t_team, match_data)
 
             # Send final results image to target channel
             await self.send_final_results_image(
@@ -805,8 +827,18 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
 
         return matched, match_details
 
-    async def update_user_stats(self, all_players):
+    async def update_user_stats(self, all_players, match_data):
         """Update user statistics in database and manage level roles"""
+        # Extract league from match data
+        league_name = match_data.get("league")
+        logger.info(f"Updating stats for match in league: {league_name}")
+        # Get the default league from config table to determine if level roles should be updated
+        default_league = await self.get_default_league_from_config()
+        is_default_league = league_name == default_league
+        logger.info(
+            f"Default league: {default_league}, Current league: {league_name}, Is default: {is_default_league}"
+        )
+
         for player in all_players:
             discord_id = int(player["discord_id"])
             kills = player["kills"]
@@ -814,14 +846,38 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             points_change = player["points_received"]
             won = points_change > 0
 
-            # Get the guild object from the interaction context
-            guild = None
-            if hasattr(self, "bot") and hasattr(self, "_guild_id"):
-                guild = self.bot.get_guild(self._guild_id)
+            if is_default_league:
+                # For default league: update stats AND manage level roles
+                guild = None
+                if hasattr(self, "bot") and hasattr(self, "_guild_id"):
+                    guild = self.bot.get_guild(self._guild_id)
 
-            await User.update_stats_with_roles(
-                discord_id, kills, deaths, points_change, won, guild
-            )
+                await Stats.update_stats_with_roles(
+                    discord_id, kills, deaths, points_change, won, guild, league_name
+                )
+            else:
+                # For non-default leagues: only update stats, no role management
+                await Stats.update_stats(
+                    discord_id, kills, deaths, points_change, won, league_name
+                )
+
+    async def get_default_league_from_config(self):
+        """Get the default league from the config table"""
+        loop = asyncio.get_running_loop()
+
+        def db_get():
+            try:
+                response = (
+                    Config.supabase().table("config").select("default_league").execute()
+                )
+                if response.data and len(response.data) > 0:
+                    return response.data[0].get("default_league")
+                return None
+            except Exception as e:
+                logger.error(f"Failed to get default league from config: {e}")
+                return None
+
+        return await loop.run_in_executor(None, db_get)
 
     async def send_final_results_image(
         self,
@@ -917,36 +973,45 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             fallback_msg += "*(Image generation failed - showing text summary)*"
             await target_channel.send(fallback_msg)
 
-    async def get_player_current_points(self, discord_id):
-        """Get current points for a player from database"""
+    async def get_player_current_points(self, discord_id, league_name):
+        """Get current points for a player from the specified league table"""
         try:
-            user_data = await User.find(discord_id)
-            return user_data.get("points", 0) if user_data else 0
+            stats_result = await Stats.get_user_stats(discord_id, league_name)
+            if stats_result and stats_result.get("success"):
+                stats_data = stats_result.get("stats", {})
+                return stats_data.get("points", 0)
+            return 0
         except Exception as e:
-            logger.error(f"Error getting points for {discord_id}: {e}")
+            logger.error(
+                f"Error getting points for {discord_id} in league {league_name}: {e}"
+            )
             return 0
 
     async def calculate_level_based_points(
-        self, discord_id, is_win, is_challenger=False
+        self, discord_id, is_win, league_name, is_challenger=False
     ):
-        """Calculate points based on player's current level and win/loss"""
+        """Calculate points based on player's current level and win/loss (only for default league)"""
         try:
             # Import here to avoid circular imports
             from cogs.levels import LevelsCog
 
-            current_points = await self.get_player_current_points(discord_id)
+            current_points = await self.get_player_current_points(
+                discord_id, league_name
+            )
 
             if is_challenger:
                 return LevelsCog.get_challenger_point_delta(is_win)
             else:
                 return LevelsCog.get_point_delta(current_points, is_win)
         except Exception as e:
-            logger.error(f"Error calculating level-based points for {discord_id}: {e}")
+            logger.error(
+                f"Error calculating level-based points for {discord_id} in league {league_name}: {e}"
+            )
             # Fallback to old system
             return 20 if is_win else -10
 
     async def check_challenger_status(self, discord_id, current_points):
-        """Check if player is currently in Challenger tier"""
+        """Check if player is currently in Challenger tier (only used for default league)"""
         try:
             from cogs.levels import LevelsCog
 

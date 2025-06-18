@@ -56,19 +56,28 @@ class Leagues(commands.Cog):
 
         return await loop.run_in_executor(None, call_rpc)
 
-    async def add_league_to_database(self, league_name: str) -> dict:
+    async def add_league_to_database(
+        self, league_name: str, original_league_name: str, league_emoji: str = None
+    ) -> dict:
         """
-        Add league to the leagues table
+        Add league to the leagues table with both sanitized and original names, and optional emoji
         """
         loop = asyncio.get_running_loop()
 
         def db_insert():
             try:
+                insert_data = {
+                    "league_name": league_name,
+                    "original_league_name": original_league_name,
+                    "created_at": "now()",
+                }
+
+                # Add emoji if provided
+                if league_emoji:
+                    insert_data["league_emoji"] = league_emoji
+
                 response = (
-                    Config.supabase()
-                    .table("leagues")
-                    .insert({"league_name": league_name, "created_at": "now()"})
-                    .execute()
+                    Config.supabase().table("leagues").insert(insert_data).execute()
                 )
                 return response.data[0] if response.data else None
             except Exception as e:
@@ -104,10 +113,16 @@ class Leagues(commands.Cog):
         description="Create a new league with dedicated table and Discord role",
     )
     @app_commands.describe(
-        league_name="The name of the league to create (e.g., 'PRO League')"
+        league_name="The name of the league to create (e.g., 'PRO League')",
+        league_emoji="Optional emoji for the league (e.g., '🏆', '⚡', '🔥')",
     )
     @app_commands.default_permissions(administrator=True)
-    async def create_league(self, interaction: discord.Interaction, league_name: str):
+    async def create_league(
+        self,
+        interaction: discord.Interaction,
+        league_name: str,
+        league_emoji: str = None,
+    ):
         """
         Create a new league by:
         1. Adding a sanitized name to the leagues table
@@ -124,7 +139,10 @@ class Leagues(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
+        # Defer the interaction
         await interaction.response.defer(ephemeral=True)
+
+        message = None  # Initialize message variable
 
         try:
             # Validate league name
@@ -138,6 +156,12 @@ class Leagues(commands.Cog):
                 return
 
             league_name = league_name.strip()
+
+            # Clean up league_emoji if provided (no validation as requested)
+            if league_emoji:
+                league_emoji = league_emoji.strip()
+                if not league_emoji:  # If it becomes empty after stripping, set to None
+                    league_emoji = None
 
             # Sanitize the league name for database
             sanitized_name = self.sanitize_league_name(league_name)
@@ -199,7 +223,9 @@ class Leagues(commands.Cog):
             )
             await message.edit(embed=processing_embed)
 
-            league_data = await self.add_league_to_database(sanitized_name)
+            league_data = await self.add_league_to_database(
+                sanitized_name, league_name, league_emoji
+            )
             if not league_data:
                 embed = discord.Embed(
                     title=f"{Config.ICONS['unsuccess']} Database Error",
@@ -281,10 +307,14 @@ class Leagues(commands.Cog):
                 description=f"League '{league_name}' has been created and is ready for use!",
                 color=Config.EMBED_COLORS["light_green"],
             )
+            # Prepare league details text
+            league_details = f"**Original Name:** {league_name}\n**Database Name:** `{sanitized_name}`\n**League ID:** #{league_data['league_id']}"
+            if league_emoji:
+                league_details += f"\n**League Emoji:** {league_emoji}"
 
             success_embed.add_field(
                 name="League Details",
-                value=f"**Original Name:** {league_name}\n**Database Name:** `{sanitized_name}`\n**League ID:** #{league_data['league_id']}",
+                value=league_details,
                 inline=False,
             )
 
@@ -321,7 +351,15 @@ class Leagues(commands.Cog):
             try:
                 await interaction.followup.send(embed=embed, ephemeral=True)
             except:
-                await message.edit(embed=embed)
+                # Only try to edit message if it exists
+                if message:
+                    try:
+                        await message.edit(embed=embed)
+                    except:
+                        # If editing message also fails, log the error
+                        logger.error(
+                            "Failed to send error message via both followup and edit"
+                        )
 
     async def cleanup_league(self, sanitized_name: str):
         """
@@ -521,6 +559,7 @@ class Leagues(commands.Cog):
                     value="Use `/create_league` to create your first league!",
                     inline=False,
                 )
+
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
 
@@ -536,7 +575,6 @@ class Leagues(commands.Cog):
                 league_id = league.get("league_id", "N/A")
                 league_name = league.get("league_name", "Unknown")
                 created_at = league.get("created_at", "Unknown")
-
                 # Try to find corresponding Discord role
                 discord_role = None
                 for role in interaction.guild.roles:
@@ -552,7 +590,7 @@ class Leagues(commands.Cog):
 
                 embed.add_field(
                     name=f"#{league_id} • {league_name.replace('_', ' ').title()}",
-                    value=f"**Database:** `{league_name}`\n**Discord Role:** {role_status}\n**Created:** <t:{int(created_at.timestamp()) if hasattr(created_at, 'timestamp') else 'Unknown'}:R>",
+                    value=f"**Database:** `{league_name}`\n**Discord Role:** {role_status}\n**Created:** <t:{self._parse_timestamp(created_at)}:F>",
                     inline=False,
                 )
 
@@ -584,7 +622,7 @@ class Leagues(commands.Cog):
                     response = (
                         Config.supabase()
                         .table("leagues")
-                        .select("league_name")
+                        .select("league_name, original_league_name")
                         .order("created_at", desc=True)
                         .execute()
                     )
@@ -598,20 +636,26 @@ class Leagues(commands.Cog):
             if not leagues:
                 return []
 
-            # Convert sanitized names to display names and filter based on current input
+            # Use original league names from database and filter based on current input
             choices = []
-            for league in leagues:
-                league_name = league["league_name"]
-                # Convert sanitized name to display name
-                display_name = league_name.replace("_", " ").title()
+            search_term = (current or "").lower()  # Handle None case
 
-                # Filter based on current input
+            for league in leagues:
+                league_name = league["league_name"]  # sanitized name (table name)
+                original_name = league.get("original_league_name")
+
+                # Fallback for old entries that might not have original_league_name
+                if not original_name:
+                    original_name = league_name.replace("_", " ").title()
+
+                # Filter based on current input (show all if no search term)
                 if (
-                    current.lower() in display_name.lower()
-                    or current.lower() in league_name.lower()
+                    not search_term
+                    or search_term in original_name.lower()
+                    or search_term in league_name.lower()
                 ):
                     choices.append(
-                        app_commands.Choice(name=display_name, value=league_name)
+                        app_commands.Choice(name=original_name, value=league_name)
                     )
                 # Limit to 25 choices (Discord limit)
                 if len(choices) >= 25:
@@ -1382,7 +1426,9 @@ class Leagues(commands.Cog):
                     inline=False,
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
-                return  # Check if user doesn't have the role
+                return
+
+            # Check if user doesn't have the role
             if league_role not in user.roles:
                 embed = discord.Embed(
                     title=f"{Config.ICONS['info']} Not in League",
@@ -1400,7 +1446,9 @@ class Leagues(commands.Cog):
                     inline=False,
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
-                return  # Check if user is in the league database table
+                return
+
+            # Check if user is in the league database table
             try:
                 is_in_table = await self.check_user_in_league_table(
                     league_name, user.id
@@ -1723,6 +1771,31 @@ class Leagues(commands.Cog):
                 return False
 
         return await loop.run_in_executor(None, db_check)
+
+    def _parse_timestamp(self, timestamp_str):
+        """Parse timestamp string and return Unix timestamp for Discord formatting"""
+        if not timestamp_str or timestamp_str == "Unknown":
+            return "Unknown"
+
+        try:
+            from datetime import datetime
+
+            # Handle string timestamps from database
+            if isinstance(timestamp_str, str):
+                # Replace Z with +00:00 for proper ISO parsing
+                if timestamp_str.endswith("Z"):
+                    timestamp_str = timestamp_str[:-1] + "+00:00"
+
+                dt = datetime.fromisoformat(timestamp_str)
+                return int(dt.timestamp())
+            # Handle datetime objects
+            elif hasattr(timestamp_str, "timestamp"):
+                return int(timestamp_str.timestamp())
+            else:
+                return "Unknown"
+        except Exception as e:
+            logger.warning(f"Failed to parse timestamp {timestamp_str}: {e}")
+            return "Unknown"
 
 
 class DeleteLeagueConfirmationView(discord.ui.View):

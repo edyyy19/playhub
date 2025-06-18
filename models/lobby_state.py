@@ -55,6 +55,7 @@ class LobbyState:
             if lobby_data.get("required_role_id")
             else None,
             "required_role_name": lobby_data.get("required_role_name"),
+            "league": lobby_data.get("league_table"),
             "locked_lobby": locked_lobby,
             "updated_at": datetime.now().isoformat(),
         }

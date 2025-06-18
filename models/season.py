@@ -111,33 +111,81 @@ class Season:
 
     @classmethod
     async def get_all_users_stats(cls):
-        """Get all users stats for archiving"""
+        """Get all users stats from all league tables for archiving"""
         loop = asyncio.get_running_loop()
 
-        def db_select():
-            response = (
-                Config.supabase()
-                .table("users")
-                .select(
-                    "discord_id, nickname, so2_id, points, kills, deaths, wins, loses"
+        def db_get_leagues():
+            # Get all available leagues
+            try:
+                response = (
+                    Config.supabase()
+                    .table("leagues")
+                    .select("league_name, original_league_name")
+                    .execute()
                 )
-                .execute()
-            )
-            return response.data
+                return response.data if response.data else []
+            except Exception as e:
+                logger.error(f"Error getting leagues: {e}")
+                return []
 
-        return await loop.run_in_executor(None, db_select)
+        def db_get_league_stats(league_name):
+            # Get all player stats from a specific league table
+            try:
+                response = (
+                    Config.supabase()
+                    .table(league_name)
+                    .select("discord_id, nickname, points, kills, deaths, wins, loses")
+                    .execute()
+                )
+                return response.data if response.data else []
+            except Exception as e:
+                logger.error(f"Error getting stats from league {league_name}: {e}")
+                return []
+
+        # Get all leagues
+        leagues = await loop.run_in_executor(None, db_get_leagues)
+
+        # Structure: { "league_name": [player_stats], "another_league": [player_stats] }
+        all_stats = {}
+
+        for league in leagues:
+            league_name = league["league_name"]
+            original_name = league.get("original_league_name", league_name)
+
+            # Get stats for this league
+            league_stats = await loop.run_in_executor(
+                None, db_get_league_stats, league_name
+            )
+            # Store with original league name as key for better readability
+            all_stats[original_name] = {
+                "table_name": league_name,
+                "players": league_stats,
+            }
+
+        return all_stats
 
     @classmethod
     async def reset_all_players_stats(cls):
-        """Reset all players' stats to default values when season ends"""
+        """Reset all players' stats to default values in all league tables when season ends"""
         loop = asyncio.get_running_loop()
 
-        def db_update():
+        def db_get_leagues():
+            # Get all available leagues
             try:
-                # Reset all players' stats to default values
+                response = (
+                    Config.supabase().table("leagues").select("league_name").execute()
+                )
+                return response.data if response.data else []
+            except Exception as e:
+                logger.error(f"Error getting leagues: {e}")
+                return []
+
+        def db_reset_league_stats(league_name):
+            try:
+                # Reset all players' stats in this league table
                 response = (
                     Config.supabase()
-                    .table("users")
+                    .table(league_name)
                     .update(
                         {
                             "points": 200,
@@ -150,13 +198,29 @@ class Season:
                     .neq("discord_id", 0)  # Update all users
                     .execute()
                 )
-                logger.info(f"Reset stats for {len(response.data)} players")
-                return response.data
+                logger.info(
+                    f"Reset stats for {len(response.data)} players in league {league_name}"
+                )
+                return len(response.data) if response.data else 0
             except Exception as e:
-                logger.error(f"Error resetting player stats: {e}")
-                raise
+                logger.error(
+                    f"Error resetting player stats in league {league_name}: {e}"
+                )
+                return 0
 
-        return await loop.run_in_executor(None, db_update)
+        # Get all leagues
+        leagues = await loop.run_in_executor(None, db_get_leagues)
+
+        total_reset = 0
+        for league in leagues:
+            league_name = league["league_name"]
+            reset_count = await loop.run_in_executor(
+                None, db_reset_league_stats, league_name
+            )
+            total_reset += reset_count
+
+        logger.info(f"Total stats reset across all leagues: {total_reset}")
+        return total_reset
 
     @classmethod
     async def get_last_season_id(cls):

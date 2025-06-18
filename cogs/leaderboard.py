@@ -318,36 +318,21 @@ class Leaderboard(commands.Cog):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         """
-        Autocomplete function for league names - reused from leagues cog
+        Autocomplete function for league names - uses centralized league data function
         """
         try:
-            loop = asyncio.get_running_loop()
+            # Get all leagues using centralized function
+            leagues_data = await self.get_league_data()
 
-            def get_leagues():
-                try:
-                    response = (
-                        Config.supabase()
-                        .table("leagues")
-                        .select("league_name")
-                        .order("created_at", desc=True)
-                        .execute()
-                    )
-                    return response.data
-                except Exception as e:
-                    logger.error(f"Failed to fetch leagues for autocomplete: {e}")
-                    return []
-
-            leagues = await loop.run_in_executor(None, get_leagues)
-
-            if not leagues:
-                return []
-
-            # Convert sanitized names to display names and filter based on current input
+            if not leagues_data:
+                return []  # Filter based on current input and create choices
             choices = []
-            for league in leagues:
-                league_name = league["league_name"]
-                # Convert sanitized name to display name
-                display_name = league_name.replace("_", " ").title()
+            for league_name, league_info in leagues_data.items():
+                # Use original_league_name if available, fallback to formatted name
+                display_name = (
+                    league_info["original_league_name"]
+                    or league_name.replace("_", " ").title()
+                )
 
                 # Filter based on current input
                 if (
@@ -456,6 +441,8 @@ class Leaderboard(commands.Cog):
             return
 
         sanitized_name = league_data["league_name"]
+        # Get the original league name for display purposes
+        original_league_name = league_data.get("original_league_name") or league_name
 
         # Check if there's an active season
         from models.season import Season
@@ -495,7 +482,7 @@ class Leaderboard(commands.Cog):
         ):
             embed = discord.Embed(
                 title=f"{Config.ICONS['unsuccess']} Leaderboard Already Exists",
-                description=f"A leaderboard for league '{league_name}' already exists in {target_channel.mention}.",
+                description=f"A leaderboard for league '{original_league_name}' already exists in {target_channel.mention}.",
                 color=Config.EMBED_COLORS["red"],
             )
             embed.add_field(
@@ -511,7 +498,7 @@ class Leaderboard(commands.Cog):
         try:
             # Create the league-specific leaderboard embed
             embed, file, error_msg = await self.create_league_leaderboard_embed(
-                sanitized_name, league_name
+                sanitized_name, original_league_name
             )
 
             if error_msg:
@@ -544,7 +531,7 @@ class Leaderboard(commands.Cog):
             # Success response
             embed_response = discord.Embed(
                 title=f"{Config.ICONS['success']} Leaderboard Posted",
-                description=f"Leaderboard for **{league_name}** has been posted in {target_channel.mention}",
+                description=f"Leaderboard for **{original_league_name}** has been posted in {target_channel.mention}",
                 color=Config.EMBED_COLORS["light_green"],
             )
             embed_response.add_field(
@@ -601,15 +588,15 @@ class Leaderboard(commands.Cog):
             # Prepare template variables
             template_vars = {
                 "app_name": Config.APP_NAME,
-                "league_display_name": display_name.replace("_", " ").title(),
+                "league_display_name": display_name,
                 "players": top_players,
                 "last_updated": datetime.now().strftime("%H:%M | %d/%m/%Y"),
             }
 
             # Render HTML with Jinja2
-            template_dir = os.path.dirname(
-                os.path.dirname(__file__)
-            )  # Go up from cogs/ to project root
+            template_dir = os.path.dirname(os.path.dirname(__file__))
+
+            # Go up from cogs/ to project root
             env = Environment(loader=FileSystemLoader(template_dir))
             template = env.get_template("leaderboard_template.html")
             html_content = template.render(**template_vars)  # Render HTML to image
@@ -630,7 +617,7 @@ class Leaderboard(commands.Cog):
 
             # Create simple embed to accompany the image
             embed = discord.Embed(
-                title=f"🏆 {display_name.replace('_', ' ').title()} Leaderboard",
+                title=f"{Config.ICONS['league']} {display_name} Leaderboard",
                 description="Top players ranked by points",
                 color=EMBED_COLOR,
             )
@@ -744,7 +731,14 @@ class Leaderboard(commands.Cog):
                 old_message = update_data["old_message"]
 
                 # Create new leaderboard image
-                display_name = league_name.replace("_", " ").title()
+                # Get the original league name using centralized function
+                league_data = await self.get_league_data(league_name=league_name)
+                # Use original_league_name if available, fallback to formatted name
+                display_name = (
+                    league_data["original_league_name"]
+                    or league_name.replace("_", " ").title()
+                )
+
                 embed, file, error_msg = await self.create_league_leaderboard_embed(
                     league_name, display_name
                 )
@@ -945,16 +939,45 @@ class Leaderboard(commands.Cog):
                 color=EMBED_COLOR,
             )
 
+            # Fetch original league names for all active leagues
+            league_names_to_fetch = set()
+            for data in self.leaderboard_messages.values():
+                league_name = data.get("league_name")
+                if league_name:
+                    league_names_to_fetch.add(league_name)
+
+                # Get original league names from database using centralized function
+                league_display_names = {}
+                if league_names_to_fetch:
+                    try:
+                        leagues_data = await self.get_league_data(
+                            league_names=list(league_names_to_fetch)
+                        )
+                        # Extract display names for quick lookup
+                        for league_name, league_info in leagues_data.items():
+                            # Use original_league_name if available, fallback to formatted name
+                            display_name = (
+                                league_info["original_league_name"]
+                                or league_name.replace("_", " ").title()
+                            )
+                            league_display_names[league_name] = display_name
+
+                    except Exception as e:
+                        logger.error(f"Error fetching league display names: {e}")
+
             channels_list = []
             for storage_key, data in self.leaderboard_messages.items():
                 channel = data["channel"]
                 league_name = data.get("league_name")
                 if channel:
-                    league_info = (
-                        f" ({league_name.replace('_', ' ').title()})"
-                        if league_name
-                        else ""
-                    )
+                    if league_name:
+                        # Use original league name if available, fallback to formatted name
+                        display_name = league_display_names.get(
+                            league_name, league_name.replace("_", " ").title()
+                        )
+                        league_info = f" ({display_name})"
+                    else:
+                        league_info = ""
                     channels_list.append(f"• {channel.mention}{league_info}")
                 else:
                     channels_list.append(f"• Storage key: {storage_key} (deleted)")
@@ -976,6 +999,81 @@ class Leaderboard(commands.Cog):
                     )
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def get_league_data(self, league_name: str = None, league_names: list = None):
+        """
+        Centralized function to get league data including original_league_name.
+
+        Args:
+            league_name: Single league name to fetch (mutually exclusive with league_names)
+            league_names: List of league names to fetch (mutually exclusive with league_name)
+
+        Returns:
+            dict: For single league - {"league_name": str, "original_league_name": str}
+            dict: For multiple leagues - {league_name: {"league_name": str, "original_league_name": str}}
+        """
+        try:
+            loop = asyncio.get_running_loop()
+
+            def fetch_leagues():
+                try:
+                    query = (
+                        Config.supabase()
+                        .table("leagues")
+                        .select("league_name, original_league_name")
+                    )
+
+                    if league_name:
+                        query = query.eq("league_name", league_name)
+                    elif league_names:
+                        query = query.in_("league_name", league_names)
+                    else:
+                        # Fetch all leagues if no specific names provided
+                        query = query.order("created_at", desc=True)
+
+                    response = query.execute()
+                    return response.data if response.data else []
+                except Exception as e:
+                    logger.error(f"Failed to fetch league data: {e}")
+                    return []
+
+            leagues_data = await loop.run_in_executor(None, fetch_leagues)
+
+            # Process the data
+            processed_leagues = {}
+            for league in leagues_data:
+                table_name = league["league_name"]
+                original_name = league.get("original_league_name")
+
+                processed_leagues[table_name] = {
+                    "league_name": table_name,
+                    "original_league_name": original_name,
+                }
+
+            # Return format based on input
+            if league_name:
+                # Single league requested
+                return processed_leagues.get(
+                    league_name,
+                    {
+                        "league_name": league_name,
+                        "original_league_name": None,
+                    },
+                )
+            else:
+                # Multiple leagues or all leagues
+                return processed_leagues
+
+        except Exception as e:
+            logger.error(f"Error in get_league_data: {e}")
+            # Return fallback data
+            if league_name:
+                return {
+                    "league_name": league_name,
+                    "original_league_name": None,
+                }
+            else:
+                return {}
 
 
 async def setup(bot):

@@ -2,8 +2,10 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from models.user import User
+from models.stats import Stats
 from config import Config
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +90,84 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                         description=f"The Player ID '{self.so2_id.value}' is already being used by another player.",
                         color=Config.EMBED_COLORS["red"],
                     )
+                return await interaction.response.send_message(
+                    embed=embed, ephemeral=True
+                )
 
+            # Check if default league is configured and still exists
+            try:
+                bot = interaction.client
+                registration_cog = bot.get_cog("Registration")
+                leagues_cog = bot.get_cog("Leagues")
+
+                if registration_cog and leagues_cog:
+                    config = await registration_cog.get_config()
+
+                    if config and config.get("default_league"):
+                        default_league = config["default_league"]
+
+                        # Check if the default league still exists
+                        league_exists = await leagues_cog.league_exists(default_league)
+
+                        if not league_exists:
+                            embed = discord.Embed(
+                                title=f"{Config.ICONS['unsuccess']} Registration Temporarily Unavailable",
+                                description="Registration is currently unavailable because the default league has been deleted.",
+                                color=Config.EMBED_COLORS["red"],
+                            )
+                            embed.add_field(
+                                name="Administrator Action Required",
+                                value="An administrator needs to either:\n"
+                                "• Recreate the deleted league, or\n"
+                                "• Reconfigure the default league using `/setup`",
+                                inline=False,
+                            )
+                            embed.set_footer(
+                                text="Please contact an administrator for assistance."
+                            )
+                            return await interaction.response.send_message(
+                                embed=embed, ephemeral=True
+                            )
+                    else:
+                        # No default league configured
+                        embed = discord.Embed(
+                            title=f"{Config.ICONS['unsuccess']} Registration Not Set Up",
+                            description="Registration is not properly configured. No default league has been set.",
+                            color=Config.EMBED_COLORS["red"],
+                        )
+                        embed.add_field(
+                            name="Administrator Action Required",
+                            value="An administrator needs to configure the default league using `/setup`",
+                            inline=False,
+                        )
+                        embed.set_footer(
+                            text="Please contact an administrator for assistance."
+                        )
+                        return await interaction.response.send_message(
+                            embed=embed, ephemeral=True
+                        )
+                else:
+                    # System components not available
+                    embed = discord.Embed(
+                        title=f"{Config.ICONS['unsuccess']} System Error",
+                        description="Registration system components are not available.",
+                        color=Config.EMBED_COLORS["red"],
+                    )
+                    embed.set_footer(text="Please contact an administrator.")
+                    return await interaction.response.send_message(
+                        embed=embed, ephemeral=True
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"Error validating default league during registration: {e}"
+                )
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Registration Error",
+                    description="An error occurred while validating registration settings.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.set_footer(text="Please contact an administrator.")
                 return await interaction.response.send_message(
                     embed=embed, ephemeral=True
                 )
@@ -120,6 +199,56 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
             except Exception as e:
                 logger.error(f"Error assigning level role during registration: {e}")
 
+            # Add user to default league and assign league role
+            league_added = False
+            league_role_assigned = False
+            default_league_display = "No League"
+
+            try:
+                # Get the bot instance to access other cogs
+                bot = interaction.client
+                registration_cog = bot.get_cog("Registration")
+
+                if registration_cog:
+                    # Get config to find default league
+                    config = await registration_cog.get_config()
+
+                    if config and config.get("default_league"):
+                        default_league = config["default_league"]
+                        default_league_display = config["default_league_display"]
+
+                        # Add user to the default league table
+                        league_result = await registration_cog.add_user_to_league(
+                            interaction.user.id, self.nickname.value, default_league
+                        )
+
+                        if league_result:
+                            league_added = True
+
+                            # Try to assign the league role
+                            league_role = discord.utils.get(
+                                interaction.guild.roles, name=default_league_display
+                            )
+
+                            if league_role:
+                                await interaction.user.add_roles(league_role)
+                                league_role_assigned = True
+                            else:
+                                logger.warning(
+                                    f"League role '{default_league_display}' not found for user {interaction.user.id}"
+                                )
+                        else:
+                            logger.error(
+                                f"Failed to add user {interaction.user.id} to league {default_league}"
+                            )
+                    else:
+                        logger.warning("No default league configured")
+                else:
+                    logger.error("Registration cog not found")
+
+            except Exception as e:
+                logger.error(f"Error adding user to default league: {e}")
+
             # Create success embed
             embed = discord.Embed(
                 title=f"{Config.ICONS['success']} Registration Successful",
@@ -127,6 +256,20 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
             )
             embed.add_field(name="Nickname", value=self.nickname.value, inline=True)
             embed.add_field(name="Player ID", value=self.so2_id.value, inline=True)
+
+            # Add league information
+            if league_added:
+                league_status = (
+                    f"{Config.ICONS['success']} Added to {default_league_display}"
+                )
+                if league_role_assigned:
+                    league_status += f"\n{Config.ICONS['success']} {default_league_display} role assigned"
+                else:
+                    league_status += f"\n{Config.ICONS['info']} {default_league_display} role not found"
+            else:
+                league_status = f"{Config.ICONS['info']} League assignment failed"
+
+            embed.add_field(name="League", value=league_status, inline=False)
 
             try:
                 await interaction.user.edit(nick=self.nickname.value)
@@ -175,10 +318,144 @@ class Registration(commands.Cog):
         self.bot = bot
         self.bot.add_view(RegisterView())
 
-    @app_commands.command(name="setup", description="Initialize registration system")
+    async def league_name_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """
+        Autocomplete function for league names - delegates to leagues cog
+        """
+        # Get the leagues cog and use its autocomplete method
+        leagues_cog = self.bot.get_cog("Leagues")
+        if leagues_cog:
+            return await leagues_cog.league_name_autocomplete(interaction, current)
+        return []
+
+    async def get_config(self):
+        """Get current config from database"""
+        loop = asyncio.get_running_loop()
+
+        def db_select():
+            try:
+                response = Config.supabase().table("config").select("*").execute()
+                return response.data[0] if response.data else None
+            except Exception as e:
+                logger.error(f"Failed to get config: {e}")
+                return None
+
+        return await loop.run_in_executor(None, db_select)
+
+    async def update_config(self, default_league: str, default_league_display: str):
+        """Update or insert config with default league settings"""
+        loop = asyncio.get_running_loop()
+
+        def db_upsert():
+            try:
+                # Try to get existing config
+                response = Config.supabase().table("config").select("*").execute()
+
+                data = {
+                    "default_league": default_league,
+                    "default_league_display": default_league_display,
+                }
+
+                if response.data:
+                    # Update existing config
+                    result = (
+                        Config.supabase()
+                        .table("config")
+                        .update(data)
+                        .eq("id", response.data[0]["id"])
+                        .execute()
+                    )
+                else:
+                    # Insert new config
+                    result = Config.supabase().table("config").insert(data).execute()
+
+                return result.data[0] if result.data else None
+            except Exception as e:
+                logger.error(f"Failed to update config: {e}")
+                return None
+
+        return await loop.run_in_executor(None, db_upsert)
+
+    async def add_user_to_league(
+        self, discord_id: int, nickname: str, league_table: str
+    ):
+        """Add a user to a specific league table using the Stats model"""
+        # Use the Stats model to create user stats (league_table is used directly)
+        result = await Stats.create_user_stats(discord_id, nickname, league_table)
+
+        if result and result.get("success"):
+            return {"discord_id": str(discord_id), "nickname": nickname}
+        else:
+            logger.error(f"Failed to add user {discord_id} to league {league_table}")
+            return None
+
+    @app_commands.command(
+        name="setup", description="Initialize registration system with default league"
+    )
+    @app_commands.describe(
+        default_league="The default league that new users will be added to"
+    )
+    @app_commands.autocomplete(default_league=league_name_autocomplete)
     @app_commands.default_permissions(administrator=True)
-    async def setup(self, interaction: discord.Interaction):
+    async def setup(self, interaction: discord.Interaction, default_league: str):
         try:
+            # Get the leagues cog to use its utilities
+            leagues_cog = self.bot.get_cog("Leagues")
+            if not leagues_cog:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Setup Failed",
+                    description="Leagues system is not available. Please ensure the leagues cog is loaded.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                return await interaction.response.send_message(
+                    embed=embed, ephemeral=True
+                )
+            # Validate that the selected league exists using leagues cog
+            league_exists = await leagues_cog.league_exists(default_league)
+
+            if not league_exists:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} League Not Found",
+                    description=f"The league '{default_league}' does not exist. Please create it first using the leagues commands.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                return await interaction.response.send_message(
+                    embed=embed, ephemeral=True
+                )
+
+            # Get league data to retrieve the original display name
+            league_data = await leagues_cog.get_league_by_name(default_league)
+            if not league_data:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} League Data Error",
+                    description="Failed to retrieve league information.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                return await interaction.response.send_message(
+                    embed=embed, ephemeral=True
+                )
+
+            # Use the original league name for display
+            default_league_display = league_data.get(
+                "original_league_name", default_league
+            )
+
+            # Update config with selected league
+            config_result = await self.update_config(
+                default_league, default_league_display
+            )
+
+            if not config_result:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Config Update Failed",
+                    description="Failed to save the default league configuration.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                return await interaction.response.send_message(
+                    embed=embed, ephemeral=True
+                )
             # Create or get the "Registered" role with proper permissions
             registered_role = discord.utils.get(
                 interaction.guild.roles, name=Config.REGISTERED_ROLE
@@ -276,8 +553,15 @@ class Registration(commands.Cog):
                 inline=False,
             )
 
+            embed.add_field(
+                name="Default League Configuration",
+                value=f"• **Default League**: {default_league_display}\n"
+                f"• **New users will be automatically added to this league**",
+                inline=False,
+            )
+
             embed.set_footer(
-                text="Registered users will be automatically hidden from the registration channel"
+                text="New registrations will be added to the configured default league"
             )
 
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -307,7 +591,8 @@ class Registration(commands.Cog):
         await ctx.send(embed=embed)
 
     @app_commands.command(
-        name="restore_user", description="Manually restore a user's registration data"
+        name="restore_user",
+        description="Manually restore a user's registration data",
     )
     @app_commands.default_permissions(administrator=True)
     async def restore_user(
@@ -328,83 +613,34 @@ class Registration(commands.Cog):
                 )
                 return await interaction.followup.send(embed=embed)
 
-            # Get or create the registered role
-            role = discord.utils.get(
-                interaction.guild.roles, name=Config.REGISTERED_ROLE
-            )
-            if not role:
-                role = await interaction.guild.create_role(
-                    name=Config.REGISTERED_ROLE,
-                    color=EMBED_COLOR,
-                    hoist=True,
-                    mentionable=True,
-                    reason="Auto-created for registered players",
-                )  # Add the registered role if they don't have it
-            if role not in member.roles:
-                await member.add_roles(role, reason="Manual restoration by admin")
-                role_added = True
-            else:
-                role_added = False
+            # Use the same robust restoration logic as restore_all_users
+            success = await self._restore_user_logic(member, user_data)
 
-            # Assign the appropriate level role based on their current points
-            level_role_updated = False
-            try:
-                from cogs.levels import LevelsCog
-
-                levels_cog = LevelsCog(None)
-                current_points = user_data.get(
-                    "points", 200
-                )  # Default to 200 if no points
-                await levels_cog.update_player_roles(
-                    interaction.guild, member.id, current_points
+            if success:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['success']} User Restoration Complete",
+                    description=f"Successfully restored registration data for {member.mention}",
+                    color=Config.EMBED_COLORS["light_green"],
                 )
-                level_role_updated = True
-            except Exception as e:
-                logger.error(f"Error assigning level role during restore_user: {e}")
-
-            # Update their nickname if it doesn't match
-            nickname_updated = False
-            if member.nick != user_data["nickname"]:
-                try:
-                    await member.edit(
-                        nick=user_data["nickname"], reason="Manual restoration by admin"
-                    )
-                    nickname_updated = True
-                except discord.Forbidden:
-                    pass
-                except discord.HTTPException:
-                    pass
-
-            embed = discord.Embed(
-                title=f"{Config.ICONS['success']} User Restoration Complete",
-                description=f"Restored registration data for {member.mention}",
-                color=Config.EMBED_COLORS["light_green"],
-            )
-            embed.add_field(name="Nickname", value=user_data["nickname"], inline=True)
-            embed.add_field(name="Player ID", value=user_data["so2_id"], inline=True)
-            embed.add_field(
-                name="Points", value=user_data.get("points", 0), inline=True
-            )
-
-            status_text = []
-            if role_added:
-                status_text.append(f"{Config.ICONS['success']} Role added")
+                embed.add_field(
+                    name="Nickname", value=user_data["nickname"], inline=True
+                )
+                embed.add_field(
+                    name="Player ID", value=user_data["so2_id"], inline=True
+                )
+                embed.add_field(
+                    name="Status",
+                    value=f"{Config.ICONS['success']} All roles and league memberships restored",
+                    inline=False,
+                )
+                embed.set_thumbnail(url=member.display_avatar.url)
+                embed.set_footer(text="Restoration completed successfully")
             else:
-                status_text.append("✓ Role already present")
-
-            if level_role_updated:
-                status_text.append(f"{Config.ICONS['success']} Level role updated")
-            else:
-                status_text.append(f"{Config.ICONS['info']} Level role update failed")
-
-            if nickname_updated:
-                status_text.append(f"{Config.ICONS['success']} Nickname updated")
-            else:
-                status_text.append("✓ Nickname already correct")
-
-            embed.add_field(
-                name="Actions Taken", value="\n".join(status_text), inline=False
-            )
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Restoration Failed",
+                    description=f"Failed to restore data for {member.mention}. Check bot logs for details.",
+                    color=Config.EMBED_COLORS["red"],
+                )
 
             await interaction.followup.send(embed=embed)
 
@@ -416,6 +652,254 @@ class Registration(commands.Cog):
                 color=Config.EMBED_COLORS["red"],
             )
             await interaction.followup.send(embed=embed)
+
+    @app_commands.command(
+        name="restore_all_users",
+        description="Restore registration data for all registered users",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def restore_all_users(self, interaction: discord.Interaction):
+        """Restore registration data for all registered users in the server"""
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # Get all members in the guild
+            all_members = interaction.guild.members
+            registered_members = []
+            restored_count = 0
+            failed_count = 0
+
+            # Find all registered members
+            for member in all_members:
+                if member.bot:  # Skip bots
+                    continue
+
+                user_data = await User.find(member.id)
+                if user_data:
+                    registered_members.append((member, user_data))
+
+            if not registered_members:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['info']} No Registered Users Found",
+                    description="No registered users found in this server.",
+                    color=Config.EMBED_COLORS["yellow"],
+                )
+                return await interaction.followup.send(embed=embed)
+
+            # Send initial progress message
+            progress_embed = discord.Embed(
+                title=f"{Config.ICONS['updating']} Restoring All Users",
+                description=f"Found {len(registered_members)} registered users. Starting restoration...",
+                color=Config.EMBED_COLORS["yellow"],
+            )
+            progress_message = await interaction.followup.send(embed=progress_embed)
+
+            # Process each registered member
+            for i, (member, user_data) in enumerate(registered_members):
+                try:
+                    # Update progress every 5 users
+                    if i % 5 == 0:
+                        progress_embed.description = f"Processing user {i + 1}/{len(registered_members)}: {member.display_name}..."
+                        await progress_message.edit(embed=progress_embed)
+
+                    # Use the same logic as restore_user but without the interaction responses
+                    success = await self._restore_user_logic(member, user_data)
+
+                    if success:
+                        restored_count += 1
+                    else:
+                        failed_count += 1
+
+                except Exception as e:
+                    logger.error(
+                        f"Error restoring user {member} (ID: {member.id}): {e}"
+                    )
+                    failed_count += 1
+
+            # Send final results
+            embed = discord.Embed(
+                title=f"{Config.ICONS['success']} Restoration Complete",
+                description=f"Finished processing {len(registered_members)} registered users.",
+                color=Config.EMBED_COLORS["light_green"],
+            )
+            embed.add_field(
+                name="Results",
+                value=f"{Config.ICONS['success']} Successfully restored: {restored_count}\n"
+                f"{Config.ICONS['unsuccess']} Failed to restore: {failed_count}",
+                inline=False,
+            )
+
+            if failed_count > 0:
+                embed.add_field(
+                    name="Note",
+                    value="Check the bot logs for details about failed restorations.",
+                    inline=False,
+                )
+
+            await progress_message.edit(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error in restore_all_users command: {e}")
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Restoration Failed",
+                description=f"An error occurred during bulk restoration: {e}",
+                color=Config.EMBED_COLORS["red"],
+            )
+            await interaction.followup.send(embed=embed)
+
+    async def _restore_user_logic(
+        self, member: discord.Member, user_data: dict
+    ) -> bool:
+        """
+        Core restoration logic extracted from restore_user for reuse.
+        Returns True if successful, False if failed.
+        """
+        try:
+            # Get or create the registered role
+            role = discord.utils.get(member.guild.roles, name=Config.REGISTERED_ROLE)
+            if not role:
+                role = await member.guild.create_role(
+                    name=Config.REGISTERED_ROLE,
+                    color=EMBED_COLOR,
+                    hoist=True,
+                    mentionable=True,
+                    reason="Auto-created for registered players",
+                )
+
+            # Add the registered role if they don't have it
+            if role not in member.roles:
+                await member.add_roles(
+                    role, reason="Bulk restoration by admin"
+                )  # Assign the appropriate level role based on default starting points
+            # Note: User stats are now tracked in league tables, not the users table
+            try:
+                from cogs.levels import LevelsCog
+
+                levels_cog = LevelsCog(None)
+                # Use default starting points since stats are now in league tables
+                default_points = 200
+                await levels_cog.update_player_roles(
+                    member.guild, member.id, default_points
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error assigning level role during bulk restore for {member}: {e}"
+                )
+
+            # League restoration logic (similar to restore_user)
+            leagues_cog = self.bot.get_cog("Leagues")
+            if leagues_cog:
+                try:
+                    # Get all existing leagues
+                    loop = asyncio.get_running_loop()
+
+                    def get_all_leagues():
+                        try:
+                            response = (
+                                Config.supabase()
+                                .table("leagues")
+                                .select("league_name, original_league_name")
+                                .execute()
+                            )
+                            return response.data
+                        except Exception as e:
+                            logger.error(f"Failed to fetch leagues: {e}")
+                            return []
+
+                    leagues = await loop.run_in_executor(None, get_all_leagues)
+                    user_leagues = []
+
+                    # Check which leagues the user is in
+                    for league in leagues:
+                        league_table = league["league_name"]
+
+                        def check_league_membership():
+                            try:
+                                response = (
+                                    Config.supabase()
+                                    .table(league_table)
+                                    .select("*")
+                                    .eq("discord_id", str(member.id))
+                                    .execute()
+                                )
+                                return response.data[0] if response.data else None
+                            except Exception as e:
+                                logger.error(
+                                    f"Failed to check league {league_table}: {e}"
+                                )
+                                return None
+
+                        league_data = await loop.run_in_executor(
+                            None, check_league_membership
+                        )
+                        if league_data:
+                            user_leagues.append(
+                                {
+                                    "table": league_table,
+                                    "original_name": league.get(
+                                        "original_league_name",
+                                        league_table.replace("_", " ").title(),
+                                    ),
+                                    "data": league_data,
+                                }
+                            )
+
+                    # Restore league roles
+                    for league_info in user_leagues:
+                        original_name = league_info["original_name"]
+                        league_role = discord.utils.get(
+                            member.guild.roles, name=original_name
+                        )
+
+                        if league_role and league_role not in member.roles:
+                            await member.add_roles(
+                                league_role, reason="Bulk restoration by admin"
+                            )
+
+                    # Handle default league assignment (same logic as restore_user)
+                    config = await self.get_config()
+                    if config and config.get("default_league"):
+                        default_league = config["default_league"]
+                        default_league_display = config["default_league_display"]
+
+                        user_in_default = any(
+                            league["table"] == default_league for league in user_leagues
+                        )
+
+                        if not user_in_default:
+                            # Add to default league
+                            league_result = await self.add_user_to_league(
+                                member.id, user_data["nickname"], default_league
+                            )
+
+                            if league_result:
+                                # Assign default league role
+                                league_role = discord.utils.get(
+                                    member.guild.roles, name=default_league_display
+                                )
+                                if league_role and league_role not in member.roles:
+                                    await member.add_roles(
+                                        league_role,
+                                        reason="Added to default league during bulk restore",
+                                    )
+
+                except Exception as e:
+                    logger.error(f"Error with league restoration for {member}: {e}")
+
+            # Update their nickname if it doesn't match
+            if member.nick != user_data["nickname"]:
+                try:
+                    await member.edit(
+                        nick=user_data["nickname"], reason="Bulk restoration by admin"
+                    )
+                except (discord.Forbidden, discord.HTTPException):
+                    pass  # Ignore permission errors for nickname updates
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error in _restore_user_logic for {member}: {e}")
+            return False
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
@@ -430,81 +914,42 @@ class Registration(commands.Cog):
                     f"Restoring registered user: {member} (Discord ID: {member.id})"
                 )
 
-                # Get or create the registered role
-                role = discord.utils.get(
-                    member.guild.roles, name=Config.REGISTERED_ROLE
-                )
-                if not role:
-                    role = await member.guild.create_role(
-                        name=Config.REGISTERED_ROLE,
-                        color=EMBED_COLOR,
-                        hoist=True,
-                        mentionable=True,
-                        reason="Auto-created for registered players",
-                    )
-                    logger.info(f"Created missing 'Registered' role")
+                # Use the same robust restoration logic as restore_all_users and restore_user
+                success = await self._restore_user_logic(member, user_data)
 
-                # Add the registered role
-                await member.add_roles(
-                    role, reason="Restoring role for returning registered user"
-                )
+                if success:
+                    logger.info(f"Successfully restored user {member} on member join")
 
-                # Assign the appropriate level role based on their current points
-                try:
-                    from cogs.levels import LevelsCog
+                    # Send a welcome back message to the user via DM
+                    try:
+                        embed = discord.Embed(
+                            title=f"{Config.ICONS['wave']} Welcome Back to {Config.APP_NAME}!",
+                            description=f"Your registration has been automatically restored.",
+                            color=EMBED_COLOR,
+                        )
+                        embed.add_field(
+                            name="Nickname", value=user_data["nickname"], inline=True
+                        )
+                        embed.add_field(
+                            name="Player ID", value=user_data["so2_id"], inline=True
+                        )
+                        embed.add_field(
+                            name="Status",
+                            value=f"{Config.ICONS['success_playcolor']} All roles and league memberships restored",
+                            inline=False,
+                        )
+                        embed.set_footer(text="Ready to play competitive matches!")
 
-                    levels_cog = LevelsCog(None)
-                    current_points = user_data.get(
-                        "points", 200
-                    )  # Default to 200 if no points
-                    await levels_cog.update_player_roles(
-                        member.guild, member.id, current_points
-                    )
-                except Exception as e:
-                    logger.error(f"Error assigning level role during member join: {e}")
-
-                # Update their nickname to match the database
-                try:
-                    await member.edit(
-                        nick=user_data["nickname"],
-                        reason="Restoring nickname for returning registered user",
-                    )
-                    logger.info(
-                        f"Restored nickname '{user_data['nickname']}' for user {member}"
-                    )
-                except discord.Forbidden:
-                    logger.warning(
-                        f"Could not update nickname for {member} (missing permissions)"
-                    )
-                except discord.HTTPException as e:
-                    logger.error(f"Failed to update nickname for {member}: {e}")
-
-                # Send a welcome back message to the user via DM
-                try:
-                    embed = discord.Embed(
-                        title=f"🎉 Welcome Back to {Config.APP_NAME}!",
-                        description=f"Your registration has been automatically restored.",
-                        color=EMBED_COLOR,
-                    )
-                    embed.add_field(
-                        name="Nickname", value=user_data["nickname"], inline=True
-                    )
-                    embed.add_field(
-                        name="Player ID", value=user_data["so2_id"], inline=True
-                    )
-                    embed.add_field(
-                        name="Points", value=user_data.get("points", 0), inline=True
-                    )
-                    embed.set_footer(text="Ready to play competitive matches!")
-
-                    await member.send(embed=embed)
-                    logger.info(f"Sent welcome back message to {member}")
-                except discord.Forbidden:
-                    logger.info(f"Could not send DM to {member} (DMs disabled)")
-                except Exception as e:
-                    logger.error(
-                        f"Failed to send welcome back message to {member}: {e}"
-                    )
+                        await member.send(embed=embed)
+                        logger.info(f"Sent welcome back message to {member}")
+                    except discord.Forbidden:
+                        logger.info(f"Could not send DM to {member} (DMs disabled)")
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to send welcome back message to {member}: {e}"
+                        )
+                else:
+                    logger.error(f"Failed to restore user {member} on member join")
 
         except Exception as e:
             logger.error(f"Error in on_member_join for {member}: {e}")

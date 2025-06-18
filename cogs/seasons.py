@@ -194,7 +194,6 @@ class Seasons(commands.Cog):
 
                 # 4. Reset all player statistics
                 await Season.reset_all_players_stats()
-
                 # 5. Clear matches table and reset sequence
                 await Season.clear_matches_table()
 
@@ -204,11 +203,36 @@ class Seasons(commands.Cog):
                     description=f"**Season {ongoing_season['season_id']}** has been completed and archived.",
                     color=EMBED_COLOR,
                 )
+
                 embed.add_field(
-                    name=f"{Config.ICONS['stats']} Season Statistics",
-                    value=f"• **Matches Archived:** {len(all_matches)}\n• **Players Archived:** {len(all_users_stats)}",
-                    inline=False,
+                    name=f"{Config.ICONS['stats']} Matches Archived",
+                    value=f"**{len(all_matches)}** matches",
+                    inline=True,
                 )
+
+                embed.add_field(
+                    name=f"{Config.ICONS['league']} Leagues Processed",
+                    value=f"**{len(all_users_stats)}** leagues",
+                    inline=True,
+                )
+
+                # Add empty field for spacing
+                embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+                # Show detailed league breakdown with player counts
+                if all_users_stats:
+                    league_breakdown = []
+                    for league_name, league_data in all_users_stats.items():
+                        player_count = len(league_data["players"])
+                        league_breakdown.append(
+                            f"• **{league_name}:** {player_count} players"
+                        )
+
+                    embed.add_field(
+                        name=f"{Config.ICONS['league']} Players Archived by League",
+                        value="\n".join(league_breakdown),
+                        inline=False,
+                    )
                 embed.add_field(
                     name=f"{Config.ICONS['calendar']} Started",
                     value=f"<t:{self._parse_timestamp(ongoing_season['started_at'])}:F>",
@@ -229,10 +253,9 @@ class Seasons(commands.Cog):
                 )
 
                 await processing_message.edit(embed=embed)
-
                 # Log the action
                 logger.info(
-                    f"Season {ongoing_season['season_id']} ended by {interaction.user.display_name} ({interaction.user.id}). Archived {len(all_matches)} matches and {len(all_users_stats)} players."
+                    f"Season {ongoing_season['season_id']} ended by {interaction.user.display_name} ({interaction.user.id}). Archived {len(all_matches)} matches and {len(all_users_stats)} leagues."
                 )
 
             except Exception as e:

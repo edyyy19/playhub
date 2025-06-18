@@ -6,6 +6,7 @@ import asyncio
 import logging
 from models.party import Party
 from models.user import User
+from models.stats import Stats
 from cogs.levels import LevelsCog
 from datetime import datetime
 
@@ -160,14 +161,17 @@ class Parties(commands.Cog):
                 discord_id = member_data["discord_id"]
                 nickname = member_data["nickname"]
                 role = member_data["role"]
-
-                # Get user points for level emoji
+                # Get user points for level emoji from league stats
                 try:
-                    user_data = await User.find(int(discord_id))
-                    points = user_data.get("points", 0) if user_data else 0
+                    stats_result = await Stats.get_user_stats(int(discord_id))
+                    if stats_result and stats_result.get("success"):
+                        stats_data = stats_result.get("stats", {})
+                        points = stats_data.get("points", 0)
+                    else:
+                        points = 0
                     level_emoji = LevelsCog.get_level_emoji(points)
                 except Exception as e:
-                    logger.error(f"Error getting user data for {discord_id}: {e}")
+                    logger.error(f"Error getting user stats for {discord_id}: {e}")
                     level_emoji = LevelsCog.get_level_emoji(0)  # Default emoji
 
                 # Add crown for leader

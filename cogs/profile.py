@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 from config import Config
 from models.user import User
+from models.stats import Stats
 from models.match import Match
 import logging
 import datetime
@@ -172,6 +173,41 @@ class Profile(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    def get_leagues_cog(self):
+        """Get the leagues cog for accessing league methods"""
+        return self.bot.get_cog("Leagues")
+
+    async def league_name_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ):
+        """
+        Autocomplete function for league names - delegates to leagues cog
+        """
+        leagues_cog = self.get_leagues_cog()
+        if leagues_cog:
+            return await leagues_cog.league_name_autocomplete(interaction, current)
+        return []
+
+    async def get_default_league_from_config(self):
+        """Get the default league from the config table"""
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+
+        def db_get():
+            try:
+                response = (
+                    Config.supabase().table("config").select("default_league").execute()
+                )
+                if response.data and len(response.data) > 0:
+                    return response.data[0].get("default_league")
+                return None
+            except Exception as e:
+                logger.error(f"Failed to get default league from config: {e}")
+                return None
+
+        return await loop.run_in_executor(None, db_get)
+
     @app_commands.command(
         name="edit_profile", description="Edit your nickname and Standoff 2 Player ID"
     )
@@ -213,8 +249,16 @@ class Profile(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="profile", description="View your profile information")
+    @app_commands.describe(
+        user="The user whose profile to view (optional - defaults to yourself)",
+        league_name="The league to view stats for (optional - defaults to default league)",
+    )
+    @app_commands.autocomplete(league_name=league_name_autocomplete)
     async def view_profile(
-        self, interaction: discord.Interaction, user: discord.Member = None
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member = None,
+        league_name: str = None,
     ):
         """View profile information for yourself or another user"""
         try:
@@ -250,11 +294,66 @@ class Profile(commands.Cog):
                     )
                 return await interaction.followup.send(embed=embed)
 
-            # Calculate stats
-            kills = user_data.get("kills", 0)
-            deaths = user_data.get("deaths", 0)
-            wins = user_data.get("wins", 0)
-            losses = user_data.get("loses", 0)
+            # Determine which league to get stats from
+            if league_name:
+                # Validate that the specified league exists
+                leagues_cog = self.get_leagues_cog()
+                if leagues_cog:
+                    league_exists = await leagues_cog.league_exists(league_name)
+                    if not league_exists:
+                        embed = discord.Embed(
+                            title=f"{Config.ICONS['unsuccess']} League Not Found",
+                            description=f"The league '{league_name}' does not exist.",
+                            color=Config.EMBED_COLORS["red"],
+                        )
+                        return await interaction.followup.send(embed=embed)
+                target_league = league_name
+            else:
+                # Use default league if no league specified
+                target_league = await self.get_default_league_from_config()
+                if not target_league:
+                    embed = discord.Embed(
+                        title=f"{Config.ICONS['unsuccess']} Configuration Error",
+                        description="No default league configured. Please contact an admin.",
+                        color=Config.EMBED_COLORS["red"],
+                    )
+                    return await interaction.followup.send(embed=embed)
+            # Get stats from the specified league using the Stats model
+            stats_result = await Stats.get_user_stats(target_user.id, target_league)
+            if stats_result and stats_result.get("success"):
+                stats_data = stats_result.get("stats", {})
+                kills = stats_data.get("kills", 0)
+                deaths = stats_data.get("deaths", 0)
+                wins = stats_data.get("wins", 0)
+                losses = stats_data.get("loses", 0)
+                points = stats_data.get("points", 200)
+            else:
+                # User not found in the specified league table
+                leagues_cog = self.get_leagues_cog()
+                league_display_name = target_league
+                if leagues_cog:
+                    league_data = await leagues_cog.get_league_by_name(target_league)
+                    if league_data:
+                        league_display_name = league_data.get(
+                            "original_league_name", target_league
+                        )
+                # Create informative embed about user not being in the league
+                if target_user == interaction.user:
+                    description = (
+                        f"You are not part of the '**{league_display_name}**' league."
+                    )
+                    if not league_name:  # If this is the default league
+                        description += "\n\nThis means you're registered but haven't been added to the default league yet."
+                else:
+                    description = f"{target_user.mention} is not part of the '**{league_display_name}**' league."
+
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['info']} Not Part of League",
+                    description=description,
+                    color=Config.EMBED_COLORS["yellow"],
+                )
+                return await interaction.followup.send(embed=embed)
+
             total_games = wins + losses
 
             # Calculate K/D ratio
@@ -297,7 +396,6 @@ class Profile(commands.Cog):
                     "result": "W" if match.get("user_won", False) else "L",
                 }
                 formatted_matches.append(formatted_match)
-
             # Prepare template variables
             current_date = datetime.datetime.now().strftime("%H:%M | %d/%m/%Y")
             registered_date = (
@@ -305,13 +403,22 @@ class Profile(commands.Cog):
                 if user_data.get("registered_at")
                 else "Unknown"
             )
+            # Get league display name for the template
+            leagues_cog = self.get_leagues_cog()
+            league_display_name = target_league
+            if leagues_cog:
+                league_data = await leagues_cog.get_league_by_name(target_league)
+                if league_data:
+                    league_display_name = league_data.get(
+                        "original_league_name", target_league
+                    )
 
             template_vars = {
                 "app_name": Config.APP_NAME,
                 "nickname": user_data["nickname"],
                 "player_id": user_data["so2_id"],
                 "avatar_url": str(target_user.display_avatar.url),
-                "points": user_data.get("points", 200),
+                "points": points,
                 "wins": wins,
                 "losses": losses,
                 "total_games": total_games,
@@ -323,6 +430,7 @@ class Profile(commands.Cog):
                 "discord_id": target_user.id,
                 "current_date": current_date,
                 "recent_matches": formatted_matches,  # Add match history
+                "league_name": league_display_name,  # Add league info
             }
 
             # Render HTML with Jinja2

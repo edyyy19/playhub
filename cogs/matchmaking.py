@@ -6,12 +6,14 @@ from models.match import Match
 from models.lobby_state import LobbyState
 from models.timeout import timeout_manager
 from models.user import User
+from models.stats import Stats
 from models.party import Party
 from cogs.levels import LevelsCog
 import random
 import asyncio
 import logging
 from collections import defaultdict
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +52,7 @@ class Matchmaking(commands.Cog):
 
     async def league_name_autocomplete(
         self, interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
+    ) -> List[app_commands.Choice[str]]:
         """
         Autocomplete function for league names - delegates to leagues cog
         """
@@ -230,13 +232,14 @@ class Matchmaking(commands.Cog):
                     "message": msg,
                     "ct_team": [],
                     "t_team": [],
-                    "map_pool": Config.MAP_POOL.copy(),
+                    "map_pool": [map_info["name"] for map_info in Config.MAP_POOL],
                     "match_id": None,
                     "ct_voice": None,
                     "t_voice": None,
                     "lobby_number": lobby_number,
                     "required_role_id": lobby_role.id,
                     "required_role_name": lobby_role_name,
+                    "league_table": league_data["league_name"],  # Add league table name
                 }
                 # Save lobby state to database
                 await self.save_lobby_state(category.id)
@@ -412,7 +415,9 @@ class Matchmaking(commands.Cog):
     class VetoDropdown(discord.ui.Select):
         def __init__(self, lobby, cog):
             options = [
-                discord.SelectOption(label=map_name, value=map_name)
+                discord.SelectOption(
+                    label=map_name, value=map_name, emoji=cog.get_map_emoji(map_name)
+                )
                 for map_name in lobby["remaining_maps"]
             ]
             super().__init__(
@@ -531,7 +536,7 @@ class Matchmaking(commands.Cog):
 
     async def get_draft_view(self, lobby):
         options_with_stats = await self.create_draft_options_with_stats(
-            lobby["available_players"]
+            lobby["available_players"], lobby.get("league_table")
         )
         picks_needed = await self.calculate_picks_needed(lobby)
         draft_dropdown = Matchmaking.DraftDropdown(
@@ -946,7 +951,6 @@ class Matchmaking(commands.Cog):
                     )
                 except Exception as e:
                     logger.error(f"Unexpected error updating lobby message: {e}")
-
                 # Save lobby state when players change
                 await self.save_lobby_state(lobby["category"].id)
 
@@ -955,29 +959,49 @@ class Matchmaking(commands.Cog):
                     f"Error in update_lobby_status for lobby #{lobby.get('lobby_number', 'unknown')}: {e}"
                 )
 
-    async def format_team_list(self, team_members):
-        """Format team list with level emojis for each player"""
+    async def format_team_list(self, team_members, league_name=None):
+        """Format team list with level emojis for default league or league emojis for non-default leagues"""
         if not team_members:
             return "-"
+
+        # Get the default league from config to determine if we should show level emojis
+        default_league = await self.get_default_league_from_config()
+        is_default_league = league_name == default_league if default_league else True
+
+        # Get league emoji for non-default leagues
+        league_emoji = None
+        if not is_default_league and league_name:
+            leagues_cog = self.get_leagues_cog()
+            if leagues_cog:
+                league_data = await leagues_cog.get_league_by_name(league_name)
+                if league_data:
+                    league_emoji = league_data.get("league_emoji")
 
         formatted_players = []
         for member in team_members:
             try:
-                # Get user data to determine points
-                user_data = await User.find(member.id)
-                if user_data:
-                    points = user_data.get("points", 0)
-                    level_emoji = LevelsCog.get_level_emoji(points)
-                    formatted_players.append(f"{level_emoji} {member.mention}")
+                if is_default_league:
+                    # Get user stats to determine points for level emoji
+                    stats_result = await Stats.get_user_stats(member.id, league_name)
+                    if stats_result and stats_result.get("success"):
+                        stats_data = stats_result.get("stats", {})
+                        points = stats_data.get("points", 0)
+                        level_emoji = LevelsCog.get_level_emoji(points)
+                        formatted_players.append(f"{level_emoji} {member.mention}")
+                    else:
+                        # Default emoji if user not found in league tables
+                        default_emoji = LevelsCog.get_level_emoji(0)
+                        formatted_players.append(f"{default_emoji} {member.mention}")
                 else:
-                    # Default emoji if user not found in database
-                    default_emoji = LevelsCog.get_level_emoji(0)
-                    formatted_players.append(f"{default_emoji} {member.mention}")
+                    # Non-default league: show league emoji if it exists
+                    if league_emoji:
+                        formatted_players.append(f"{league_emoji} {member.mention}")
+                    else:
+                        # No emoji if league doesn't have one
+                        formatted_players.append(member.mention)
             except Exception as e:
-                logger.error(
-                    f"Error getting level emoji for {member.display_name}: {e}"
-                )
-                # Fallback without emoji
+                logger.error(f"Error getting emoji for {member.display_name}: {e}")
+                # Fallback - show player mention without emoji
                 formatted_players.append(member.mention)
 
         return "\n".join(formatted_players)
@@ -1017,8 +1041,12 @@ class Matchmaking(commands.Cog):
         lobby["next_pick"] = await self.determine_next_pick_balanced(lobby)
 
         # --- New Draft UI ---
-        ct_lines = await self.format_team_list(lobby["ct_team"])
-        t_lines = await self.format_team_list(lobby["t_team"])
+        ct_lines = await self.format_team_list(
+            lobby["ct_team"], lobby.get("league_table")
+        )
+        t_lines = await self.format_team_list(
+            lobby["t_team"], lobby.get("league_table")
+        )
         desc = (
             f"**Counter-Terrorists**\n{ct_lines}\n\n" f"**Terrorists**\n{t_lines}\n\n"
         )
@@ -1076,14 +1104,24 @@ class Matchmaking(commands.Cog):
                 lobby["next_pick"] = await self.determine_next_pick_balanced(lobby)
 
             # --- New Draft UI ---
-            ct_lines = await self.format_team_list(lobby["ct_team"])
-            t_lines = await self.format_team_list(lobby["t_team"])
+            ct_lines = await self.format_team_list(
+                lobby["ct_team"], lobby.get("league_table")
+            )
+            t_lines = await self.format_team_list(
+                lobby["t_team"], lobby.get("league_table")
+            )
             desc = (
                 f"**Counter-Terrorists**\n{ct_lines}\n\n"
                 f"**Terrorists**\n{t_lines}\n\n"
             )
             if lobby["available_players"]:
-                desc += f"Captain {lobby['next_pick'].mention} is currently picking…"
+                picks_needed = await self.calculate_picks_needed(lobby)
+                if picks_needed > 1:
+                    desc += f"Captain {lobby['next_pick'].mention} needs to pick {picks_needed} players…"
+                else:
+                    desc += (
+                        f"Captain {lobby['next_pick'].mention} is currently picking…"
+                    )
             else:
                 desc += "All players have been drafted."
             embed = discord.Embed(
@@ -1096,21 +1134,35 @@ class Matchmaking(commands.Cog):
                 view = await self.get_draft_view(lobby)
             else:
                 view = None
+
             await lobby["message"].edit(embed=embed, view=view)
+            # If no players left to draft, immediately proceed to map veto
             if not lobby["available_players"]:
                 await self.start_map_veto(lobby)
 
     async def start_map_veto(self, lobby):
         lobby["phase"] = 3
         lobby["veto_turn"] = lobby["ct_team"][0]  # CT starts
-        lobby["remaining_maps"] = Config.MAP_POOL.copy()
+        lobby["remaining_maps"] = [map_info["name"] for map_info in Config.MAP_POOL]
         lobby["last_ban"] = None  # Track previous ban
         text = lobby["text"]
         # --- New Map Veto UI ---
+
         desc = ""
         if lobby["last_ban"]:
-            desc += f"Captain {lobby['last_ban']['captain'].mention} has banned: **{lobby['last_ban']['map']}**\n\n"
-        maps_str = "\n".join([f"| **{m}**" for m in lobby["remaining_maps"]])
+            banned_map_emoji = self.get_map_emoji(lobby["last_ban"]["map"])
+            emoji_part = f"{banned_map_emoji} " if banned_map_emoji else ""
+            desc += f"Captain {lobby['last_ban']['captain'].mention} has banned: {emoji_part}**{lobby['last_ban']['map']}**\n\n"
+
+        # Create maps list with emojis
+        maps_list = []
+        for map_name in lobby["remaining_maps"]:
+            map_emoji = self.get_map_emoji(map_name)
+            if map_emoji:
+                maps_list.append(f"{map_emoji} | **{map_name}**")
+            else:
+                maps_list.append(f"**{map_name}**")
+        maps_str = "\n".join(maps_list)
         desc += f"{maps_str}\n\n"
         desc += f"Captain {lobby['veto_turn'].mention} is currently banning…"
         embed = discord.Embed(
@@ -1130,9 +1182,21 @@ class Matchmaking(commands.Cog):
                 lobby["veto_turn"] = lobby["t_team"][0]
             else:
                 lobby["veto_turn"] = lobby["ct_team"][0]
+
             # --- New Map Veto UI ---
-            desc = f"Captain {lobby['last_ban']['captain'].mention} has banned: **{lobby['last_ban']['map']}**\n\n"
-            maps_str = "\n".join([f"| **{m}**" for m in lobby["remaining_maps"]])
+            banned_map_emoji = self.get_map_emoji(lobby["last_ban"]["map"])
+            emoji_part = f"{banned_map_emoji} " if banned_map_emoji else ""
+            desc = f"Captain {lobby['last_ban']['captain'].mention} has banned: {emoji_part}**{lobby['last_ban']['map']}**\n\n"
+
+            # Create maps list with emojis
+            maps_list = []
+            for map_name in lobby["remaining_maps"]:
+                map_emoji = self.get_map_emoji(map_name)
+                if map_emoji:
+                    maps_list.append(f"{map_emoji} | **{map_name}**")
+                else:
+                    maps_list.append(f"**{map_name}**")
+            maps_str = "\n".join(maps_list)
             desc += f"{maps_str}\n\n"
             if len(lobby["remaining_maps"]) > 1:
                 desc += f"Captain {lobby['veto_turn'].mention} is currently banning…"
@@ -1209,7 +1273,11 @@ class Matchmaking(commands.Cog):
 
     async def add_match_to_supabase(self, lobby, final_map):
         try:
-            result = await Match.create(lobby["ct_team"], lobby["t_team"], final_map)
+            # Get the league table name from the lobby
+            league_table = lobby.get("league_table")
+            result = await Match.create(
+                lobby["ct_team"], lobby["t_team"], final_map, league_table
+            )
             return result.data[0]  # Return the first (and only) inserted record
         except Exception as e:
             logger.error(f"Failed to insert match into supabase: {e}")
@@ -1284,7 +1352,7 @@ class Matchmaking(commands.Cog):
             lobby["players"] = set()
         lobby["ct_team"] = []
         lobby["t_team"] = []
-        lobby["map_pool"] = Config.MAP_POOL.copy()
+        lobby["map_pool"] = [map_info["name"] for map_info in Config.MAP_POOL]
         lobby["match_id"] = None
         text = lobby["text"]
         # Only create a new waiting embed if this is the first time or after a match (not on every reset)
@@ -1454,7 +1522,7 @@ class Matchmaking(commands.Cog):
                 "ct_team": [],
                 "t_team": [],
                 "map_pool": json.loads(state.get("map_pool", "[]"))
-                or Config.MAP_POOL.copy(),
+                or [map_info["name"] for map_info in Config.MAP_POOL],
                 "match_id": None,  # Clear match ID on restore
                 "ct_voice": None,
                 "t_voice": None,
@@ -1463,6 +1531,7 @@ class Matchmaking(commands.Cog):
                 "required_role_name": state.get(
                     "required_role_name", Config.REGISTERED_ROLE
                 ),
+                "league_table": state.get("league"),  # Restore league table name
             }
 
             # Clean up team voice channels if they exist
@@ -2063,18 +2132,56 @@ class Matchmaking(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to cleanup orphaned team channels: {e}")
 
-    async def create_draft_options_with_stats(self, available_players):
-        """Create dropdown options with player stats as descriptions"""
+    async def get_default_league_from_config(self):
+        """Get the default league from the config table"""
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+
+        def db_get():
+            try:
+                response = (
+                    Config.supabase().table("config").select("default_league").execute()
+                )
+                if response.data and len(response.data) > 0:
+                    return response.data[0].get("default_league")
+                return None
+            except Exception as e:
+                logger.error(f"Failed to get default league from config: {e}")
+                return None
+
+        return await loop.run_in_executor(None, db_get)
+
+    async def create_draft_options_with_stats(
+        self, available_players, league_name=None
+    ):
+        """Create dropdown options with player stats as descriptions filtered by league"""
         options = []
+
+        # Get the default league from config to determine if we should show level emojis
+        default_league = await self.get_default_league_from_config()
+        is_default_league = league_name == default_league if default_league else True
+
+        # Get league emoji for non-default leagues
+        league_emoji = None
+        if not is_default_league and league_name:
+            leagues_cog = self.get_leagues_cog()
+            if leagues_cog:
+                league_data = await leagues_cog.get_league_by_name(league_name)
+                if league_data:
+                    league_emoji = league_data.get("league_emoji")
+
         for member in available_players:
             try:
-                user_data = await User.find(member.id)
-                if user_data:
-                    points = user_data.get("points", 0)
-                    kills = user_data.get("kills", 0)
-                    deaths = user_data.get("deaths", 0)
-                    wins = user_data.get("wins", 0)
-                    losses = user_data.get("loses", 0)
+                # Get user stats from the specific league table
+                stats_result = await Stats.get_user_stats(member.id, league_name)
+                if stats_result and stats_result.get("success"):
+                    stats_data = stats_result.get("stats", {})
+                    points = stats_data.get("points", 0)
+                    kills = stats_data.get("kills", 0)
+                    deaths = stats_data.get("deaths", 0)
+                    wins = stats_data.get("wins", 0)
+                    losses = stats_data.get("loses", 0)
 
                     # Calculate K/D ratio with proper handling for zero deaths
                     if deaths == 0:
@@ -2099,32 +2206,45 @@ class Matchmaking(commands.Cog):
                         f"Points: {points} | K/D: {kd_formatted} | AVG {avg_formatted}"
                     )
 
-                    # Get level emoji based on points
-                    level_emoji = LevelsCog.get_level_emoji(points)
+                    # Determine which emoji to show
+                    if is_default_league:
+                        # Show level emoji for default league
+                        emoji_to_show = LevelsCog.get_level_emoji(points)
+                    else:
+                        # Show league emoji for non-default leagues (if it exists)
+                        emoji_to_show = league_emoji
                 else:
-                    # Fallback if no data found
+                    # Fallback if no stats found in league tables
                     description = "No stats available"
-                    level_emoji = LevelsCog.get_level_emoji(
-                        0
-                    )  # Default to level 1 emoji
+                    if is_default_league:
+                        emoji_to_show = LevelsCog.get_level_emoji(0)
+                    else:
+                        emoji_to_show = league_emoji
 
                 options.append(
                     discord.SelectOption(
                         label=member.display_name,
                         value=str(member.id),
                         description=description,
-                        emoji=level_emoji,
+                        emoji=emoji_to_show,
                     )
                 )
             except Exception as e:
                 # Fallback in case of error
                 logger.error(f"Error fetching stats for {member.display_name}: {e}")
+
+                # Determine fallback emoji
+                if is_default_league:
+                    fallback_emoji = LevelsCog.get_level_emoji(0)
+                else:
+                    fallback_emoji = league_emoji
+
                 options.append(
                     discord.SelectOption(
                         label=member.display_name,
                         value=str(member.id),
                         description="Stats unavailable",
-                        emoji=LevelsCog.get_level_emoji(0),  # Default to level 1 emoji
+                        emoji=fallback_emoji,
                     )
                 )
         return options
@@ -2577,8 +2697,12 @@ class Matchmaking(commands.Cog):
                 lobby["next_pick"] = await self.determine_next_pick_balanced(lobby)
 
             # --- New Draft UI ---
-            ct_lines = await self.format_team_list(lobby["ct_team"])
-            t_lines = await self.format_team_list(lobby["t_team"])
+            ct_lines = await self.format_team_list(
+                lobby["ct_team"], lobby.get("league_table")
+            )
+            t_lines = await self.format_team_list(
+                lobby["t_team"], lobby.get("league_table")
+            )
             desc = (
                 f"**Counter-Terrorists**\n{ct_lines}\n\n"
                 f"**Terrorists**\n{t_lines}\n\n"
@@ -2610,6 +2734,14 @@ class Matchmaking(commands.Cog):
 
             if not lobby["available_players"]:
                 await self.start_map_veto(lobby)
+
+    @staticmethod
+    def get_map_emoji(map_name):
+        """Get the emoji for a map from the config"""
+        for map_info in Config.MAP_POOL:
+            if map_info["name"] == map_name:
+                return map_info["emoji"]
+        return None
 
 
 async def setup(bot):

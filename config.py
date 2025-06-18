@@ -14,8 +14,19 @@ class Config:
     TOKEN = os.getenv("DISCORD_TOKEN")
     REGISTERED_ROLE = "Registered"
     REGISTRATION_CHANNEL = "registration"
-    MAP_POOL = os.getenv("MAP_POOL", "Sandstone,Rust,Province").split(",")
-    PLAYERS_REQUIRED = 6
+
+    # Map pool with names and emojis
+    MAP_POOL = [
+        {"name": "Sandstone", "emoji": "<:sandstone_emoji:1384340276264435763>"},
+        {"name": "Rust", "emoji": "<:rust_emoji:1384340266798022656>"},
+        {"name": "Province", "emoji": "<:province_emoji:1384340263014498395>"},
+        # {"name": "Breeze", "emoji": "<:breeze_emoji:1384340288469729370>"},
+        # {"name": "Dune", "emoji": "<:dune_emoji:1384340292920021145>"},
+        # {"name": "Zone7", "emoji": "<:zone7_emoji:1384340282174345276>"},
+        # {"name": "Sakura", "emoji": "<:sakura_emoji:1384340271348584519>"},
+    ]
+
+    PLAYERS_REQUIRED = 4
     MAX_PARTY_MEMBERS = 2
     ICONS = {
         "changes": "<:discord_changes:1382829997563318343>",
@@ -42,6 +53,7 @@ class Config:
         "tag": "<:discord_tag:1383229700381605898>",
         "sql": "<:discord_sql:1383230660814180466>",
         "fix": "<:discord_fix:1383465331648888883>",
+        "wave": "<:discord_wave:1384560960693600356>",
     }
 
     EMBED_COLORS = {
