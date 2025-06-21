@@ -13,41 +13,6 @@ class TimeoutManager:
     def __init__(self):
         self._active_timeouts = {}  # In-memory cache for quick lookup
 
-    @classmethod
-    async def create_table_if_not_exists(cls):
-        """Create the timeouts table if it doesn't exist"""
-        loop = asyncio.get_running_loop()
-
-        def create_table():
-            try:
-                # First check if table exists
-                result = (
-                    Config.supabase().table(cls.TABLE).select("*").limit(1).execute()
-                )
-                return True
-            except Exception:
-                # Table doesn't exist, create it
-                try:
-                    # Note: This would typically be done via SQL migration
-                    # For now, we'll just log that the table needs to be created
-                    logger.info(f"Table {cls.TABLE} needs to be created in Supabase")
-                    logger.info("Please create the table with the following structure:")
-                    logger.info("""
-                    CREATE TABLE player_timeouts (
-                        id SERIAL PRIMARY KEY,
-                        user_id BIGINT NOT NULL,
-                        timeout_until TIMESTAMP WITH TIME ZONE NOT NULL,
-                        reason TEXT DEFAULT 'Left during Phase 2/3',
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        UNIQUE(user_id)
-                    );                    """)
-                    return False
-                except Exception as e:
-                    logger.error(f"Failed to create table {cls.TABLE}: {e}")
-                    return False
-
-        return await loop.run_in_executor(None, create_table)
-
     async def add_timeout(
         self,
         user_id: int,
@@ -77,18 +42,13 @@ class TimeoutManager:
 
                 # If no rows were updated, insert new record
                 if not update_result.data:
-                    insert_result = (
-                        Config.supabase()
-                        .table(self.TABLE)
-                        .insert(
-                            {
-                                "user_id": user_id,
-                                "timeout_until": timeout_until.isoformat(),
-                                "reason": reason,
-                            }
-                        )
-                        .execute()
-                    )
+                    Config.supabase().table(self.TABLE).insert(
+                        {
+                            "user_id": user_id,
+                            "timeout_until": timeout_until.isoformat(),
+                            "reason": reason,
+                        }
+                    ).execute()
 
                 return True
             except Exception as e:
@@ -104,6 +64,62 @@ class TimeoutManager:
                 "reason": reason,
             }
             logger.info(f"Added timeout for user {user_id} until {timeout_until}")
+
+        return success
+
+    async def add_timeout_hours(
+        self,
+        user_id: int,
+        timeout_hours: int = 1,
+        reason: str = "Administrative timeout",
+    ) -> bool:
+        """Add a timeout for a user specified in hours"""
+        timeout_until = datetime.utcnow() + timedelta(hours=timeout_hours)
+
+        loop = asyncio.get_running_loop()
+
+        def db_operation():
+            try:
+                # First try to update existing record
+                update_result = (
+                    Config.supabase()
+                    .table(self.TABLE)
+                    .update(
+                        {
+                            "timeout_until": timeout_until.isoformat(),
+                            "reason": reason,
+                        }
+                    )
+                    .eq("user_id", user_id)
+                    .execute()
+                )
+
+                # If no rows were updated, insert new record
+                if not update_result.data:
+                    Config.supabase().table(self.TABLE).insert(
+                        {
+                            "user_id": user_id,
+                            "timeout_until": timeout_until.isoformat(),
+                            "reason": reason,
+                        }
+                    ).execute()
+
+                return True
+            except Exception as e:
+                logger.error(f"Failed to add timeout for user {user_id}: {e}")
+                return False
+
+        success = await loop.run_in_executor(None, db_operation)
+
+        if success:
+            # Update in-memory cache
+            self._active_timeouts[user_id] = {
+                "timeout_until": timeout_until,
+                "reason": reason,
+            }
+            logger.info(
+                f"Added {timeout_hours} hour timeout for user {user_id} until {timeout_until}"
+            )
 
         return success
 
@@ -170,13 +186,9 @@ class TimeoutManager:
 
         def db_operation():
             try:
-                result = (
-                    Config.supabase()
-                    .table(self.TABLE)
-                    .delete()
-                    .eq("user_id", user_id)
-                    .execute()
-                )
+                Config.supabase().table(self.TABLE).delete().eq(
+                    "user_id", user_id
+                ).execute()
                 return True
             except Exception as e:
                 logger.error(f"Failed to remove timeout for user {user_id}: {e}")
@@ -207,18 +219,16 @@ class TimeoutManager:
                     )
 
                     if current_time < timeout_until.replace(tzinfo=None):
+                        remaining_seconds = (
+                            timeout_until.replace(tzinfo=None) - current_time
+                        ).total_seconds()
                         timeouts.append(
                             {
                                 "user_id": timeout_data["user_id"],
                                 "timeout_until": timeout_until.replace(tzinfo=None),
                                 "reason": timeout_data["reason"],
-                                "remaining_minutes": int(
-                                    (
-                                        timeout_until.replace(tzinfo=None)
-                                        - current_time
-                                    ).total_seconds()
-                                    / 60
-                                ),
+                                "remaining_minutes": int(remaining_seconds / 60),
+                                "remaining_hours": remaining_seconds / 3600,
                             }
                         )
                     else:
@@ -240,9 +250,7 @@ class TimeoutManager:
 
         def db_operation():
             try:
-                result = (
-                    Config.supabase().table(self.TABLE).delete().neq("id", 0).execute()
-                )
+                Config.supabase().table(self.TABLE).delete().neq("id", 0).execute()
                 return True
             except Exception as e:
                 logger.error(f"Failed to clear all timeouts: {e}")
@@ -278,6 +286,36 @@ class TimeoutManager:
             if remaining.total_seconds() > 0:
                 return int(remaining.total_seconds() / 60) + 1  # Round up
         return None
+
+    def get_remaining_time_hours(self, user_id: int) -> Optional[float]:
+        """Get remaining timeout time in hours for a user"""
+        if user_id in self._active_timeouts:
+            timeout_info = self._active_timeouts[user_id]
+            remaining = timeout_info["timeout_until"] - datetime.utcnow()
+            if remaining.total_seconds() > 0:
+                return remaining.total_seconds() / 3600  # Convert seconds to hours
+        return None
+
+    async def get_timeout_channel(self) -> Optional[str]:
+        """Get the configured timeout channel ID from config table"""
+        loop = asyncio.get_running_loop()
+
+        def db_operation():
+            try:
+                result = (
+                    Config.supabase()
+                    .table("config")
+                    .select("timeout_channel")
+                    .limit(1)
+                    .execute()
+                )
+                if result.data and result.data[0].get("timeout_channel"):
+                    return result.data[0]["timeout_channel"]
+            except Exception as e:
+                logger.error(f"Failed to get timeout channel config: {e}")
+            return None
+
+        return await loop.run_in_executor(None, db_operation)
 
 
 # Global timeout manager instance

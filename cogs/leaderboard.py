@@ -634,25 +634,39 @@ class Leaderboard(commands.Cog):
 
     async def get_league_users(self, league_table_name: str):
         """Fetch all users from a specific league table"""
-        loop = asyncio.get_running_loop()
+        try:
+            # Get users data from league table (without nickname)
+            response = (
+                Config.supabase()
+                .table(league_table_name)
+                .select("discord_id, points, wins, loses")
+                .order("points", desc=True)
+                .execute()
+            )
 
-        def db_select():
-            try:
-                response = (
-                    Config.supabase()
-                    .table(league_table_name)
-                    .select("nickname, points, wins, loses")
-                    .order("points", desc=True)
-                    .execute()
-                )
-                return response.data if response.data else []
-            except Exception as e:
-                logger.error(
-                    f"Failed to fetch users from league table {league_table_name}: {e}"
-                )
-                raise
+            league_users = response.data if response.data else []
 
-        return await loop.run_in_executor(None, db_select)
+            # Get all discord_ids for batch nickname lookup
+            discord_ids = [
+                int(user["discord_id"])
+                for user in league_users
+                if user.get("discord_id")
+            ]
+
+            # Get nicknames in batch from users table
+            nicknames_dict = await User.get_nicknames_by_discord_ids(discord_ids)
+
+            # Add nicknames to user data
+            for user in league_users:
+                discord_id = user.get("discord_id")
+                user["nickname"] = nicknames_dict.get(discord_id, "Unknown")
+
+            return league_users
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch users from league table {league_table_name}: {e}"
+            )
+            raise
 
     async def cleanup_temp_file(self, file_path: str, delay: int = 10):
         """Safely cleanup a temporary file after a delay to allow Discord to process it"""

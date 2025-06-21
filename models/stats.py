@@ -188,7 +188,7 @@ class Stats:
 
     @classmethod
     async def create_user_stats(
-        cls, discord_id: int, nickname: str, league_name: str, initial_points: int = 200
+        cls, discord_id: int, league_name: str, initial_points: int = 200
     ):
         """Create initial user stats in a league table"""
         loop = asyncio.get_running_loop()
@@ -202,7 +202,6 @@ class Stats:
                     .insert(
                         {
                             "discord_id": str(discord_id),
-                            "nickname": nickname,
                             "points": initial_points,
                             "kills": 0,
                             "deaths": 0,

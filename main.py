@@ -25,8 +25,12 @@ async def on_ready():
 
     # Add persistent view
     from cogs.registration import RegisterView
+    from models.timeout import timeout_manager
 
     bot.add_view(RegisterView())
+
+    # Initialize timeout manager
+    await timeout_manager.load_active_timeouts()
 
     # Load cogs and sync commands with retry logic
     max_retries = 3
@@ -41,6 +45,7 @@ async def on_ready():
             await bot.load_extension("cogs.seasons")
             await bot.load_extension("cogs.parties")
             await bot.load_extension("cogs.leagues")
+            await bot.load_extension("cogs.timeout_system")
             synced = await bot.tree.sync()
             logger.info(f"Successfully synced {len(synced)} commands")
             for cmd in synced:

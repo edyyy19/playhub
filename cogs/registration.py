@@ -216,10 +216,9 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                     if config and config.get("default_league"):
                         default_league = config["default_league"]
                         default_league_display = config["default_league_display"]
-
                         # Add user to the default league table
                         league_result = await registration_cog.add_user_to_league(
-                            interaction.user.id, self.nickname.value, default_league
+                            interaction.user.id, default_league
                         )
 
                         if league_result:
@@ -378,15 +377,13 @@ class Registration(commands.Cog):
 
         return await loop.run_in_executor(None, db_upsert)
 
-    async def add_user_to_league(
-        self, discord_id: int, nickname: str, league_table: str
-    ):
+    async def add_user_to_league(self, discord_id: int, league_table: str):
         """Add a user to a specific league table using the Stats model"""
         # Use the Stats model to create user stats (league_table is used directly)
-        result = await Stats.create_user_stats(discord_id, nickname, league_table)
+        result = await Stats.create_user_stats(discord_id, league_table)
 
         if result and result.get("success"):
-            return {"discord_id": str(discord_id), "nickname": nickname}
+            return {"discord_id": str(discord_id)}
         else:
             logger.error(f"Failed to add user {discord_id} to league {league_table}")
             return None
@@ -869,7 +866,7 @@ class Registration(commands.Cog):
                         if not user_in_default:
                             # Add to default league
                             league_result = await self.add_user_to_league(
-                                member.id, user_data["nickname"], default_league
+                                member.id, default_league
                             )
 
                             if league_result:

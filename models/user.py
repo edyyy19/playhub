@@ -1,6 +1,9 @@
 from config import Config
 from datetime import datetime
 import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class User:
@@ -90,5 +93,54 @@ class User:
 
             response = query.execute()
             return response.data[0] if response.data else None
+
+        return await loop.run_in_executor(None, db_select)
+
+    @classmethod
+    async def get_nickname_by_discord_id(cls, discord_id: int):
+        """Get user's nickname by discord_id"""
+        loop = asyncio.get_running_loop()
+
+        def db_select():
+            try:
+                response = (
+                    Config.supabase()
+                    .table(cls.TABLE)
+                    .select("nickname")
+                    .eq("discord_id", str(discord_id))
+                    .execute()
+                )
+                return response.data[0]["nickname"] if response.data else None
+            except Exception as e:
+                logger.error(f"Failed to get nickname for discord_id {discord_id}: {e}")
+                return None
+
+        return await loop.run_in_executor(None, db_select)
+
+    @classmethod
+    async def get_nicknames_by_discord_ids(cls, discord_ids: list):
+        """Get multiple users' nicknames by their discord_ids"""
+        loop = asyncio.get_running_loop()
+
+        def db_select():
+            try:
+                response = (
+                    Config.supabase()
+                    .table(cls.TABLE)
+                    .select("discord_id, nickname")
+                    .in_("discord_id", [str(id) for id in discord_ids])
+                    .execute()
+                )
+                # Convert to dict for easy lookup
+                return (
+                    {item["discord_id"]: item["nickname"] for item in response.data}
+                    if response.data
+                    else {}
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to get nicknames for discord_ids {discord_ids}: {e}"
+                )
+                return {}
 
         return await loop.run_in_executor(None, db_select)
