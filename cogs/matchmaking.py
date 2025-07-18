@@ -1234,7 +1234,7 @@ class Matchmaking(commands.Cog):
 
         # Render HTML with Jinja2
         env = Environment(loader=FileSystemLoader(os.path.dirname(__file__) + "/../"))
-        template = env.get_template("final_match_template.html")
+        template = env.get_template("templates/final_match_template.html")
         html_content = template.render(
             app_name=Config.APP_NAME,
             match_id=match_id,

@@ -598,7 +598,7 @@ class Leaderboard(commands.Cog):
 
             # Go up from cogs/ to project root
             env = Environment(loader=FileSystemLoader(template_dir))
-            template = env.get_template("leaderboard_template.html")
+            template = env.get_template("templates/leaderboard_template.html")
             html_content = template.render(**template_vars)  # Render HTML to image
             hti = Html2Image(output_path=tempfile.gettempdir())
             image_path = os.path.join(

@@ -930,7 +930,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 os.path.dirname(__file__)
             )  # Go up from cogs/ to project root
             env = Environment(loader=FileSystemLoader(template_dir))
-            template = env.get_template("scoreboard_results_template.html")
+            template = env.get_template("templates/scoreboard_results_template.html")
             html_content = template.render(**template_vars)
 
             # Render HTML to image

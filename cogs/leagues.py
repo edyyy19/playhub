@@ -326,7 +326,7 @@ class Leagues(commands.Cog):
 
             success_embed.add_field(
                 name="Table Structure",
-                value="• `discord_id` (TEXT, references users)\n• `nickname` (TEXT)\n• `points` (INT4)\n• `kills` (INT4)\n• `deaths` (INT4)\n• `wins` (INT4)\n• `loses` (INT4)",
+                value="• `discord_id` (TEXT, references users)\n• `points` (INT4)\n• `kills` (INT4)\n• `deaths` (INT4)\n• `wins` (INT4)\n• `loses` (INT4)",
                 inline=False,
             )
 
@@ -1240,15 +1240,9 @@ class Leagues(commands.Cog):
             user_data = None
             if not skip_db_insert:
                 try:
-                    # Get user's nickname from the main users table
-                    from models.user import User
-
-                    user_data = await User.find(user.id)
-                    nickname = user_data["nickname"] if user_data else user.display_name
-
                     # Add user to league-specific table
                     db_success = await self.add_user_to_league_table(
-                        league_name, user.id, nickname
+                        league_name, user.id
                     )
                     if not db_success:
                         logger.warning(
@@ -1676,7 +1670,7 @@ class Leagues(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def add_user_to_league_table(
-        self, league_name: str, discord_id: int, nickname: str
+        self, league_name: str, discord_id: int
     ) -> bool:
         """
         Add a user to a specific league table
@@ -1695,7 +1689,6 @@ class Leagues(commands.Cog):
                     .insert(
                         {
                             "discord_id": str(discord_id),
-                            "nickname": nickname,
                             "points": 200,  # Starting points
                             "kills": 0,
                             "deaths": 0,
