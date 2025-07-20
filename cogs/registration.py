@@ -295,7 +295,12 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                 description="An error occurred during registration. Please contact an admin.",
                 color=Config.EMBED_COLORS["red"],
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+            # Check if interaction has already been responded to
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 class RegisterView(discord.ui.View):

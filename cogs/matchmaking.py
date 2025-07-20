@@ -172,6 +172,9 @@ class Matchmaking(commands.Cog):
                         connect=False,  # Deny @everyone from connecting
                         send_messages=False,  # Prevent everyone from sending messages
                         read_messages=True,
+                        create_public_threads=False,  # Prevent creating public threads
+                        create_private_threads=False,  # Prevent creating private threads
+                        send_messages_in_threads=False,  # Prevent sending messages in threads
                     ),
                     guild.me: discord.PermissionOverwrite(
                         view_channel=True,
@@ -179,6 +182,10 @@ class Matchmaking(commands.Cog):
                         manage_channels=True,
                         send_messages=True,
                         read_messages=True,
+                        create_public_threads=True,  # Allow bot to create threads
+                        create_private_threads=True,  # Allow bot to create private threads
+                        send_messages_in_threads=True,  # Allow bot to send messages in threads
+                        manage_threads=True,  # Allow bot to manage threads
                     ),  # Allow bot full access
                 }
 
@@ -189,6 +196,9 @@ class Matchmaking(commands.Cog):
                         connect=False,  # Deny connection when locked (even for role holders)
                         send_messages=False,  # Prevent role holders from sending messages
                         read_messages=True,
+                        create_public_threads=False,  # Prevent creating public threads
+                        create_private_threads=False,  # Prevent creating private threads
+                        send_messages_in_threads=False,  # Prevent sending messages in threads
                     )  # Locked: Can see but cannot connect or send messages
                 else:
                     overwrites[lobby_role] = discord.PermissionOverwrite(
@@ -196,6 +206,9 @@ class Matchmaking(commands.Cog):
                         connect=True,  # Only this role can connect when unlocked
                         send_messages=False,  # Prevent role holders from sending messages
                         read_messages=True,
+                        create_public_threads=False,  # Prevent creating public threads
+                        create_private_threads=False,  # Prevent creating private threads
+                        send_messages_in_threads=False,  # Prevent sending messages in threads
                     )  # Unlocked: Role holders can connect but not send messages
 
                 # Allow administrators to access lobbies
@@ -206,6 +219,10 @@ class Matchmaking(commands.Cog):
                             connect=True,
                             send_messages=True,  # Administrators can send messages
                             read_messages=True,
+                            create_public_threads=True,  # Administrators can create public threads
+                            create_private_threads=True,  # Administrators can create private threads
+                            send_messages_in_threads=True,  # Administrators can send messages in threads
+                            manage_threads=True,  # Administrators can manage threads
                         )
 
                 category = await guild.create_category(
@@ -216,8 +233,9 @@ class Matchmaking(commands.Cog):
                 )
                 text = await category.create_text_channel(LOBBY_TEXT_NAME)
                 embed = discord.Embed(
-                    title=f"LOBBY #{lobby_number} STATUS",
-                    description=f"Players in Queue: 0/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
+                    title=f"LOBBY #{lobby_number} - WAITING FOR PLAYERS",
+                    description="Waiting for the lobby to fill...\n"
+                               "Connect to the **Lobby** voice channel to join the queue!\n\n",
                     color=Config.EMBED_COLORS["waiting"],
                 )
                 msg = await text.send(embed=embed)
@@ -252,9 +270,11 @@ class Matchmaking(commands.Cog):
                     name="Lobby Number", value=f"#{lobby_number}", inline=True
                 )
                 embed.add_field(
-                    name="Players", value=f"0/{Config.PLAYERS_REQUIRED}", inline=True
+                    name="Status", value="Waiting for players", inline=True
                 )
-                embed.add_field(name="Status", value="Waiting for players", inline=True)
+                embed.add_field(
+                    name="Phase", value="Gathering players", inline=True
+                )
                 embed.add_field(
                     name="Access",
                     value=f"{Config.ICONS['lock']} {lobby_role_name} players only",
@@ -683,6 +703,10 @@ class Matchmaking(commands.Cog):
                 logger.error(f"Failed to send timeout notification to {player}: {e}")
 
         # Reset lobby to phase 1 (waiting for players) instead of completely resetting
+        # Check if we're resetting from map veto phase and need to clean up veto message
+        was_in_veto_phase = lobby["phase"] == 3
+        veto_message_to_delete = lobby.get("veto_message") if was_in_veto_phase else None
+        
         lobby["phase"] = 1
         lobby["ct_team"] = []
         lobby["t_team"] = []
@@ -691,6 +715,20 @@ class Matchmaking(commands.Cog):
         lobby["veto_turn"] = None
         lobby["remaining_maps"] = []
         lobby["last_ban"] = None
+
+        # Clean up veto message if we were in veto phase
+        if veto_message_to_delete:
+            try:
+                await veto_message_to_delete.delete()
+                logger.info(f"Deleted veto message for lobby #{lobby.get('lobby_number', 'X')} after captain timeout")
+            except discord.NotFound:
+                logger.info("Veto message was already deleted")
+            except discord.Forbidden:
+                logger.warning("No permission to delete veto message")
+            except Exception as e:
+                logger.warning(f"Could not delete veto message after captain timeout: {e}")
+            # Clear the veto message reference
+            lobby["veto_message"] = None
 
         # Update lobby status to show waiting for players again
         await self.update_lobby_status(lobby)
@@ -727,82 +765,42 @@ class Matchmaking(commands.Cog):
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         for lobby in list(self.active_lobbies.values()):
-            if after.channel and after.channel.id == lobby["voice"].id:
-                if (
-                    member not in lobby["players"]
-                ):  # Check if user is timeouted before allowing them to join
-                    (
-                        is_timeouted,
-                        timeout_until,
-                    ) = await timeout_manager.is_user_timeouted(member.id)
-                    if is_timeouted:
-                        try:
-                            remaining_minutes = timeout_manager.get_remaining_time(
-                                member.id
-                            )
-
-                            # Create timeout notification embed
-                            embed = discord.Embed(
-                                title=f"{Config.ICONS['clock']} Lobby Access Denied",
-                                description="You are currently timeouted and cannot join lobbies.",
-                                color=Config.EMBED_COLORS["red"],
-                            )
-                            embed.add_field(
-                                name="Time Remaining",
-                                value=f"{remaining_minutes} minute(s)",
-                                inline=True,
-                            )
-                            embed.add_field(
-                                name="Status",
-                                value=f"{Config.ICONS['not_allowed']} Lobby access blocked",
-                                inline=True,
-                            )
-                            embed.set_footer(
-                                text="You will be able to join lobbies again once the timeout expires."
-                            )
-
-                            await member.send(embed=embed)
-                            # Disconnect the user from the voice channel
-                            await member.move_to(None)
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to handle timeouted user {member}: {e}"
-                            )
-                        continue  # Check if lobbies are locked and user has the required role for this lobby
-                    if self.lobbies_locked:
-                        # Get the required role for this specific lobby
-                        required_role_id = lobby.get("required_role_id")
-                        if required_role_id:
-                            required_role = member.guild.get_role(int(required_role_id))
-                        else:
-                            # Fallback to Registered role for old lobbies
-                            required_role = discord.utils.get(
-                                member.guild.roles, name=Config.REGISTERED_ROLE
-                            )
-
-                        if required_role and required_role in member.roles:
+            # CRITICAL FIX: Use the existing lobby lock to prevent race conditions during critical transitions
+            # This prevents the issue where multiple players joining simultaneously could cause one player
+            # to be incorrectly disconnected when the lobby transitions from phase 1 to phase 2
+            async with self.lobby_locks[lobby["category"].guild.id]:
+                if after.channel and after.channel.id == lobby["voice"].id:
+                    if (
+                        member not in lobby["players"]
+                    ):  # Check if user is timeouted before allowing them to join
+                        (
+                            is_timeouted,
+                            timeout_until,
+                        ) = await timeout_manager.is_user_timeouted(member.id)
+                        if is_timeouted:
                             try:
-                                lobby_role_name = lobby.get(
-                                    "required_role_name", Config.REGISTERED_ROLE
+                                remaining_minutes = timeout_manager.get_remaining_time(
+                                    member.id
                                 )
-                                # Create lobby locked notification embed
+
+                                # Create timeout notification embed
                                 embed = discord.Embed(
-                                    title=f"{Config.ICONS['lock']} Lobbies Currently Locked",
-                                    description=f"All lobbies are currently locked by administrators. {lobby_role_name} players cannot connect to lobby voice channels at this time.",
+                                    title=f"{Config.ICONS['clock']} Lobby Access Denied",
+                                    description="You are currently timeouted and cannot join lobbies.",
                                     color=Config.EMBED_COLORS["red"],
                                 )
                                 embed.add_field(
-                                    name="Status",
-                                    value=f"{Config.ICONS['not_allowed']} Voice access temporarily restricted",
+                                    name="Time Remaining",
+                                    value=f"{remaining_minutes} minute(s)",
                                     inline=True,
                                 )
                                 embed.add_field(
-                                    name="Access Level",
-                                    value="👀 You can still view text channels",
+                                    name="Status",
+                                    value=f"{Config.ICONS['not_allowed']} Lobby access blocked",
                                     inline=True,
                                 )
                                 embed.set_footer(
-                                    text="Please wait for lobbies to be unlocked by administrators."
+                                    text="You will be able to join lobbies again once the timeout expires."
                                 )
 
                                 await member.send(embed=embed)
@@ -810,98 +808,176 @@ class Matchmaking(commands.Cog):
                                 await member.move_to(None)
                             except Exception as e:
                                 logger.error(
-                                    f"Failed to handle locked lobby access for {member}: {e}"
+                                    f"Failed to handle timeouted user {member}: {e}"
+                                )
+                            continue  # Check if lobbies are locked and user has the required role for this lobby
+                        if self.lobbies_locked:
+                            # Get the required role for this specific lobby
+                            required_role_id = lobby.get("required_role_id")
+                            if required_role_id:
+                                required_role = member.guild.get_role(int(required_role_id))
+                            else:
+                                # Fallback to Registered role for old lobbies
+                                required_role = discord.utils.get(
+                                    member.guild.roles, name=Config.REGISTERED_ROLE
+                                )
+
+                            if required_role and required_role in member.roles:
+                                try:
+                                    lobby_role_name = lobby.get(
+                                        "required_role_name", Config.REGISTERED_ROLE
+                                    )
+                                    # Create lobby locked notification embed
+                                    embed = discord.Embed(
+                                        title=f"{Config.ICONS['lock']} Lobbies Currently Locked",
+                                        description=f"All lobbies are currently locked by administrators. {lobby_role_name} players cannot connect to lobby voice channels at this time.",
+                                        color=Config.EMBED_COLORS["red"],
+                                    )
+                                    embed.add_field(
+                                        name="Status",
+                                        value=f"{Config.ICONS['not_allowed']} Voice access temporarily restricted",
+                                        inline=True,
+                                    )
+                                    embed.add_field(
+                                        name="Access Level",
+                                        value="👀 You can still view text channels",
+                                        inline=True,
+                                    )
+                                    embed.set_footer(
+                                        text="Please wait for lobbies to be unlocked by administrators."
+                                    )
+
+                                    await member.send(embed=embed)
+                                    # Disconnect the user from the voice channel
+                                    await member.move_to(None)
+                                except Exception as e:
+                                    logger.error(
+                                        f"Failed to handle locked lobby access for {member}: {e}"
+                                    )
+                                continue
+
+                        # Double-check lobby phase before allowing player addition (prevents race conditions)
+                        # This ensures that if the lobby has already transitioned to draft/veto phase,
+                        # new players are not added and are properly notified instead of being kicked
+                        if lobby["phase"] != 1:
+                            # Lobby has already started, don't allow new players
+                            try:
+                                embed = discord.Embed(
+                                    title=f"{Config.ICONS['info']} Lobby Already Started",
+                                    description="This lobby has already started the drafting phase. You cannot join at this time.",
+                                    color=Config.EMBED_COLORS["red"],
+                                )
+                                embed.add_field(
+                                    name="Current Phase",
+                                    value=f"Phase {lobby['phase']} ({'Draft' if lobby['phase'] == 2 else 'Map Veto' if lobby['phase'] == 3 else 'In Progress'})",
+                                    inline=True,
+                                )
+                                embed.set_footer(
+                                    text="Please wait for the next lobby or create a new one."
+                                )
+                                await member.send(embed=embed)
+                                # Disconnect the user from the voice channel
+                                await member.move_to(None)
+                            except Exception as e:
+                                logger.error(
+                                    f"Failed to notify user about lobby phase: {e}"
                                 )
                             continue
 
-                    lobby["players"].add(member)
-                await self.update_lobby_status(lobby)
+                        lobby["players"].add(member)
+                    # No longer calling update_lobby_status here to prevent frequent embed updates
+                    # The embed is now static and only created once when the lobby is initialized
+                    
+                    # Atomic check and transition to captain selection - prevents multiple threads
+                    # from simultaneously detecting 10/10 players and causing race conditions
+                    if (
+                        len(lobby["players"]) == Config.PLAYERS_REQUIRED
+                        and lobby["phase"] == 1
+                    ):
+                        await self.start_captain_selection(lobby)
                 if (
-                    len(lobby["players"]) == Config.PLAYERS_REQUIRED
-                    and lobby["phase"] == 1
+                    before.channel
+                    and before.channel.id == lobby["voice"].id
+                    and (not after.channel or after.channel.id != lobby["voice"].id)
                 ):
-                    await self.start_captain_selection(lobby)
-            if (
-                before.channel
-                and before.channel.id == lobby["voice"].id
-                and (not after.channel or after.channel.id != lobby["voice"].id)
-            ):
-                if member in lobby["players"]:
-                    lobby["players"].remove(member)
-                await self.update_lobby_status(lobby)
-                if lobby["phase"] in [2, 3]:
-                    # Check if user is already timeouted to prevent double timeout
-                    is_already_timeouted, _ = await timeout_manager.is_user_timeouted(
-                        member.id
-                    )
-                    if is_already_timeouted:
-                        logger.info(
-                            f"User {member.id} already timeouted, skipping mid-game leave timeout"
+                    if member in lobby["players"]:
+                        lobby["players"].remove(member)
+                    # No longer calling update_lobby_status here to prevent frequent embed updates
+                    # Players leaving in phase 1 don't need to trigger embed updates
+                    
+                    if lobby["phase"] in [2, 3]:
+                        # Check if user is already timeouted to prevent double timeout
+                        is_already_timeouted, _ = await timeout_manager.is_user_timeouted(
+                            member.id
                         )
-                        # Still reset lobby if needed, but don't apply another timeout
+                        if is_already_timeouted:
+                            logger.info(
+                                f"User {member.id} already timeouted, skipping mid-game leave timeout"
+                            )
+                            # Still reset lobby if needed, but don't apply another timeout
+                            await self.reset_lobby(lobby, keep_voice_members=True)
+                            continue
+
+                        # Add timeout to database
+                        success = await timeout_manager.add_timeout(
+                            member.id,
+                            timeout_minutes=2,
+                            reason=f"Left during Phase {lobby['phase']} ({'Draft' if lobby['phase'] == 2 else 'Veto'})",
+                        )
+
+                        try:
+                            if success:
+                                # Create mid-game leave timeout embed
+                                embed = discord.Embed(
+                                    title=f"{Config.ICONS['clock']} Mid-Game Leave Penalty",
+                                    description="You have been removed from the lobby due to leaving mid-game.",
+                                    color=Config.EMBED_COLORS["red"],
+                                )
+                                embed.add_field(
+                                    name="Phase Left During",
+                                    value=f"Phase {lobby['phase']} ({'Draft' if lobby['phase'] == 2 else 'Veto'})",
+                                    inline=False,
+                                )
+                                embed.add_field(
+                                    name="Timeout Duration",
+                                    value="2 minutes",
+                                    inline=True,
+                                )
+                                embed.add_field(
+                                    name="Status",
+                                    value=f"{Config.ICONS['not_allowed']} Cannot join any lobbies during timeout",
+                                    inline=True,
+                                )
+                                embed.set_footer(
+                                    text="You will be able to join lobbies again once the timeout expires."
+                                )
+
+                                await member.send(embed=embed)
+                            else:
+                                # Fallback embed for database failure
+                                embed = discord.Embed(
+                                    title=f"{Config.ICONS['clock']} Mid-Game Leave Penalty",
+                                    description="You have been removed from the lobby due to leaving mid-game.",
+                                    color=Config.EMBED_COLORS["red"],
+                                )
+                                embed.add_field(
+                                    name="Timeout Duration",
+                                    value="2 minutes",
+                                    inline=True,
+                                )
+                                embed.set_footer(
+                                    text="Note: Timeout may not be properly tracked due to database issues."
+                                )
+
+                                await member.send(embed=embed)
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to send mid-game leave message to {member}: {e}"
+                            )
                         await self.reset_lobby(lobby, keep_voice_members=True)
-                        continue
-
-                    # Add timeout to database
-                    success = await timeout_manager.add_timeout(
-                        member.id,
-                        timeout_minutes=2,
-                        reason=f"Left during Phase {lobby['phase']} ({'Draft' if lobby['phase'] == 2 else 'Veto'})",
-                    )
-
-                    try:
-                        if success:
-                            # Create mid-game leave timeout embed
-                            embed = discord.Embed(
-                                title=f"{Config.ICONS['clock']} Mid-Game Leave Penalty",
-                                description="You have been removed from the lobby due to leaving mid-game.",
-                                color=Config.EMBED_COLORS["red"],
-                            )
-                            embed.add_field(
-                                name="Phase Left During",
-                                value=f"Phase {lobby['phase']} ({'Draft' if lobby['phase'] == 2 else 'Veto'})",
-                                inline=False,
-                            )
-                            embed.add_field(
-                                name="Timeout Duration",
-                                value="2 minutes",
-                                inline=True,
-                            )
-                            embed.add_field(
-                                name="Status",
-                                value=f"{Config.ICONS['not_allowed']} Cannot join any lobbies during timeout",
-                                inline=True,
-                            )
-                            embed.set_footer(
-                                text="You will be able to join lobbies again once the timeout expires."
-                            )
-
-                            await member.send(embed=embed)
-                        else:
-                            # Fallback embed for database failure
-                            embed = discord.Embed(
-                                title=f"{Config.ICONS['clock']} Mid-Game Leave Penalty",
-                                description="You have been removed from the lobby due to leaving mid-game.",
-                                color=Config.EMBED_COLORS["red"],
-                            )
-                            embed.add_field(
-                                name="Timeout Duration",
-                                value="2 minutes",
-                                inline=True,
-                            )
-                            embed.set_footer(
-                                text="Note: Timeout may not be properly tracked due to database issues."
-                            )
-
-                            await member.send(embed=embed)
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to send mid-game leave message to {member}: {e}"
-                        )
-                    await self.reset_lobby(lobby, keep_voice_members=True)
 
     async def update_lobby_status(self, lobby):
-        """Update the lobby status embed"""
+        """Update the lobby status embed - now only for initial setup and phase transitions"""
         # Check if lobby still exists before updating
         if lobby["category"].id not in self.active_lobbies:
             return
@@ -913,12 +989,14 @@ class Matchmaking(commands.Cog):
         except Exception:
             return
 
-        # Only update the embed if the lobby is in phase 1 (waiting for players)
-        if lobby["phase"] == 1:
+        # Only create initial embed if the lobby is in phase 1 and no message exists yet
+        if lobby["phase"] == 1 and not lobby.get("message"):
             try:
+                # Static embed without real-time player count to prevent frequent updates
                 embed = discord.Embed(
-                    title=f"LOBBY #{lobby.get('lobby_number', 'X')} STATUS",
-                    description=f"Players in Queue: {len(lobby['players'])}/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
+                    title=f"LOBBY #{lobby.get('lobby_number', 'X')} - WAITING FOR PLAYERS",
+                    description="Waiting for the lobby to fill...\n"
+                               "Connect to the **Lobby** voice channel to join the queue!\n\n",
                     color=Config.EMBED_COLORS["waiting"],
                 )
 
@@ -935,22 +1013,16 @@ class Matchmaking(commands.Cog):
                     return
 
                 try:
-                    # If message exists, try to edit it
-                    if lobby["message"]:
-                        await lobby["message"].edit(embed=embed, view=None)
-                    else:
-                        # Create new message if it doesn't exist
-                        lobby["message"] = await lobby["text"].send(embed=embed)
-                except discord.NotFound:
-                    # Message was deleted, create a new one
+                    # Create new message only if it doesn't exist
                     lobby["message"] = await lobby["text"].send(embed=embed)
                 except discord.Forbidden:
                     logger.warning(
-                        f"Missing permissions to edit message in lobby #{lobby.get('lobby_number', 'unknown')}"
+                        f"Missing permissions to send message in lobby #{lobby.get('lobby_number', 'unknown')}"
                     )
                 except Exception as e:
-                    logger.error(f"Unexpected error updating lobby message: {e}")
-                # Save lobby state when players change
+                    logger.error(f"Unexpected error creating initial lobby message: {e}")
+                
+                # Save lobby state when initially created
                 await self.save_lobby_state(lobby["category"].id)
 
             except Exception as e:
@@ -1343,6 +1415,10 @@ class Matchmaking(commands.Cog):
         # ...
 
     async def reset_lobby(self, lobby, keep_voice_members=False):
+        # Check if we're resetting from map veto phase and need to clean up veto message
+        was_in_veto_phase = lobby["phase"] == 3
+        veto_message_to_delete = lobby.get("veto_message") if was_in_veto_phase else None
+        
         lobby["phase"] = 1
         if keep_voice_members:
             voice_members = set(lobby["voice"].members)
@@ -1353,25 +1429,46 @@ class Matchmaking(commands.Cog):
         lobby["t_team"] = []
         lobby["map_pool"] = [map_info["name"] for map_info in Config.MAP_POOL]
         lobby["match_id"] = None
+        
+        # Clean up veto message if we were in veto phase and it hasn't been finalized yet
+        if veto_message_to_delete and not lobby.get("just_finalized"):
+            try:
+                await veto_message_to_delete.delete()
+                logger.info(f"Deleted veto message for lobby #{lobby.get('lobby_number', 'X')} during reset")
+            except discord.NotFound:
+                logger.info("Veto message was already deleted")
+            except discord.Forbidden:
+                logger.warning("No permission to delete veto message")
+            except Exception as e:
+                logger.warning(f"Could not delete veto message during reset: {e}")
+            # Clear the veto message reference
+            lobby["veto_message"] = None
+        
         text = lobby["text"]
         # Only create a new waiting embed if this is the first time or after a match (not on every reset)
         if not lobby.get("message") or lobby.pop("just_finalized", False):
             embed = discord.Embed(
-                title=f"LOBBY #{lobby.get('lobby_number', 'X')} STATUS",
-                description=f"Players in Queue: {len(lobby['players'])}/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
+                title=f"LOBBY #{lobby.get('lobby_number', 'X')} - WAITING FOR PLAYERS",
+                description="Waiting for the lobby to fill...\n"
+                           "Connect to the **Lobby** voice channel to join the queue!\n\n",
                 color=Config.EMBED_COLORS["waiting"],
             )
             if lobby.get("message"):
                 try:
                     await lobby["message"].delete()
+                except discord.NotFound:
+                    logger.info("Lobby message was already deleted")
+                except discord.Forbidden:
+                    logger.warning("No permission to delete lobby message")
                 except Exception as e:
-                    logger.error(f"Failed to delete old lobby message: {e}")
+                    logger.warning(f"Could not delete old lobby message: {e}")
             lobby["message"] = await text.send(embed=embed)
         else:
             # Update existing message with proper waiting phase embed properties
             embed = discord.Embed(
-                title=f"LOBBY #{lobby.get('lobby_number', 'X')} STATUS",
-                description=f"Players in Queue: {len(lobby['players'])}/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
+                title=f"LOBBY #{lobby.get('lobby_number', 'X')} - WAITING FOR PLAYERS",
+                description="Waiting for the lobby to fill...\n"
+                           "Connect to the **Lobby** voice channel to join the queue!\n\n",
                 color=Config.EMBED_COLORS["waiting"],
             )
             await lobby["message"].edit(embed=embed, view=None)
@@ -1501,8 +1598,9 @@ class Matchmaking(commands.Cog):
                 except:
                     # Create new message if old one doesn't exist
                     embed = discord.Embed(
-                        title="LOBBY STATUS",
-                        description=f"Players in Queue: 0/{Config.PLAYERS_REQUIRED}\nPhase: Waiting for players...",
+                        title="LOBBY - WAITING FOR PLAYERS",
+                        description="Waiting for the lobby to fill...\n"
+                                   "Connect to the **Lobby** voice channel to join the queue!\n\n",
                         color=Config.EMBED_COLORS["waiting"],
                     )
                     message = await text_channel.send(embed=embed)
@@ -1569,8 +1667,9 @@ class Matchmaking(commands.Cog):
             await LobbyState.delete_lobby(category_id)
             logger.info(f"Deleted lobby state for category {category_id}")
         except Exception as e:
-            logger.error(
-                f"Failed to delete lobby state for category {category_id}: {e}"
+            # Log as warning instead of error since this might be normal (lobby already deleted)
+            logger.warning(
+                f"Could not delete lobby state for category {category_id}: {e}"
             )
 
     @app_commands.command(
@@ -1674,7 +1773,9 @@ class Matchmaking(commands.Cog):
                     logger.info(f"Deleted channel: {channel.name}")
                     await asyncio.sleep(0.5)  # Small delay between deletions
                 except discord.NotFound:
-                    pass  # Channel was already deleted
+                    logger.info(f"Channel {channel.name} was already deleted")
+                except discord.Forbidden:
+                    logger.warning(f"No permission to delete channel {channel.name}")
                 except Exception as e:
                     logger.error(
                         f"Failed to delete channel {channel.name}: {e}"
@@ -1683,16 +1784,18 @@ class Matchmaking(commands.Cog):
                 await target_lobby["category"].delete()
                 logger.info(f"Deleted category for lobby #{lobby_number}")
             except discord.NotFound:
-                pass  # Category was already deleted
+                logger.info(f"Category for lobby #{lobby_number} was already deleted")
+            except discord.Forbidden:
+                logger.warning(f"No permission to delete category for lobby #{lobby_number}")
             except Exception as e:
-                logger.error(f"Failed to delete category: {e}")
-                raise
+                logger.error(f"Failed to delete category for lobby #{lobby_number}: {e}")
+                # Don't raise here, continue with cleanup
 
-            # Remove from active lobbies
+            # Remove from active lobbies first to prevent other operations
             if target_category_id in self.active_lobbies:
                 del self.active_lobbies[target_category_id]
 
-            # Delete from database
+            # Delete from database (do this early to avoid state issues)
             await self.delete_lobby_state(target_category_id)
 
             # Create success embed

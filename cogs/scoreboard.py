@@ -402,12 +402,12 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 all_extracted_players, [p["nickname"] for p in all_db_players]
             )
 
-            # Validate that we matched at least 50% of the players
+            # Validate that we matched at least 30% of the players
             total_db_players = len(all_db_players)
             matched_count = len(matched_players)
             match_rate = matched_count / total_db_players if total_db_players > 0 else 0
 
-            if match_rate < 0.5:
+            if match_rate < 0.3:
                 # Release the submission lock since not enough players matched
                 try:
                     await Match.release_submission_lock(match_data["match_id"])
@@ -423,7 +423,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 # Create embed for player matching error
                 embed = discord.Embed(
                     title=f"{Config.ICONS['unsuccess']} Insufficient Player Matches",
-                    description=f"Found {matched_count}/{total_db_players} players ({match_rate:.1%}) - Need at least 50% to validate match.",
+                    description=f"Found {matched_count}/{total_db_players} players ({match_rate:.1%}) - Need at least 30% to validate match.",
                     color=Config.EMBED_COLORS["red"],  # Red color
                 )
 
@@ -483,39 +483,54 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 # Create embed for team validation failure
                 error_embed = discord.Embed(
                     title=f"{Config.ICONS['unsuccess']} Team Structure Validation Failed",
-                    description="The team structure in the screenshot does not match the expected team structure for this match.",
+                    description="The team structure in the screenshot doesn't match the expected team groupings.",
                     color=Config.EMBED_COLORS["red"],
                 )
 
-                # Show expected team structure
-                expected_ct = [p["nickname"] for p in ct_team]
-                expected_t = [p["nickname"] for p in t_team]
+                # Show what went wrong
+                match_summary = team_validation.get("match_summary", {})
+                if not match_summary.get("team_integrity_maintained", False):
+                    error_embed.add_field(
+                        name=f"{Config.ICONS['unsuccess']} Problem Detected",
+                        value="Players who should be on the same team are split across both CT and T sides.\n"
+                              "Teams can switch sides at round 15, but teammates must stay together.",
+                        inline=False,
+                    )
 
+                # Show expected team structure
+                expected_team1 = [p["nickname"] for p in ct_team]
+                expected_team2 = [p["nickname"] for p in t_team]
                 error_embed.add_field(
                     name=f"{Config.ICONS['instructions']} Expected Team Structure",
-                    value=f"**Team 1:** {', '.join(expected_ct)}\n**Team 2:** {', '.join(expected_t)}",
+                    value=f"**Team 1:** {', '.join(expected_team1)}\n**Team 2:** {', '.join(expected_team2)}\n\n"
+                          f"*These players should be grouped together on the same side (CT or T)*",
                     inline=False,
                 )
 
-                # Show actual team structure from screenshot
-                actual_ct = []
-                actual_t = []
-
-                for assignment in team_validation["ct_assignments"]:
+                # Show actual distribution from screenshot
+                ct_side_names = []
+                t_side_names = []
+                
+                for assignment in team_validation["ct_assignments"] + team_validation["t_assignments"]:
                     if assignment["screenshot_side"] == "ct_side":
-                        actual_ct.append(assignment["db_name"])
+                        ct_side_names.append(assignment["db_name"])
                     else:
-                        actual_t.append(assignment["db_name"])
-
-                for assignment in team_validation["t_assignments"]:
-                    if assignment["screenshot_side"] == "ct_side":
-                        actual_ct.append(assignment["db_name"])
-                    else:
-                        actual_t.append(assignment["db_name"])
+                        t_side_names.append(assignment["db_name"])
 
                 error_embed.add_field(
-                    name="📸 Actual Team Structure in Screenshot",
-                    value=f"**CT Side:** {', '.join(actual_ct) if actual_ct else 'None'}\n**T Side:** {', '.join(actual_t) if actual_t else 'None'}",
+                    name="📸 Actual Screenshot Distribution",
+                    value=f"**CT Side:** {', '.join(ct_side_names) if ct_side_names else 'None'}\n"
+                          f"**T Side:** {', '.join(t_side_names) if t_side_names else 'None'}",
+                    inline=False,
+                )
+
+                # Show team validation status
+                ct_status = "✅ Valid" if team_validation["ct_team_valid"] else "❌ Split"
+                t_status = "✅ Valid" if team_validation["t_team_valid"] else "❌ Split"
+                error_embed.add_field(
+                    name="🔍 Team Validation Status",
+                    value=f"**Team 1 ({', '.join(expected_team1[:2])}{'+...' if len(expected_team1) > 2 else ''}):** {ct_status}\n"
+                          f"**Team 2 ({', '.join(expected_team2[:2])}{'+...' if len(expected_team2) > 2 else ''}):** {t_status}",
                     inline=False,
                 )
 
@@ -1024,7 +1039,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
     def validate_team_structure(self, ct_team, t_team, extracted_data, matched_players):
         """
         Validate that players who were on the same team in the database
-        are still on the same team in the screenshot (regardless of which side)
+        are still grouped together in the screenshot, regardless of which side (CT/T) they're on
         """
         # Get screenshot team assignments
         teams_data = extracted_data.get("teams", {})
@@ -1042,9 +1057,8 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
         for player in t_data.get("players", []):
             screenshot_team_assignments[player["name"]] = "t_side"
 
-        # Validate that database teammates are still together
         def check_team_grouping(db_team, team_name):
-            """Check if all players from a database team are on the same side in screenshot"""
+            """Check if all players from a database team are grouped together on the same side in screenshot"""
             screenshot_sides = set()
             matched_players_in_team = []
 
@@ -1054,30 +1068,46 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                     if screenshot_name in screenshot_team_assignments:
                         screenshot_side = screenshot_team_assignments[screenshot_name]
                         screenshot_sides.add(screenshot_side)
-                        matched_players_in_team.append(
-                            {
-                                "db_name": db_player["nickname"],
-                                "screenshot_name": screenshot_name,
-                                "screenshot_side": screenshot_side,
-                            }
-                        )
+                        matched_players_in_team.append({
+                            "db_name": db_player["nickname"],
+                            "screenshot_name": screenshot_name,
+                            "screenshot_side": screenshot_side,
+                        })
 
-            # If we have matched players, they should all be on the same side
+            # Key validation: All matched players from the same database team 
+            # must be on the same side in screenshot (either all CT or all T)
             if len(matched_players_in_team) > 1 and len(screenshot_sides) > 1:
-                return False, matched_players_in_team
+                return False, matched_players_in_team  # Team is split across both sides - INVALID
 
             return True, matched_players_in_team
 
-        # Check both teams
+        # Check both database teams separately
         ct_valid, ct_assignments = check_team_grouping(ct_team, "CT")
         t_valid, t_assignments = check_team_grouping(t_team, "T")
+
+        # Also verify we have players on both sides of the screenshot
+        all_assignments = ct_assignments + t_assignments
+        ct_side_players = [p for p in all_assignments if p["screenshot_side"] == "ct_side"]
+        t_side_players = [p for p in all_assignments if p["screenshot_side"] == "t_side"]
+        
+        has_both_sides = len(ct_side_players) > 0 and len(t_side_players) > 0
+        total_matched = len(all_assignments)
+        total_expected = len(ct_team) + len(t_team)
 
         validation_details = {
             "ct_team_valid": ct_valid,
             "t_team_valid": t_valid,
             "ct_assignments": ct_assignments,
             "t_assignments": t_assignments,
-            "overall_valid": ct_valid and t_valid,
+            "overall_valid": ct_valid and t_valid and has_both_sides,
+            "match_summary": {
+                "total_matched": total_matched,
+                "total_expected": total_expected,
+                "ct_side_count": len(ct_side_players),
+                "t_side_count": len(t_side_players),
+                "has_both_sides": has_both_sides,
+                "team_integrity_maintained": ct_valid and t_valid,
+            }
         }
 
         return validation_details
