@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from threading import Lock
+import discord
 
 load_dotenv()
 
@@ -28,6 +29,10 @@ class Config:
 
     PLAYERS_REQUIRED = 4
     MAX_PARTY_MEMBERS = 2
+    
+    # Authorized user IDs for restricted commands
+    AUTHORIZED_USERS = [245974474111844354]
+    
     ICONS = {
         "changes": "<:discord_changes:1382829997563318343>",
         "success": "<:discord_check:1382829999576453202>",
@@ -82,3 +87,32 @@ class Config:
                         cls.SUPABASE_URL, cls.SUPABASE_KEY
                     )
         return cls._supabase_client
+
+    @classmethod
+    def is_authorized_user(cls, user_id: int) -> bool:
+        """Check if a user ID is in the authorized users list"""
+        return user_id in cls.AUTHORIZED_USERS
+    
+    @classmethod
+    async def check_authorization(cls, interaction) -> bool:
+        """
+        Funcție reutilizabilă pentru verificarea autorizației utilizatorului.
+        Returnează True dacă utilizatorul este autorizat, False dacă nu.
+        Trimite automat un embed de eroare dacă utilizatorul nu este autorizat.
+        """
+        if not cls.is_authorized_user(interaction.user.id):
+            embed = discord.Embed(
+                title=f"{cls.ICONS['unsuccess']} Restricted Access",
+                description="You are not authorized to use this command.",
+                color=cls.EMBED_COLORS["red"],
+            )
+            embed.add_field(
+                name="Information",
+                value="This command requires special authorization beyond administrator permissions.",
+                inline=False
+            )
+            embed.set_footer(text="Contact an higher administrator if you believe this is an error.")
+
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return False
+        return True

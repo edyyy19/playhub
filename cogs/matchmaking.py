@@ -67,6 +67,10 @@ class Matchmaking(commands.Cog):
     @app_commands.autocomplete(league_name=league_name_autocomplete)
     @app_commands.default_permissions(administrator=True)
     async def create_lobby(self, interaction: discord.Interaction, league_name: str):
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+            
         # Check if interaction has a valid guild
         if not interaction.guild:
             await interaction.response.send_message(
@@ -1716,6 +1720,10 @@ class Matchmaking(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def delete_lobby(self, interaction: discord.Interaction, lobby_number: int):
         """Delete a lobby and clean up its state"""
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+            
         # Defer the interaction immediately to prevent timeout
         await interaction.response.defer(ephemeral=True)
 
@@ -2131,6 +2139,10 @@ class Matchmaking(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def lock_lobbies(self, interaction: discord.Interaction):
         """Lock all lobbies to prevent Registered role from connecting"""
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+            
         await interaction.response.defer(ephemeral=True)
 
         try:
@@ -2239,6 +2251,10 @@ class Matchmaking(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def unlock_lobbies(self, interaction: discord.Interaction):
         """Unlock all lobbies to restore Registered role voice access"""
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+            
         await interaction.response.defer(ephemeral=True)
 
         try:

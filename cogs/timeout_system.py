@@ -174,6 +174,9 @@ class TimeoutSystem(commands.Cog):
         self, interaction: discord.Interaction, channel: discord.TextChannel
     ):
         """Set the timeout notification channel"""
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
 
         # Check if user has admin permissions
         if not interaction.user.guild_permissions.administrator:

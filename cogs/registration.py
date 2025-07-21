@@ -403,6 +403,10 @@ class Registration(commands.Cog):
     @app_commands.autocomplete(default_league=league_name_autocomplete)
     @app_commands.default_permissions(administrator=True)
     async def setup(self, interaction: discord.Interaction, default_league: str):
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+            
         try:
             # Get the leagues cog to use its utilities
             leagues_cog = self.bot.get_cog("Leagues")

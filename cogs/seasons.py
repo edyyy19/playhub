@@ -49,6 +49,10 @@ class Seasons(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def start_season(self, interaction: discord.Interaction):
         """Start a new season - Founder role only"""
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+            
         # Check if user has Founder role
         if not self.has_founder_role(interaction):
             embed = discord.Embed(
@@ -138,6 +142,10 @@ class Seasons(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def end_season(self, interaction: discord.Interaction):
         """End the current season - Founder role only"""
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+            
         # Check if user has Founder role
         if not self.has_founder_role(interaction):
             embed = discord.Embed(

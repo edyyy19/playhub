@@ -399,6 +399,9 @@ class Leaderboard(commands.Cog):
         channel: discord.TextChannel = None,
     ):
         """Create or update a league-specific leaderboard embed in the specified channel"""
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
 
         # Validate league name
         if not league_name or len(league_name.strip()) == 0:
@@ -830,6 +833,10 @@ class Leaderboard(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def stop_leaderboard(self, interaction: discord.Interaction):
         """Stop auto-updating leaderboards in the current channel and delete the messages"""
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+            
         channel_id = interaction.channel.id
 
         # Get all leaderboard messages for this channel from database
@@ -940,6 +947,10 @@ class Leaderboard(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def leaderboard_status(self, interaction: discord.Interaction):
         """Show status of all active leaderboards"""
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+            
         if not self.leaderboard_messages:
             embed = discord.Embed(
                 title=f"{Config.ICONS['info']} Leaderboard Status",

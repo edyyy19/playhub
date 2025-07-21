@@ -1273,6 +1273,10 @@ class Scoreboard(commands.Cog):
     async def set_scoreboard_channel(
         self, interaction: discord.Interaction, target_channel: discord.TextChannel
     ):
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+            
         # Check if user has admin permissions
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(

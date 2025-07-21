@@ -277,6 +277,10 @@ class LevelsCog(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def setup_levels(self, interaction: discord.Interaction):
         """Create all level roles with correct names and colors"""
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+            
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(
                 f"{Config.ICONS['unsuccess']} You need administrator permissions to use this command.",

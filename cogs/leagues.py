@@ -129,6 +129,10 @@ class Leagues(commands.Cog):
         2. Creating a dedicated table for the league
         3. Creating a Discord role with the original league name
         """
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+            
         # Check if user has admin permissions
         if not interaction.user.guild_permissions.administrator:
             embed = discord.Embed(
@@ -681,6 +685,10 @@ class Leagues(commands.Cog):
         2. Removing the league entry from the leagues table
         3. Deleting the associated Discord role
         """
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+            
         # Check if user has admin permissions
         if not interaction.user.guild_permissions.administrator:
             embed = discord.Embed(
