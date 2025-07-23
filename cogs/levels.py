@@ -170,6 +170,23 @@ class LevelsCog(commands.Cog):
         # Default to level 10 emoji for points above 2001 but below challenger
         return LevelsCog.LEVEL_CONFIG[10]["emoji"]
 
+    @staticmethod
+    def get_level_icon_path(points):
+        """Get the level icon PNG file path based on points"""
+        import os
+        
+        # Check if player is Challenger level
+        if points >= LevelsCog.CHALLENGER_CONFIG["min_points"]:
+            return os.path.join("assets", "level_icons", "challenger.png")
+        
+        # Otherwise, get the regular level icon
+        for level, config in LevelsCog.LEVEL_CONFIG.items():
+            if config["min_points"] <= points <= config["max_points"]:
+                return os.path.join("assets", "level_icons", f"level{level}.png")
+
+        # Default to level 10 icon for points above 2001 but below challenger
+        return os.path.join("assets", "level_icons", "level10.png")
+
     async def get_top_10_players(self):
         """Get the top 10 players by points from database"""
         # Get default league from config

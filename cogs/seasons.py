@@ -12,7 +12,7 @@ import re
 
 logger = logging.getLogger(__name__)
 
-EMBED_COLOR = 0xB2FA19  # Vibrant green color
+EMBED_COLOR = Config.MAIN_COLOR  # Main brand color
 
 
 class Seasons(commands.Cog):

@@ -6,13 +6,11 @@ from models.stats import Stats
 from config import Config
 import logging
 import asyncio
-import os
 
 logger = logging.getLogger(__name__)
 
 # Constants
-REGISTRATION_BANNER = os.getenv("REGISTRATION_BANNER", "https://res.cloudinary.com/dzhebhupq/image/upload/v1748788836/playhub_3d_banner_u93fy0.png")
-EMBED_COLOR = 0xB2FA19  # Vibrant green color
+EMBED_COLOR = Config.MAIN_COLOR  # Main brand color
 
 
 class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
@@ -531,7 +529,8 @@ class Registration(commands.Cog):
                 description=f"Click below to register for {Config.APP_NAME} — your gateway to 5v5 matchmaking!",
                 color=EMBED_COLOR,
             )
-            embed.set_image(url=REGISTRATION_BANNER)
+            if Config.REGISTRATION_BANNER:
+                embed.set_image(url=Config.REGISTRATION_BANNER)
             embed.set_footer(text=f"{Config.APP_NAME} Matchmaking")
 
             await channel.send(embed=embed, view=RegisterView())

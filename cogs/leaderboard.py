@@ -3,23 +3,22 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from config import Config
 from models.user import User
+from assets.template_generators.leaderboard_generator import LeaderboardTemplateGenerator
 import logging
 from datetime import datetime
 import asyncio
 import os
-import tempfile
-from jinja2 import Environment, FileSystemLoader
-from html2image import Html2Image
 
 logger = logging.getLogger(__name__)
 
-EMBED_COLOR = 0xB2FA19  # Vibrant green color
+EMBED_COLOR = Config.MAIN_COLOR  # Main brand color
 
 
 class Leaderboard(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.leaderboard_messages = {}  # Store message references for auto-updates
+        self.leaderboard_generator = LeaderboardTemplateGenerator()
 
         # Initialize database table for persistent storage
         self.bot.loop.create_task(self.init_database())
@@ -554,7 +553,7 @@ class Leaderboard(commands.Cog):
     async def create_league_leaderboard_embed(
         self, league_table_name: str, display_name: str
     ):
-        """Create the leaderboard as an HTML image with league-specific player data"""
+        """Create the leaderboard using Pillow instead of HTML template"""
         try:
             # Fetch all users from the specific league table
             users_data = await self.get_league_users(league_table_name)
@@ -563,56 +562,42 @@ class Leaderboard(commands.Cog):
             processed_users = []
             for user in users_data:
                 try:
-                    # Calculate win rate
+                    # Calculate total games, kills, deaths
                     wins = user.get("wins", 0)
-                    losses = user.get(
-                        "loses", 0
-                    )  # Note: database uses 'loses' not 'losses'
+                    losses = user.get("loses", 0)  # Note: database uses 'loses' not 'losses'
                     total_games = wins + losses
-                    win_rate = (wins / total_games * 100) if total_games > 0 else 0.0
+                    kills = user.get("kills", 0)
+                    deaths = user.get("deaths", 0)
 
                     processed_users.append(
                         {
                             "nickname": user.get("nickname", "Unknown"),
+                            "discord_id": user.get("discord_id"),
                             "points": user.get("points", 0),
                             "wins": wins,
                             "losses": losses,
-                            "win_rate": round(win_rate, 2),
+                            "total_games": total_games,
+                            "kills": kills,
+                            "deaths": deaths,
                         }
                     )
                 except Exception as e:
                     logger.warning(f"Error processing user data: {user}, error: {e}")
                     continue
 
-            # Sort by points (descending) and take top 15
+            # Sort by points (descending) and take top 10
             processed_users.sort(key=lambda x: x["points"], reverse=True)
-            top_players = processed_users[:15]
+            top_players = processed_users[:10]
 
-            # Prepare template variables
-            template_vars = {
-                "app_name": Config.APP_NAME,
-                "league_display_name": display_name,
-                "players": top_players,
-                "last_updated": datetime.now().strftime("%H:%M | %d/%m/%Y"),
-            }
-
-            # Render HTML with Jinja2
-            template_dir = os.path.dirname(os.path.dirname(__file__))
-
-            # Go up from cogs/ to project root
-            env = Environment(loader=FileSystemLoader(template_dir))
-            template = env.get_template("templates/leaderboard_template.html")
-            html_content = template.render(**template_vars)  # Render HTML to image
-            hti = Html2Image(output_path=tempfile.gettempdir())
-            image_path = os.path.join(
-                tempfile.gettempdir(),
-                f"leaderboard_{league_table_name}_{int(datetime.now().timestamp())}.png",
+            # Generate leaderboard image using the dedicated template generator
+            image_path = await self.leaderboard_generator.generate_leaderboard_image(
+                self.bot, top_players, display_name, league_table_name
             )
-            hti.screenshot(
-                html_str=html_content,
-                save_as=os.path.basename(image_path),
-                size=(940, 1200),  # Larger size for leaderboard
-            )  # Create Discord file
+
+            if not image_path or not os.path.exists(image_path):
+                return None, None, "Failed to generate leaderboard image"
+
+            # Create Discord file
             file = discord.File(image_path, filename="leaderboard.png")
 
             # Schedule cleanup of temp file after a delay

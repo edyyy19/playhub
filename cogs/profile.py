@@ -5,17 +5,15 @@ from config import Config
 from models.user import User
 from models.stats import Stats
 from models.match import Match
+from assets.template_generators.profile_generator import ProfileTemplateGenerator
 import logging
-import datetime
+from datetime import datetime
 import os
-import tempfile
-from jinja2 import Environment, FileSystemLoader
-from html2image import Html2Image
 
 logger = logging.getLogger(__name__)
 
 # Constants
-EMBED_COLOR = 0xB2FA19  # Vibrant green color
+EMBED_COLOR = Config.MAIN_COLOR  # Main brand color
 
 
 class EditProfileModal(discord.ui.Modal, title="Edit Profile"):
@@ -172,6 +170,7 @@ class EditProfileModal(discord.ui.Modal, title="Edit Profile"):
 class Profile(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.profile_generator = ProfileTemplateGenerator()
 
     def get_leagues_cog(self):
         """Get the leagues cog for accessing league methods"""
@@ -262,12 +261,6 @@ class Profile(commands.Cog):
     ):
         """View profile information for yourself or another user"""
         try:
-            import os
-            import tempfile
-            import datetime
-            from jinja2 import Environment, FileSystemLoader
-            from html2image import Html2Image
-
             # Defer the response since image generation takes time
             await interaction.response.defer(ephemeral=True)
 
@@ -387,23 +380,32 @@ class Profile(commands.Cog):
                     except:
                         match_date = "Unknown"
 
+                # Extract scores from processed match data
+                team1_score = match.get("team1_score", 0)
+                team2_score = match.get("team2_score", 0)
+
                 formatted_match = {
                     "match_id": match.get("match_id", "Unknown"),
                     "map": match.get("map", "Unknown"),
                     "date": match_date,
-                    "final_score": f"{match.get('ct_score', 0)}-{match.get('t_score', 0)}",
+                    "final_score": f"{team1_score}-{team2_score}",
                     "user_team": match.get("user_team", "Unknown"),
                     "result": "W" if match.get("user_won", False) else "L",
+                    "ended_at": match.get("ended_at", ""),  # Add for sorting
                 }
                 formatted_matches.append(formatted_match)
+            
+            # Sort matches by ended_at in descending order to ensure newest first
+            formatted_matches.sort(key=lambda x: x.get("ended_at", ""), reverse=True)
+            
             # Prepare template variables
-            current_date = datetime.datetime.now().strftime("%H:%M | %d/%m/%Y")
+            current_date = datetime.now().strftime("%H:%M | %d/%m/%Y")
             registered_date = (
                 user_data.get("registered_at", "Unknown")[:10]
                 if user_data.get("registered_at")
                 else "Unknown"
             )
-            # Get league display name for the template
+            # Get league display name
             leagues_cog = self.get_leagues_cog()
             league_display_name = target_league
             if leagues_cog:
@@ -413,43 +415,18 @@ class Profile(commands.Cog):
                         "original_league_name", target_league
                     )
 
-            template_vars = {
-                "app_name": Config.APP_NAME,
-                "nickname": user_data["nickname"],
-                "player_id": user_data["so2_id"],
-                "avatar_url": str(target_user.display_avatar.url),
-                "points": points,
-                "wins": wins,
-                "losses": losses,
-                "total_games": total_games,
-                "kills": kills,
-                "deaths": deaths,
-                "kd_ratio": kd_ratio,
-                "win_rate": win_rate,
-                "registered_date": registered_date,
-                "discord_id": target_user.id,
-                "current_date": current_date,
-                "recent_matches": formatted_matches,  # Add match history
-                "league_name": league_display_name,  # Add league info
-            }
-
-            # Render HTML with Jinja2
-            template_dir = os.path.dirname(
-                os.path.dirname(__file__)
-            )  # Go up from cogs/ to project root
-            env = Environment(loader=FileSystemLoader(template_dir))
-            template = env.get_template("templates/profile_template.html")
-            html_content = template.render(**template_vars)
-
-            # Render HTML to image
-            hti = Html2Image(output_path=tempfile.gettempdir())
-            image_path = os.path.join(
-                tempfile.gettempdir(), f"profile_{target_user.id}.png"
-            )
-            hti.screenshot(
-                html_str=html_content,
-                save_as=os.path.basename(image_path),
-                size=(740, 900),
+            # Generate profile image using the dedicated template generator
+            image_path = await self.profile_generator.generate_profile_image(
+                user_data=user_data,
+                target_user=target_user,
+                points=points,
+                wins=wins,
+                losses=losses,
+                total_games=total_games,
+                kills=kills,
+                deaths=deaths,
+                kd_ratio=kd_ratio,
+                win_rate=win_rate
             )
 
             # Upload image to Discord
@@ -459,6 +436,29 @@ class Profile(commands.Cog):
                 color=EMBED_COLOR,
             )
             embed.set_image(url="attachment://profile.png")
+            
+            # Add recent matches as embed fields
+            if formatted_matches:
+                matches_text = ""
+                for match in formatted_matches:
+                    match_line = (
+                        f"#{match['match_id']} • {match['result']} ┃ "
+                        f"{match['date']} ┃ {match['map']} • {match['final_score']}\n"
+                    )
+                    matches_text += match_line
+                
+                embed.add_field(
+                    name="Recent Matches",
+                    value=matches_text.strip(),
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="Recent Matches",
+                    value="No recent matches found",
+                    inline=False
+                )
+            
             embed.set_footer(text=f"Profile generated at {current_date}")
 
             await interaction.followup.send(embed=embed, file=file)

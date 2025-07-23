@@ -7,12 +7,11 @@ import json
 from openai import OpenAI
 import os
 import logging
-from difflib import SequenceMatcher
 from datetime import datetime
 from models.match import Match
-from models.user import User
 from models.stats import Stats
 from models.scoreboard_config import ScoreboardConfig
+from assets.template_generators.scoreboard_generator import ScoreboardResultsTemplateGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -92,26 +91,16 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
 
         # Check if user participated in the match
         user_discord_id = str(interaction.user.id)
-        ct_team_data = json.loads(match_data.get("ct_team", "[]"))
-        t_team_data = json.loads(match_data.get("t_team", "[]"))
-
-        # Handle both old format (just players array) and new format (with players and score)
-        if isinstance(ct_team_data, list):
-            # Old format - just an array of players
-            ct_team = ct_team_data
-        else:
-            # New format - object with players array and score
-            ct_team = ct_team_data.get("players", [])
-
-        if isinstance(t_team_data, list):
-            # Old format - just an array of players
-            t_team = t_team_data
-        else:
-            # New format - object with players array and score
-            t_team = t_team_data.get("players", [])
+        
+        # Get teams data from new structure
+        teams_data = json.loads(match_data.get("teams", "{}"))
+        team1_players = teams_data.get("team1", {}).get("players", [])
+        team2_players = teams_data.get("team2", {}).get("players", [])
+        
+        all_players = team1_players + team2_players
 
         user_participated = False
-        for player in ct_team + t_team:
+        for player in all_players:
             if player.get("discord_id") == user_discord_id:
                 user_participated = True
                 break
@@ -368,46 +357,31 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 )
                 return
 
-            # Get team data from database
-            ct_team_data = json.loads(match_data.get("ct_team", "[]"))
-            t_team_data = json.loads(match_data.get("t_team", "[]"))
-
-            # Handle both old format (just players array) and new format (with players and score)
-            if isinstance(ct_team_data, list):
-                # Old format - just an array of players
-                ct_team = ct_team_data
-            else:
-                # New format - object with players array and score
-                ct_team = ct_team_data.get("players", [])
-
-            if isinstance(t_team_data, list):
-                # Old format - just an array of players
-                t_team = t_team_data
-            else:
-                # New format - object with players array and score
-                t_team = t_team_data.get("players", [])
-
-            all_db_players = ct_team + t_team
+            # Get teams data from new structure
+            teams_data = json.loads(match_data.get("teams", "{}"))
+            team1_players = teams_data.get("team1", {}).get("players", [])
+            team2_players = teams_data.get("team2", {}).get("players", [])
+            
+            all_db_players = team1_players + team2_players
 
             # Get all extracted players from both teams (since teams switch at round 15)
-            teams_data = extracted_data.get("teams", {})
-            ct_data = teams_data.get("Counter-Terrorists", {})
-            t_data = teams_data.get("Terrorists", {})
-            all_extracted_players = ct_data.get("players", []) + t_data.get(
-                "players", []
+            teams_data_extracted = extracted_data.get("teams", {})
+            ct_data = teams_data_extracted.get("Counter-Terrorists", {})
+            t_data = teams_data_extracted.get("Terrorists", {})
+            all_extracted_players = ct_data.get("players", []) + t_data.get("players", [])
+
+            # Match players within their respective teams using FIXED team mapping
+            # RULE: team1 is always T side, team2 is always CT side in screenshots
+            matched_players, match_details = self.match_players_with_fixed_mapping(
+                team1_players, team2_players, ct_data, t_data
             )
 
-            # Match all database players against all extracted players (ignore team assignment)
-            matched_players, match_details = self.match_all_players(
-                all_extracted_players, [p["nickname"] for p in all_db_players]
-            )
-
-            # Validate that we matched at least 30% of the players
+            # Validate that we matched at least 40% of the players (increased from 30% for better accuracy)
             total_db_players = len(all_db_players)
             matched_count = len(matched_players)
             match_rate = matched_count / total_db_players if total_db_players > 0 else 0
 
-            if match_rate < 0.3:
+            if match_rate < 0.4:
                 # Release the submission lock since not enough players matched
                 try:
                     await Match.release_submission_lock(match_data["match_id"])
@@ -423,7 +397,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 # Create embed for player matching error
                 embed = discord.Embed(
                     title=f"{Config.ICONS['unsuccess']} Insufficient Player Matches",
-                    description=f"Found {matched_count}/{total_db_players} players ({match_rate:.1%}) - Need at least 30% to validate match.",
+                    description=f"Found {matched_count}/{total_db_players} players ({match_rate:.1%}) - Need at least 40% to validate match.",
                     color=Config.EMBED_COLORS["red"],  # Red color
                 )
 
@@ -462,87 +436,43 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
 
-            # Validate team structure - ensure teammates stay together
-            team_validation = self.validate_team_structure(
-                ct_team, t_team, extracted_data, matched_players
-            )
+            # Use FIXED team mapping: team1 = T side, team2 = CT side
+            screenshot_team1_data = teams_data_extracted.get("Terrorists", {})  # team1 = T
+            screenshot_team2_data = teams_data_extracted.get("Counter-Terrorists", {})  # team2 = CT
+            
+            logger.info("Using FIXED team mapping: Team1 = T side, Team2 = CT side")
 
-            if not team_validation["overall_valid"]:
-                # Release the submission lock since team validation failed
+            # Skip complex team validation since we use fixed mapping
+            # Just validate basic requirements (minimum players)
+            total_db_players = len(team1_players + team2_players)
+            matched_count = len(matched_players)
+            match_rate = matched_count / total_db_players if total_db_players > 0 else 0
+            
+            if match_rate < 0.4:
+                # Release the submission lock since not enough players matched
                 try:
                     await Match.release_submission_lock(match_data["match_id"])
-                    logger.info(
-                        f"Released submission lock for match {match_data['match_id']} due to team validation failure"
-                    )
+                    logger.info(f"Released submission lock for match {match_data['match_id']} due to insufficient matches ({match_rate:.1%})")
                 except Exception as lock_error:
                     logger.error(f"Failed to release submission lock: {lock_error}")
 
                 # Delete the screenshot since submission failed
                 await self._delete_screenshot_safely(screenshot_message)
 
-                # Create embed for team validation failure
-                error_embed = discord.Embed(
-                    title=f"{Config.ICONS['unsuccess']} Team Structure Validation Failed",
-                    description="The team structure in the screenshot doesn't match the expected team groupings.",
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Insufficient Player Matches",
+                    description=f"Only {matched_count}/{total_db_players} players matched ({match_rate:.1%}). Need at least 40%.",
                     color=Config.EMBED_COLORS["red"],
                 )
-
-                # Show what went wrong
-                match_summary = team_validation.get("match_summary", {})
-                if not match_summary.get("team_integrity_maintained", False):
-                    error_embed.add_field(
-                        name=f"{Config.ICONS['unsuccess']} Problem Detected",
-                        value="Players who should be on the same team are split across both CT and T sides.\n"
-                              "Teams can switch sides at round 15, but teammates must stay together.",
-                        inline=False,
-                    )
-
-                # Show expected team structure
-                expected_team1 = [p["nickname"] for p in ct_team]
-                expected_team2 = [p["nickname"] for p in t_team]
-                error_embed.add_field(
-                    name=f"{Config.ICONS['instructions']} Expected Team Structure",
-                    value=f"**Team 1:** {', '.join(expected_team1)}\n**Team 2:** {', '.join(expected_team2)}\n\n"
-                          f"*These players should be grouped together on the same side (CT or T)*",
-                    inline=False,
-                )
-
-                # Show actual distribution from screenshot
-                ct_side_names = []
-                t_side_names = []
-                
-                for assignment in team_validation["ct_assignments"] + team_validation["t_assignments"]:
-                    if assignment["screenshot_side"] == "ct_side":
-                        ct_side_names.append(assignment["db_name"])
-                    else:
-                        t_side_names.append(assignment["db_name"])
-
-                error_embed.add_field(
-                    name="📸 Actual Screenshot Distribution",
-                    value=f"**CT Side:** {', '.join(ct_side_names) if ct_side_names else 'None'}\n"
-                          f"**T Side:** {', '.join(t_side_names) if t_side_names else 'None'}",
-                    inline=False,
-                )
-
-                # Show team validation status
-                ct_status = "✅ Valid" if team_validation["ct_team_valid"] else "❌ Split"
-                t_status = "✅ Valid" if team_validation["t_team_valid"] else "❌ Split"
-                error_embed.add_field(
-                    name="🔍 Team Validation Status",
-                    value=f"**Team 1 ({', '.join(expected_team1[:2])}{'+...' if len(expected_team1) > 2 else ''}):** {ct_status}\n"
-                          f"**Team 2 ({', '.join(expected_team2[:2])}{'+...' if len(expected_team2) > 2 else ''}):** {t_status}",
-                    inline=False,
-                )
-
-                await interaction.followup.send(embed=error_embed, ephemeral=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
                 return
 
-            # Get scores from screenshot
-            ct_score = ct_data.get("score", 0)
-            t_score = t_data.get("score", 0)
+            # Get scores from the mapped screenshot teams
+            team1_score = screenshot_team1_data.get("score", 0)
+            team2_score = screenshot_team2_data.get("score", 0)
 
             # Validate score reasonableness
-            if ct_score < 0 or t_score < 0 or (ct_score == 0 and t_score == 0):
+            if team1_score < 0 or team2_score < 0 or (team1_score == 0 and team2_score == 0):
                 # Release the submission lock since scores are invalid
                 try:
                     await Match.release_submission_lock(match_data["match_id"])
@@ -556,13 +486,13 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 await self._delete_screenshot_safely(screenshot_message)
 
                 await interaction.followup.send(
-                    f"Invalid scores detected: CT({ct_score}) vs T({t_score})\n"
+                    f"Invalid scores detected: Team1({team1_score}) vs Team2({team2_score})\n"
                     f"Please verify the scoreboard is clear and shows the final scores.",
                     ephemeral=True,
                 )
                 return
 
-            if ct_score == t_score:
+            if team1_score == team2_score:
                 # Release the submission lock since match is a tie
                 try:
                     await Match.release_submission_lock(match_data["match_id"])
@@ -581,30 +511,128 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 )
                 return
 
-            # Determine winning team based on which side won more rounds
-            ct_team_won = ct_score > t_score  # True if CT side won in screenshot
+            # Determine winning team based on scores
+            team1_won = team1_score > team2_score
 
-            # Use GPT-4o's team assignments from screenshot (not original database teams)
-            # Create new team structures based on screenshot analysis
-            updated_ct_team = []
-            updated_t_team = []
+            # Process teams using the mapped data
+            updated_team1 = []
+            updated_team2 = []
 
-            # Process CT team players from screenshot
-            for screenshot_player in ct_data.get("players", []):
+            # Process team1 players from mapped screenshot data (T side)
+            for screenshot_player in screenshot_team1_data.get("players", []):
                 player_name = screenshot_player["name"]
-                # Find the corresponding database player
-                db_player = None
-                for p in all_db_players:
-                    if (
-                        p["nickname"] in matched_players
-                        and matched_players[p["nickname"]]["name"] == player_name
-                    ):
-                        db_player = p.copy()  # Make a copy to avoid modifying original
+                # Find the corresponding database player - check ALL players first
+                matched_db_player = None
+                for nickname, screenshot_data in matched_players.items():
+                    if screenshot_data["name"] == player_name:
+                        # Find this nickname in database
+                        for p in team1_players + team2_players:
+                            if p["nickname"] == nickname:
+                                matched_db_player = p
+                                break
                         break
 
-                if db_player:
+                # Only process if player belongs to team1
+                if matched_db_player and matched_db_player in team1_players:
+                    db_player = matched_db_player.copy()
                     # Use screenshot stats and database player info
                     db_player["kills"] = screenshot_player["kills"]
+                    db_player["assists"] = screenshot_player.get("assists", 0)
+                    db_player["deaths"] = screenshot_player["deaths"]
+
+                    # Calculate rating using bot formula: (KILLS + 0.5 × ASSISTS) / max(1, DEATHS)
+                    kills = db_player["kills"]
+                    assists = db_player["assists"]
+                    deaths = max(1, db_player["deaths"])  # Prevent division by zero
+                    db_player["rating"] = round((kills + 0.5 * assists) / deaths, 1)
+
+                    # Calculate points based on league type
+                    discord_id = int(db_player["discord_id"])
+                    match_league = match_data.get("league")
+                    default_league = await self.get_default_league_from_config()
+
+                    if match_league == default_league:
+                        # Default league: use level-based point calculation
+                        current_points = await self.get_player_current_points(
+                            discord_id, match_league
+                        )
+                        is_challenger = await self.check_challenger_status(
+                            discord_id, current_points
+                        )
+                        points_received = await self.calculate_level_based_points(
+                            discord_id, team1_won, match_league, is_challenger
+                        )
+                    else:
+                        # Non-default league: use fixed points
+                        points_received = 25 if team1_won else -25
+
+                    # Map points_received to points for the generator
+                    db_player["points"] = points_received
+                    db_player["points_received"] = points_received  # Keep for database
+
+                    updated_team1.append(db_player)
+                    logger.info(f"Processed Team1 player '{db_player['nickname']}' from T side - Rating: {db_player['rating']}, Points: {db_player['points']}")
+                elif matched_db_player and matched_db_player in team2_players:
+                    logger.warning(f"Team2 player '{matched_db_player['nickname']}' found in T side (should be in CT side)")
+
+            # Process team2 players from mapped screenshot data (CT side)
+            for screenshot_player in screenshot_team2_data.get("players", []):
+                player_name = screenshot_player["name"]
+                # Find the corresponding database player - check ALL players first
+                matched_db_player = None
+                for nickname, screenshot_data in matched_players.items():
+                    if screenshot_data["name"] == player_name:
+                        # Find this nickname in database
+                        for p in team1_players + team2_players:
+                            if p["nickname"] == nickname:
+                                matched_db_player = p
+                                break
+                        break
+
+                # Only process if player belongs to team2
+                if matched_db_player and matched_db_player in team2_players:
+                    db_player = matched_db_player.copy()
+                    # Use screenshot stats and database player info
+                    db_player["kills"] = screenshot_player["kills"]
+                    db_player["assists"] = screenshot_player.get("assists", 0)
+                    db_player["deaths"] = screenshot_player["deaths"]
+
+                    # Calculate rating using bot formula: (KILLS + 0.5 × ASSISTS) / max(1, DEATHS)
+                    kills = db_player["kills"]
+                    assists = db_player["assists"]
+                    deaths = max(1, db_player["deaths"])  # Prevent division by zero
+                    db_player["rating"] = round((kills + 0.5 * assists) / deaths, 1)
+
+                    # Calculate points based on league type
+                    discord_id = int(db_player["discord_id"])
+                    match_league = match_data.get("league")
+                    default_league = await self.get_default_league_from_config()
+
+                    if match_league == default_league:
+                        # Default league: use level-based point calculation
+                        current_points = await self.get_player_current_points(
+                            discord_id, match_league
+                        )
+                        is_challenger = await self.check_challenger_status(
+                            discord_id, current_points
+                        )
+                        team2_won = not team1_won
+                        points_received = await self.calculate_level_based_points(
+                            discord_id, team2_won, match_league, is_challenger
+                        )
+                    else:
+                        # Non-default league: use fixed points
+                        team2_won = not team1_won
+                        points_received = 25 if team2_won else -25
+
+                    # Map points_received to points for the generator
+                    db_player["points"] = points_received
+                    db_player["points_received"] = points_received  # Keep for database
+
+                    updated_team2.append(db_player)
+                    logger.info(f"Processed Team2 player '{db_player['nickname']}' from CT side - Rating: {db_player['rating']}, Points: {db_player['points']}")
+                elif matched_db_player and matched_db_player in team1_players:
+                    logger.warning(f"Team1 player '{matched_db_player['nickname']}' found in CT side (should be in T side)")
                     db_player["assists"] = screenshot_player.get("assists", 0)
                     db_player["deaths"] = screenshot_player["deaths"]
 
@@ -621,117 +649,92 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                         is_challenger = await self.check_challenger_status(
                             discord_id, current_points
                         )
-                        ct_won = ct_team_won
+                        team2_won = not team1_won
                         db_player[
                             "points_received"
                         ] = await self.calculate_level_based_points(
-                            discord_id, ct_won, match_league, is_challenger
+                            discord_id, team2_won, match_league, is_challenger
                         )
                     else:
                         # Non-default league: use fixed points
-                        ct_won = ct_team_won
-                        db_player["points_received"] = 25 if ct_won else -25
+                        team2_won = not team1_won
+                        db_player["points_received"] = 25 if team2_won else -25
 
-                    updated_ct_team.append(db_player)
+                    updated_team2.append(db_player)
 
-            # Process T team players from screenshot
-            for screenshot_player in t_data.get("players", []):
-                player_name = screenshot_player["name"]
-                # Find the corresponding database player
-                db_player = None
-                for p in all_db_players:
-                    if (
-                        p["nickname"] in matched_players
-                        and matched_players[p["nickname"]]["name"] == player_name
-                    ):
-                        db_player = p.copy()  # Make a copy to avoid modifying original
-                        break
-
-                if db_player:
-                    # Use screenshot stats and database player info
-                    db_player["kills"] = screenshot_player["kills"]
-                    db_player["assists"] = screenshot_player.get("assists", 0)
-                    db_player["deaths"] = screenshot_player["deaths"]
-
-                    # Calculate points based on league type
-                    discord_id = int(db_player["discord_id"])
-                    match_league = match_data.get("league")
-                    default_league = await self.get_default_league_from_config()
-
-                    if match_league == default_league:
-                        # Default league: use level-based point calculation
-                        current_points = await self.get_player_current_points(
-                            discord_id, match_league
-                        )
-                        is_challenger = await self.check_challenger_status(
-                            discord_id, current_points
-                        )
-                        t_won = not ct_team_won
-                        db_player[
-                            "points_received"
-                        ] = await self.calculate_level_based_points(
-                            discord_id, t_won, match_league, is_challenger
-                        )
-                    else:
-                        # Non-default league: use fixed points
-                        t_won = not ct_team_won
-                        db_player["points_received"] = 25 if t_won else -25
-
-                    updated_t_team.append(db_player)
-
-            # Add missing players with default stats to maintain team balance
-            # Find players who weren't matched to either team in screenshot
-            matched_screenshot_players = {
-                p["name"]
-                for p in ct_data.get("players", []) + t_data.get("players", [])
-            }
+            # Add missing players with default stats to their correct teams
+            # Find players who weren't processed into either team
+            processed_players = {p["discord_id"] for p in updated_team1 + updated_team2}
 
             for db_player in all_db_players:
-                player_matched = False
-                if db_player["nickname"] in matched_players:
-                    matched_name = matched_players[db_player["nickname"]]["name"]
-                    if matched_name in matched_screenshot_players:
-                        player_matched = True
-
-                if not player_matched:
-                    # Add to the team that has fewer players to balance teams
+                if db_player["discord_id"] not in processed_players:
+                    # Create player with default stats
                     unmatched_player = db_player.copy()
                     unmatched_player["kills"] = 0
                     unmatched_player["assists"] = 0
                     unmatched_player["deaths"] = 13
-                    unmatched_player[
-                        "points_received"
-                    ] = -10  # Default penalty for missing players
+                    
+                    # Calculate rating using bot formula: (KILLS + 0.5 × ASSISTS) / max(1, DEATHS)
+                    kills = unmatched_player["kills"]
+                    assists = unmatched_player["assists"]
+                    deaths = max(1, unmatched_player["deaths"])  # Prevent division by zero
+                    unmatched_player["rating"] = round((kills + 0.5 * assists) / deaths, 1)
+                    
+                    # Default penalty for missing players
+                    points_received = -10
+                    unmatched_player["points"] = points_received  # For generator
+                    unmatched_player["points_received"] = points_received  # For database
 
-                    if len(updated_ct_team) <= len(updated_t_team):
-                        updated_ct_team.append(unmatched_player)
+                    # Add to correct team based on database team assignment
+                    if db_player in team1_players:
+                        updated_team1.append(unmatched_player)
+                        logger.info(f"Added missing Team1 player '{db_player['nickname']}' with default stats (0K/0A/13D, Rating: {unmatched_player['rating']}, Points: {unmatched_player['points']})")
+                    elif db_player in team2_players:
+                        updated_team2.append(unmatched_player)
+                        logger.info(f"Added missing Team2 player '{db_player['nickname']}' with default stats (0K/0A/13D, Rating: {unmatched_player['rating']}, Points: {unmatched_player['points']})")
                     else:
-                        updated_t_team.append(unmatched_player)
-
-                    logger.info(
-                        f"Added missing player '{db_player['nickname']}' with default stats"
-                    )
+                        logger.warning(f"Could not determine team for missing player '{db_player['nickname']}'")
 
             # Update database
+            # Create copies of teams without rating for database storage
+            team1_for_db = []
+            team2_for_db = []
+            
+            for player in updated_team1:
+                db_player = player.copy()
+                if "rating" in db_player:
+                    del db_player["rating"]  # Remove rating from database copy
+                if "points" in db_player:
+                    del db_player["points"]   # Remove generator points from database copy
+                team1_for_db.append(db_player)
+            
+            for player in updated_team2:
+                db_player = player.copy()
+                if "rating" in db_player:
+                    del db_player["rating"]  # Remove rating from database copy
+                if "points" in db_player:
+                    del db_player["points"]   # Remove generator points from database copy
+                team2_for_db.append(db_player)
+            
             await Match.complete_submission(
                 match_data["match_id"],
-                updated_ct_team,
-                updated_t_team,
-                ct_score,
-                t_score,
+                team1_for_db,
+                team2_for_db,
+                team1_score,
+                team2_score,
             )
 
             # Update user statistics
-            await self.update_user_stats(updated_ct_team + updated_t_team, match_data)
+            await self.update_user_stats(updated_team1 + updated_team2, match_data)
 
             # Send final results image to target channel
             await self.send_final_results_image(
                 interaction,
                 target_channel_id,
-                updated_ct_team,
-                updated_t_team,
-                ct_score,
-                t_score,
+                updated_team1,
+                updated_team2,
+                team1_score,
+                team2_score,
                 match_data,
             )
 
@@ -753,8 +756,8 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             success_embed.add_field(
                 name=f"{Config.ICONS['stats']} Match Results",
                 value=f"**Matched:** {matched_count}/{total_db_players} players ({match_rate:.1%})\n"
-                f"**CT Team:** {len(updated_ct_team)} players\n"
-                f"**T Team:** {len(updated_t_team)} players",
+                f"**Team 1:** {len(updated_team1)} players\n"
+                f"**Team 2:** {len(updated_team2)} players",
                 inline=True,
             )
             success_embed.add_field(
@@ -793,52 +796,79 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 "Error processing match results. Please try again.", ephemeral=True
             )
 
-    def match_all_players(self, extracted_players, db_player_names):
-        """Match all database players against all extracted players regardless of team"""
+    def match_players_with_fixed_mapping(self, team1_players, team2_players, ct_data, t_data):
+        """
+        Match players using FIXED team mapping: team1 = T side, team2 = CT side
+        This eliminates the need for complex team mapping logic.
+        """
+        matched = {}
+        match_details = []
+        
+        logger.info("Starting player matching with FIXED mapping...")
+        logger.info("RULE: Team1 = T side, Team2 = CT side")
+        logger.info(f"Team1 players: {[p['nickname'] for p in team1_players]}")
+        logger.info(f"Team2 players: {[p['nickname'] for p in team2_players]}")
+        
+        # Match team1 players with T side
+        team1_matched, team1_details = self.match_team_players(
+            team1_players, t_data.get("players", []), "Team1 (T side)"
+        )
+        matched.update(team1_matched)
+        match_details.extend(team1_details)
+        
+        # Match team2 players with CT side
+        team2_matched, team2_details = self.match_team_players(
+            team2_players, ct_data.get("players", []), "Team2 (CT side)"
+        )
+        matched.update(team2_matched)
+        match_details.extend(team2_details)
+        
+        logger.info(f"Fixed mapping complete:")
+        logger.info(f"  - Team1 (T) matched: {len(team1_matched)}/{len(team1_players)}")
+        logger.info(f"  - Team2 (CT) matched: {len(team2_matched)}/{len(team2_players)}")
+        logger.info(f"  - Total matched: {len(matched)}/{len(team1_players + team2_players)}")
+        
+        return matched, match_details
+
+    def match_team_players(self, db_team_players, screenshot_team_players, team_name):
+        """
+        Match players from a specific database team with players from the corresponding screenshot team
+        """
         matched = {}
         used_extracted = set()
         match_details = []
+        
+        db_player_names = [p["nickname"] for p in db_team_players]
+        
+        logger.info(f"Matching {team_name}:")
+        logger.info(f"  Database players: {db_player_names}")
+        logger.info(f"  Screenshot players: {[p['name'] for p in screenshot_team_players]}")
 
+        # Step 1: Find exact substring matches (DB name must be contained in screenshot name)
         for db_player in db_player_names:
-            best_match = None
-            best_ratio = 0
-            all_ratios = []
-
-            for extracted_player in extracted_players:
+            for extracted_player in screenshot_team_players:
                 if extracted_player["name"] in used_extracted:
                     continue
 
-                # Use sequence matcher for fuzzy matching
-                ratio = SequenceMatcher(
-                    None, db_player.lower(), extracted_player["name"].lower()
-                ).ratio()
+                # Check if DB player name is a substring of screenshot name (case insensitive)
+                db_lower = db_player.lower()
+                screenshot_lower = extracted_player["name"].lower()
+                
+                if db_lower in screenshot_lower:
+                    matched[db_player] = extracted_player
+                    used_extracted.add(extracted_player["name"])
+                    match_details.append(
+                        f"✅ [{team_name}] '{db_player}' → '{extracted_player['name']}' [SUBSTRING MATCH]"
+                    )
+                    break
 
-                all_ratios.append((extracted_player["name"], ratio))
-
-                if ratio > best_ratio and ratio > 0.4:  # 40% similarity threshold
-                    best_match = extracted_player
-                    best_ratio = ratio
-
-            if best_match:
-                matched[db_player] = best_match
-                used_extracted.add(best_match["name"])
+        # Log unmatched players (will receive default stats)
+        for db_player in db_player_names:
+            if db_player not in matched:
+                available_names = [p["name"] for p in screenshot_team_players if p["name"] not in used_extracted]
                 match_details.append(
-                    f"✅ '{db_player}' → '{best_match['name']}' ({best_ratio:.2f})"
+                    f"❌ [{team_name}] '{db_player}' → no substring match found (available: {available_names}) [WILL USE DEFAULT STATS]"
                 )
-            else:
-                # Find closest match for debugging
-                if all_ratios:
-                    closest = max(all_ratios, key=lambda x: x[1])
-                    match_details.append(
-                        f"❌ '{db_player}' → closest: '{closest[0]}' ({closest[1]:.2f})"
-                    )
-                else:
-                    match_details.append(
-                        f"❌ '{db_player}' → no extracted players found"
-                    )
-
-        # Log matching details for debugging
-        logger.info(f"Player matching results:\n" + "\n".join(match_details))
 
         return matched, match_details
 
@@ -898,75 +928,49 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
         self,
         interaction,
         target_channel_id,
-        ct_team,
-        t_team,
-        ct_score,
-        t_score,
+        team1,
+        team2,
+        team1_score,
+        team2_score,
         match_data,
     ):
         """Generate and send final results as an image to target channel"""
         try:
-            import os
-            import tempfile
-            from jinja2 import Environment, FileSystemLoader
-            from html2image import Html2Image
-            from datetime import datetime
-
             target_channel = interaction.guild.get_channel(target_channel_id)
             if not target_channel:
                 logger.error(f"Target channel {target_channel_id} not found")
                 return
 
-            # Prepare template variables
-            ct_won = ct_score > t_score
-            winner = "Counter-Terrorists" if ct_won else "Terrorists"
-            current_date = datetime.now().strftime("%H:%M | %d/%m/%Y")
-
             # Ensure all players have assists field (for backward compatibility)
-            for player in ct_team + t_team:
+            for player in team1 + team2:
                 if "assists" not in player:
                     player["assists"] = 0
 
-            template_vars = {
-                "app_name": Config.APP_NAME,
-                "match_id": match_data["match_id"],
-                "map_name": match_data.get("map", "Unknown"),
-                "ct_score": ct_score,
-                "t_score": t_score,
-                "ct_team": ct_team,
-                "t_team": t_team,
-                "ct_won": ct_won,
-                "winner": winner,
-                "current_date": current_date,
-            }
+            # Create scoreboard generator instance
+            scoreboard_generator = ScoreboardResultsTemplateGenerator()
 
-            # Render HTML with Jinja2
-            template_dir = os.path.dirname(
-                os.path.dirname(__file__)
-            )  # Go up from cogs/ to project root
-            env = Environment(loader=FileSystemLoader(template_dir))
-            template = env.get_template("templates/scoreboard_results_template.html")
-            html_content = template.render(**template_vars)
+            # Generate scoreboard results image using the dedicated template generator
+            image_path = await scoreboard_generator.generate_scoreboard_image(
+                bot=self.bot,
+                match_data=match_data,
+                team1=team1,
+                team2=team2,
+                team1_score=team1_score,
+                team2_score=team2_score
+            )
 
-            # Render HTML to image
-            hti = Html2Image(output_path=tempfile.gettempdir())
-            image_path = os.path.join(
-                tempfile.gettempdir(),
-                f"scoreboard_results_{match_data['match_id']}.png",
-            )
-            hti.screenshot(
-                html_str=html_content,
-                save_as=os.path.basename(image_path),
-                size=(840, 1000),  # Adjusted size for scoreboard results
-            )
+            if not image_path or not os.path.exists(image_path):
+                raise Exception("Failed to generate scoreboard results image")
 
             # Upload image to Discord
             file = discord.File(image_path, filename="scoreboard_results.png")
             embed = discord.Embed(
                 title=f"{Config.ICONS['success_playcolor']} Match #{match_data['match_id']} Results",
-                color=0xB2FA19,
+                color=Config.MAIN_COLOR,
             )
             embed.set_image(url="attachment://scoreboard_results.png")
+            
+            current_date = datetime.now().strftime("%H:%M | %d/%m/%Y")
             embed.set_footer(text=f"Results processed at {current_date}")
 
             await target_channel.send(embed=embed, file=file)
@@ -980,13 +984,22 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
         except Exception as e:
             logger.error(f"Error sending final results image: {e}")
             # Fallback to text message if image generation fails
-            winner = "Counter-Terrorists" if ct_score > t_score else "Terrorists"
+            teams_data = match_data.get("teams", {})
+            if isinstance(teams_data, str):
+                teams_data = json.loads(teams_data)
+            
+            team1_captain = teams_data.get('team1', {}).get('captain', 'Unknown')
+            team2_captain = teams_data.get('team2', {}).get('captain', 'Unknown')
+            winner = f"Team {team1_captain}" if team1_score > team2_score else f"Team {team2_captain}"
             fallback_msg = f"{Config.ICONS['success']} **Match {match_data['match_id']} Results**\n"
             fallback_msg += f"**Map:** {match_data.get('map', 'Unknown')}\n"
-            fallback_msg += f"**Score:** {ct_score} - {t_score}\n"
+            fallback_msg += f"**Score:** {team1_score} - {team2_score}\n"
             fallback_msg += f"**Winner:** {winner}\n\n"
             fallback_msg += "*(Image generation failed - showing text summary)*"
-            await target_channel.send(fallback_msg)
+            
+            target_channel = interaction.guild.get_channel(target_channel_id)
+            if target_channel:
+                await target_channel.send(fallback_msg)
 
     async def get_player_current_points(self, discord_id, league_name):
         """Get current points for a player from the specified league table"""
@@ -1036,95 +1049,6 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             logger.error(f"Error checking challenger status for {discord_id}: {e}")
             return False
 
-    def validate_team_structure(self, ct_team, t_team, extracted_data, matched_players):
-        """
-        Validate that players who were on the same team in the database
-        are still grouped together in the screenshot, regardless of which side (CT/T) they're on
-        """
-        # Get screenshot team assignments
-        teams_data = extracted_data.get("teams", {})
-        ct_data = teams_data.get("Counter-Terrorists", {})
-        t_data = teams_data.get("Terrorists", {})
-
-        # Create mappings of player names to their screenshot teams
-        screenshot_team_assignments = {}
-
-        # Map CT side players in screenshot
-        for player in ct_data.get("players", []):
-            screenshot_team_assignments[player["name"]] = "ct_side"
-
-        # Map T side players in screenshot
-        for player in t_data.get("players", []):
-            screenshot_team_assignments[player["name"]] = "t_side"
-
-        def check_team_grouping(db_team, team_name):
-            """Check if all players from a database team are grouped together on the same side in screenshot"""
-            screenshot_sides = set()
-            matched_players_in_team = []
-
-            for db_player in db_team:
-                if db_player["nickname"] in matched_players:
-                    screenshot_name = matched_players[db_player["nickname"]]["name"]
-                    if screenshot_name in screenshot_team_assignments:
-                        screenshot_side = screenshot_team_assignments[screenshot_name]
-                        screenshot_sides.add(screenshot_side)
-                        matched_players_in_team.append({
-                            "db_name": db_player["nickname"],
-                            "screenshot_name": screenshot_name,
-                            "screenshot_side": screenshot_side,
-                        })
-
-            # Key validation: All matched players from the same database team 
-            # must be on the same side in screenshot (either all CT or all T)
-            if len(matched_players_in_team) > 1 and len(screenshot_sides) > 1:
-                return False, matched_players_in_team  # Team is split across both sides - INVALID
-
-            return True, matched_players_in_team
-
-        # Check both database teams separately
-        ct_valid, ct_assignments = check_team_grouping(ct_team, "CT")
-        t_valid, t_assignments = check_team_grouping(t_team, "T")
-
-        # Also verify we have players on both sides of the screenshot
-        all_assignments = ct_assignments + t_assignments
-        ct_side_players = [p for p in all_assignments if p["screenshot_side"] == "ct_side"]
-        t_side_players = [p for p in all_assignments if p["screenshot_side"] == "t_side"]
-        
-        has_both_sides = len(ct_side_players) > 0 and len(t_side_players) > 0
-        total_matched = len(all_assignments)
-        total_expected = len(ct_team) + len(t_team)
-
-        validation_details = {
-            "ct_team_valid": ct_valid,
-            "t_team_valid": t_valid,
-            "ct_assignments": ct_assignments,
-            "t_assignments": t_assignments,
-            "overall_valid": ct_valid and t_valid and has_both_sides,
-            "match_summary": {
-                "total_matched": total_matched,
-                "total_expected": total_expected,
-                "ct_side_count": len(ct_side_players),
-                "t_side_count": len(t_side_players),
-                "has_both_sides": has_both_sides,
-                "team_integrity_maintained": ct_valid and t_valid,
-            }
-        }
-
-        return validation_details
-
-    async def _delete_screenshot_safely(self, screenshot_message):
-        """Helper method to safely delete screenshot messages"""
-        if screenshot_message:
-            try:
-                await screenshot_message.delete()
-                logger.info("Deleted screenshot message for failed submission")
-            except discord.NotFound:
-                pass  # Message already deleted
-            except discord.Forbidden:
-                logger.warning("No permission to delete screenshot message")
-            except Exception as e:
-                logger.error(f"Error deleting screenshot message: {e}")
-
 
 class SubmitScoreboardView(discord.ui.View):
     def __init__(self, target_channel_id):
@@ -1167,100 +1091,127 @@ class SubmitScoreboardView(discord.ui.View):
 class Scoreboard(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.scoreboard_generator = ScoreboardResultsTemplateGenerator()
 
     async def cog_load(self):
         """Called when the cog is loaded - recreate persistent views"""
-        await self.recreate_persistent_views()
+        # Try to recreate views, but don't block bot startup if it fails
+        try:
+            await self.recreate_persistent_views()
+        except Exception as e:
+            logger.warning(f"Failed to recreate scoreboard views on startup, will try again later: {e}")
+            # Schedule retry after bot is fully loaded
+            self.bot.loop.create_task(self._retry_recreate_views())
+
+    async def _retry_recreate_views(self):
+        """Retry recreating persistent views after a delay"""
+        import asyncio
+        await asyncio.sleep(30)  # Wait 30 seconds before retry
+        try:
+            logger.info("Retrying to recreate scoreboard persistent views...")
+            await self.recreate_persistent_views()
+        except Exception as e:
+            logger.error(f"Retry failed for recreating scoreboard views: {e}")
 
     async def recreate_persistent_views(self):
         """Recreate persistent views from database configurations"""
         try:
             configs = await ScoreboardConfig.get_all_configs()
+            if not configs:
+                logger.info("No scoreboard configurations found")
+                return
 
             for config in configs:
-                guild_id = config["guild_id"]
-                submission_channel_id = config["submission_channel_id"]
-                results_channel_id = config["results_channel_id"]
-                message_id = config.get("message_id")
+                try:
+                    guild_id = config["guild_id"]
+                    submission_channel_id = config["submission_channel_id"]
+                    results_channel_id = config["results_channel_id"]
+                    message_id = config.get("message_id")
 
-                guild = self.bot.get_guild(guild_id)
-                if not guild:
-                    logger.warning(
-                        f"Guild {guild_id} not found, skipping scoreboard config"
-                    )
-                    continue
-
-                submission_channel = guild.get_channel(submission_channel_id)
-                if not submission_channel:
-                    logger.warning(
-                        f"Submission channel {submission_channel_id} not found, skipping"
-                    )
-                    continue
-
-                # Create the persistent view
-                view = SubmitScoreboardView(results_channel_id)
-
-                # If we have a message_id, try to get the existing message
-                if message_id:
-                    try:
-                        message = await submission_channel.fetch_message(message_id)
-                        # Update the view on the existing message
-                        await message.edit(view=view)
-                        logger.info(
-                            f"Recreated persistent scoreboard view for guild {guild_id} on existing message {message_id}"
+                    guild = self.bot.get_guild(guild_id)
+                    if not guild:
+                        logger.warning(
+                            f"Guild {guild_id} not found, skipping scoreboard config"
                         )
                         continue
-                    except discord.NotFound:
+
+                    submission_channel = guild.get_channel(submission_channel_id)
+                    if not submission_channel:
                         logger.warning(
-                            f"Scoreboard message {message_id} not found, will create new one"
+                            f"Submission channel {submission_channel_id} not found, skipping"
                         )
+                        continue
+
+                    # Create the persistent view
+                    view = SubmitScoreboardView(results_channel_id)
+
+                    # If we have a message_id, try to get the existing message
+                    if message_id:
+                        try:
+                            message = await submission_channel.fetch_message(message_id)
+                            # Update the view on the existing message
+                            await message.edit(view=view)
+                            logger.info(
+                                f"Recreated persistent scoreboard view for guild {guild_id} on existing message {message_id}"
+                            )
+                            continue
+                        except discord.NotFound:
+                            logger.warning(
+                                f"Scoreboard message {message_id} not found, will create new one"
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Error fetching scoreboard message {message_id}: {e}"
+                            )
+
+                    # Create new message with embed and view
+                    results_channel = guild.get_channel(results_channel_id)
+                    results_channel_mention = (
+                        results_channel.mention
+                        if results_channel
+                        else f"<#{results_channel_id}>"
+                    )
+
+                    embed = discord.Embed(
+                        title=f"{Config.ICONS['stats']} Scoreboard Submission",
+                        description=f"Scoreboard results will be posted to {results_channel_mention}",
+                        color=Config.MAIN_COLOR,
+                    )
+                    embed.add_field(
+                        name="How to submit:",
+                        value="1. Click the button below\n2. Enter your match ID\n3. Upload the scoreboard screenshot\n4. Wait for processing",
+                        inline=False,
+                    )
+                    embed.set_footer(text="Only match participants can submit results")
+
+                    try:
+                        new_message = await submission_channel.send(embed=embed, view=view)
+
+                        # Update database with new message_id
+                        await ScoreboardConfig.set_config(
+                            guild_id,
+                            submission_channel_id,
+                            results_channel_id,
+                            new_message.id,
+                        )
+
+                        logger.info(
+                            f"Created new persistent scoreboard view for guild {guild_id} with message {new_message.id}"
+                        )
+
                     except Exception as e:
                         logger.error(
-                            f"Error fetching scoreboard message {message_id}: {e}"
+                            f"Error creating scoreboard message for guild {guild_id}: {e}"
                         )
 
-                # Create new message with embed and view
-                results_channel = guild.get_channel(results_channel_id)
-                results_channel_mention = (
-                    results_channel.mention
-                    if results_channel
-                    else f"<#{results_channel_id}>"
-                )
-
-                embed = discord.Embed(
-                    title=f"{Config.ICONS['stats']} Scoreboard Submission",
-                    description=f"Scoreboard results will be posted to {results_channel_mention}",
-                    color=0xB2FA19,
-                )
-                embed.add_field(
-                    name="How to submit:",
-                    value="1. Click the button below\n2. Enter your match ID\n3. Upload the scoreboard screenshot\n4. Wait for processing",
-                    inline=False,
-                )
-                embed.set_footer(text="Only match participants can submit results")
-
-                try:
-                    new_message = await submission_channel.send(embed=embed, view=view)
-
-                    # Update database with new message_id
-                    await ScoreboardConfig.set_config(
-                        guild_id,
-                        submission_channel_id,
-                        results_channel_id,
-                        new_message.id,
-                    )
-
-                    logger.info(
-                        f"Created new persistent scoreboard view for guild {guild_id} with message {new_message.id}"
-                    )
-
-                except Exception as e:
-                    logger.error(
-                        f"Error creating scoreboard message for guild {guild_id}: {e}"
-                    )
+                except Exception as config_error:
+                    logger.error(f"Error processing scoreboard config: {config_error}")
+                    continue  # Continue with next config
 
         except Exception as e:
-            logger.error(f"Error recreating persistent scoreboard views: {e}")
+            logger.error(f"Error recreating persistent scoreboard views (will retry later): {e}")
+            # Don't let database connection errors prevent the bot from starting
+            # The views can be recreated manually later with the set_scoreboard_channel command
 
     @app_commands.command(
         name="set_scoreboard_channel",
@@ -1293,7 +1244,7 @@ class Scoreboard(commands.Cog):
             embed = discord.Embed(
                 title=f"{Config.ICONS['stats']} Scoreboard Submission",
                 description=f"Scoreboard results will be posted to {target_channel.mention}",
-                color=0xB2FA19,
+                color=Config.MAIN_COLOR,
             )
             embed.add_field(
                 name="How to submit:",

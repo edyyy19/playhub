@@ -242,6 +242,8 @@ class Matchmaking(commands.Cog):
                                "Connect to the **Lobby** voice channel to join the queue!\n\n",
                     color=Config.EMBED_COLORS["waiting"],
                 )
+                if Config.LOBBIES_WAITING_BANNER:
+                    embed.set_image(url=Config.LOBBIES_WAITING_BANNER)
                 msg = await text.send(embed=embed)
 
                 self.active_lobbies[category.id] = {
@@ -251,12 +253,12 @@ class Matchmaking(commands.Cog):
                     "phase": 1,
                     "players": set(),
                     "message": msg,
-                    "ct_team": [],
-                    "t_team": [],
+                    "team1": [],
+                    "team2": [],
                     "map_pool": [map_info["name"] for map_info in Config.MAP_POOL],
                     "match_id": None,
-                    "ct_voice": None,
-                    "t_voice": None,
+                    "team1_voice": None,
+                    "team2_voice": None,
                     "lobby_number": lobby_number,
                     "required_role_id": lobby_role.id,
                     "required_role_name": lobby_role_name,
@@ -422,7 +424,9 @@ class Matchmaking(commands.Cog):
 
         async def on_timeout(self):
             # Only trigger draft timeout if phase is 2 (drafting) and captain hasn't changed
-            if self.lobby["phase"] == 2 and self.lobby.get("next_pick"):
+            # Also check if this view is still the current active one
+            if (self.lobby["phase"] == 2 and self.lobby.get("next_pick") and 
+                self.lobby.get("current_view") == self):
                 # Double-check that this view is still the active one
                 try:
                     await self.cog.handle_timeout(
@@ -474,7 +478,9 @@ class Matchmaking(commands.Cog):
 
         async def on_timeout(self):
             # Only trigger veto timeout if phase is 3 (veto) and captain hasn't changed
-            if self.lobby["phase"] == 3 and self.lobby.get("veto_turn"):
+            # Also check if this view is still the current active one
+            if (self.lobby["phase"] == 3 and self.lobby.get("veto_turn") and 
+                self.lobby.get("current_view") == self):
                 # Double-check that this view is still the active one
                 try:
                     await self.cog.handle_timeout(self.lobby, reason="Map veto timeout")
@@ -491,10 +497,10 @@ class Matchmaking(commands.Cog):
             self.lobby = lobby
             self.cog = cog
             # Store team data at creation time to prevent data loss after lobby reset
-            self.ct_team = lobby["ct_team"].copy()
-            self.t_team = lobby["t_team"].copy()
+            self.team1 = lobby["team1"].copy()
+            self.team2 = lobby["team2"].copy()
             # Randomly select the host when the view is created
-            all_players = self.ct_team + self.t_team
+            all_players = self.team1 + self.team2
             self.host_player = random.choice(all_players) if all_players else None
             self.host_data = None  # Will be populated when first accessed
 
@@ -506,7 +512,7 @@ class Matchmaking(commands.Cog):
 
             try:
                 # Check if the user who clicked is in one of the teams
-                all_players = self.ct_team + self.t_team
+                all_players = self.team1 + self.team2
 
                 if interaction.user not in all_players:
                     await interaction.followup.send(
@@ -569,6 +575,20 @@ class Matchmaking(commands.Cog):
 
     def get_veto_view(self, lobby):
         return Matchmaking.VetoView(lobby, self)
+
+    def stop_current_view(self, lobby):
+        """Stop the current active view to prevent timeout issues"""
+        current_view = lobby.get("current_view")
+        if current_view and not current_view.is_finished():
+            current_view.stop()
+        lobby["current_view"] = None
+
+    def set_current_view(self, lobby, view):
+        """Set the current active view and store it in lobby"""
+        # Stop any existing view first
+        self.stop_current_view(lobby)
+        lobby["current_view"] = view
+        return view
 
     # --- TIMEOUT & ERROR HANDLING ---
 
@@ -712,8 +732,8 @@ class Matchmaking(commands.Cog):
         veto_message_to_delete = lobby.get("veto_message") if was_in_veto_phase else None
         
         lobby["phase"] = 1
-        lobby["ct_team"] = []
-        lobby["t_team"] = []
+        lobby["team1"] = []
+        lobby["team2"] = []
         lobby["available_players"] = []
         lobby["next_pick"] = None
         lobby["veto_turn"] = None
@@ -1003,6 +1023,8 @@ class Matchmaking(commands.Cog):
                                "Connect to the **Lobby** voice channel to join the queue!\n\n",
                     color=Config.EMBED_COLORS["waiting"],
                 )
+                if Config.LOBBIES_WAITING_BANNER:
+                    embed.set_image(url=Config.LOBBIES_WAITING_BANNER)
 
                 # Check if text channel still exists and we have permissions
                 if (
@@ -1090,10 +1112,10 @@ class Matchmaking(commands.Cog):
             lobby
         )
 
-        ct_captain, t_captain = captains[0], captains[1]
+        team1_captain, team2_captain = captains[0], captains[1]
 
-        lobby["ct_team"] = [ct_captain]
-        lobby["t_team"] = [t_captain]
+        lobby["team1"] = [team1_captain]
+        lobby["team2"] = [team2_captain]
         lobby["available_players"] = [p for p in players if p not in captains]
 
         # Auto-assign party members to their leader's teams
@@ -1103,27 +1125,27 @@ class Matchmaking(commands.Cog):
         # Let the draft process handle team balancing through multiple picks
         if len(lobby["available_players"]) == 1:
             last_player = lobby["available_players"][0]
-            ct_size = len(lobby["ct_team"])
-            t_size = len(lobby["t_team"])
+            team1_size = len(lobby["team1"])
+            team2_size = len(lobby["team2"])
 
-            if ct_size <= t_size:
-                lobby["ct_team"].append(last_player)
+            if team1_size <= team2_size:
+                lobby["team1"].append(last_player)
             else:
-                lobby["t_team"].append(last_player)
+                lobby["team2"].append(last_player)
             lobby["available_players"].remove(last_player)
 
         # Determine next pick based on team balance after party assignments
         lobby["next_pick"] = await self.determine_next_pick_balanced(lobby)
 
         # --- New Draft UI ---
-        ct_lines = await self.format_team_list(
-            lobby["ct_team"], lobby.get("league_table")
+        team1_lines = await self.format_team_list(
+            lobby["team1"], lobby.get("league_table")
         )
-        t_lines = await self.format_team_list(
-            lobby["t_team"], lobby.get("league_table")
+        team2_lines = await self.format_team_list(
+            lobby["team2"], lobby.get("league_table")
         )
         desc = (
-            f"**Counter-Terrorists**\n{ct_lines}\n\n" f"**Terrorists**\n{t_lines}\n\n"
+            f"**Team 1**\n{team1_lines}\n\n" f"**Team 2**\n{team2_lines}\n\n"
         )
 
         if lobby["available_players"]:
@@ -1144,7 +1166,9 @@ class Matchmaking(commands.Cog):
 
         if lobby["available_players"]:
             view = await self.get_draft_view(lobby)
+            view = self.set_current_view(lobby, view)
         else:
+            self.stop_current_view(lobby)
             view = None
 
         await lobby["message"].edit(embed=embed, view=view)
@@ -1155,23 +1179,23 @@ class Matchmaking(commands.Cog):
     async def handle_draft_pick(self, lobby, picked_member):
         async with self.lobby_locks[lobby["category"].guild.id]:
             # Add picked player to the correct team
-            if lobby["next_pick"] == lobby["ct_team"][0]:
-                lobby["ct_team"].append(picked_member)
+            if lobby["next_pick"] == lobby["team1"][0]:
+                lobby["team1"].append(picked_member)
             else:
-                lobby["t_team"].append(picked_member)
+                lobby["team2"].append(picked_member)
             lobby["available_players"].remove(picked_member)
 
             # If there's only 1 player left, automatically assign them to the other team
             if len(lobby["available_players"]) == 1:
                 last_player = lobby["available_players"][0]
-                ct_size = len(lobby["ct_team"])
-                t_size = len(lobby["t_team"])
+                team1_size = len(lobby["team1"])
+                team2_size = len(lobby["team2"])
 
                 # Assign to the smaller team
-                if ct_size <= t_size:
-                    lobby["ct_team"].append(last_player)
+                if team1_size <= team2_size:
+                    lobby["team1"].append(last_player)
                 else:
-                    lobby["t_team"].append(last_player)
+                    lobby["team2"].append(last_player)
                 lobby["available_players"].remove(last_player)
 
             # Update next pick based on balanced team logic
@@ -1179,15 +1203,15 @@ class Matchmaking(commands.Cog):
                 lobby["next_pick"] = await self.determine_next_pick_balanced(lobby)
 
             # --- New Draft UI ---
-            ct_lines = await self.format_team_list(
-                lobby["ct_team"], lobby.get("league_table")
+            team1_lines = await self.format_team_list(
+                lobby["team1"], lobby.get("league_table")
             )
-            t_lines = await self.format_team_list(
-                lobby["t_team"], lobby.get("league_table")
+            team2_lines = await self.format_team_list(
+                lobby["team2"], lobby.get("league_table")
             )
             desc = (
-                f"**Counter-Terrorists**\n{ct_lines}\n\n"
-                f"**Terrorists**\n{t_lines}\n\n"
+                f"**Team 1**\n{team1_lines}\n\n"
+                f"**Team 2**\n{team2_lines}\n\n"
             )
             if lobby["available_players"]:
                 picks_needed = await self.calculate_picks_needed(lobby)
@@ -1207,7 +1231,9 @@ class Matchmaking(commands.Cog):
             embed.set_footer(text="Next Phase: Map Veto")
             if lobby["available_players"]:
                 view = await self.get_draft_view(lobby)
+                view = self.set_current_view(lobby, view)
             else:
+                self.stop_current_view(lobby)
                 view = None
 
             await lobby["message"].edit(embed=embed, view=view)
@@ -1217,7 +1243,7 @@ class Matchmaking(commands.Cog):
 
     async def start_map_veto(self, lobby):
         lobby["phase"] = 3
-        lobby["veto_turn"] = lobby["ct_team"][0]  # CT starts
+        lobby["veto_turn"] = lobby["team1"][0]  # Team1 starts
         lobby["remaining_maps"] = [map_info["name"] for map_info in Config.MAP_POOL]
         lobby["last_ban"] = None  # Track previous ban
         text = lobby["text"]
@@ -1245,6 +1271,7 @@ class Matchmaking(commands.Cog):
         )
         embed.set_footer(text="Next Phase: Final Match Data")
         view = self.get_veto_view(lobby)
+        view = self.set_current_view(lobby, view)
         lobby["veto_message"] = await text.send(embed=embed, view=view)
 
     async def handle_map_ban(self, lobby, banned_map):
@@ -1253,10 +1280,10 @@ class Matchmaking(commands.Cog):
             lobby["last_ban"] = {"captain": lobby["veto_turn"], "map": banned_map}
             lobby["remaining_maps"].remove(banned_map)
             # Switch turn
-            if lobby["veto_turn"] == lobby["ct_team"][0]:
-                lobby["veto_turn"] = lobby["t_team"][0]
+            if lobby["veto_turn"] == lobby["team1"][0]:
+                lobby["veto_turn"] = lobby["team2"][0]
             else:
-                lobby["veto_turn"] = lobby["ct_team"][0]
+                lobby["veto_turn"] = lobby["team1"][0]
 
             # --- New Map Veto UI ---
             banned_map_emoji = self.get_map_emoji(lobby["last_ban"]["map"])
@@ -1283,23 +1310,28 @@ class Matchmaking(commands.Cog):
                 color=Config.EMBED_COLORS["veto"],
             )
             embed.set_footer(text="Next Phase: Final Match Data")
-            view = (
-                self.get_veto_view(lobby) if len(lobby["remaining_maps"]) > 1 else None
-            )
+            if len(lobby["remaining_maps"]) > 1:
+                view = self.get_veto_view(lobby)
+                view = self.set_current_view(lobby, view)
+            else:
+                self.stop_current_view(lobby)
+                view = None
             await lobby["veto_message"].edit(embed=embed, view=view)
             if len(lobby["remaining_maps"]) == 1:
                 await self.finalize_match(lobby)
 
     async def finalize_match(self, lobby):
+        # Stop any active view to prevent timeout issues  
+        self.stop_current_view(lobby)
+        
         import os
-        from jinja2 import Environment, FileSystemLoader
-        from html2image import Html2Image
         import tempfile
         import datetime
+        from assets.template_generators.final_match_generator import FinalMatchTemplateGenerator
 
         lobby["phase"] = 4
-        ct_team = [m.display_name for m in lobby["ct_team"]]
-        t_team = [m.display_name for m in lobby["t_team"]]
+        team1_players = [m.display_name for m in lobby["team1"]]
+        team2_players = [m.display_name for m in lobby["team2"]]
         final_map = lobby["remaining_maps"][0]
         now = datetime.datetime.now().strftime("%H:%M | %d/%m/%Y")
 
@@ -1308,38 +1340,49 @@ class Matchmaking(commands.Cog):
         match_id = f"Match #{match_result['match_id']}"
         lobby["match_id"] = match_id
 
-        # Render HTML with Jinja2
-        env = Environment(loader=FileSystemLoader(os.path.dirname(__file__) + "/../"))
-        template = env.get_template("templates/final_match_template.html")
-        html_content = template.render(
-            app_name=Config.APP_NAME,
-            match_id=match_id,
-            ct_team=ct_team,
-            t_team=t_team,
-            map_name=final_map,
-        )
-        # Render HTML to image
-        hti = Html2Image(output_path=tempfile.gettempdir())
+        # Generate image using Pillow
+        generator = FinalMatchTemplateGenerator()
         image_path = os.path.join(
             tempfile.gettempdir(), f"final_match_{match_result['match_id']}.png"
         )
-        hti.screenshot(
-            html_str=html_content, save_as=os.path.basename(image_path), size=(740, 711)
+        
+        success = await generator.generate_final_match_image(
+            match_id=match_id,
+            team1_players=lobby["team1"],  # Pass Discord Members directly
+            team2_players=lobby["team2"],  # Pass Discord Members directly
+            team1_captain=lobby["team1"][0],
+            team2_captain=lobby["team2"][0],
+            map_name=final_map,
+            output_path=image_path
         )
-        # Upload image to Discord CDN by sending it as a file
-        file = discord.File(image_path, filename="final_match.png")
-        embed = discord.Embed(
-            title=f"{Config.APP_NAME} | {match_id}", color=Config.EMBED_COLORS["final"]
-        )
-        embed.set_image(url=f"attachment://final_match.png")
-        embed.set_footer(text=f"Match Created: {now}")
+        
+        if not success:
+            logger.error("Failed to generate final match image")
+            # Fallback: create a simple text embed without image
+            embed = discord.Embed(
+                title=f"{Config.APP_NAME} | {match_id}",
+                description=f"**Map:** {final_map}\n**Team 1 Captain:** {lobby['team1'][0].display_name}\n**Team 2 Captain:** {lobby['team2'][0].display_name}",
+                color=Config.EMBED_COLORS["final"]
+            )
+            embed.set_footer(text=f"Match Created: {now}")
+            
+            get_id_view = self.GetIdView(lobby, self)
+            await lobby["veto_message"].edit(embed=embed, view=get_id_view)
+        else:
+            # Upload image to Discord CDN by sending it as a file
+            file = discord.File(image_path, filename="final_match.png")
+            embed = discord.Embed(
+                title=f"{Config.APP_NAME} | {match_id}", color=Config.EMBED_COLORS["final"]
+            )
+            embed.set_image(url=f"attachment://final_match.png")
+            embed.set_footer(text=f"Match Created: {now}")
 
-        # Create the Get ID button view
-        get_id_view = self.GetIdView(lobby, self)
+            # Create the Get ID button view
+            get_id_view = self.GetIdView(lobby, self)
 
-        await lobby["veto_message"].edit(
-            embed=embed, view=get_id_view, attachments=[file]
-        )
+            await lobby["veto_message"].edit(
+                embed=embed, view=get_id_view, attachments=[file]
+            )
         await self.create_team_voice_channels(lobby)
         lobby["just_finalized"] = True
         await self.reset_lobby(lobby, keep_voice_members=False)
@@ -1351,7 +1394,7 @@ class Matchmaking(commands.Cog):
             # Get the league table name from the lobby
             league_table = lobby.get("league_table")
             result = await Match.create(
-                lobby["ct_team"], lobby["t_team"], final_map, league_table
+                lobby["team1"], lobby["team2"], lobby["team1"][0], lobby["team2"][0], final_map, league_table
             )
             return result.data[0]  # Return the first (and only) inserted record
         except Exception as e:
@@ -1387,11 +1430,11 @@ class Matchmaking(commands.Cog):
                 overwrites_t[role] = discord.PermissionOverwrite(
                     view_channel=True, connect=True, speak=True
                 )
-        for member in lobby["ct_team"]:
+        for member in lobby["team1"]:
             overwrites_ct[member] = discord.PermissionOverwrite(
                 view_channel=True, connect=True, speak=True
             )
-        for member in lobby["t_team"]:
+        for member in lobby["team2"]:
             overwrites_t[member] = discord.PermissionOverwrite(
                 view_channel=True, connect=True, speak=True
             )
@@ -1402,23 +1445,26 @@ class Matchmaking(commands.Cog):
         t_voice = await category.create_voice_channel(
             T_VOICE_NAME, overwrites=overwrites_t
         )
-        lobby["ct_voice"] = ct_voice
-        lobby["t_voice"] = t_voice
+        lobby["team1_voice"] = ct_voice
+        lobby["team2_voice"] = t_voice
         # Move players to their team channels
-        for member in lobby["ct_team"]:
+        for member in lobby["team1"]:
             try:
                 await member.move_to(ct_voice)
             except Exception as e:
-                logger.error(f"Failed to move {member} to CT Voice: {e}")
-        for member in lobby["t_team"]:
+                logger.error(f"Failed to move {member} to Team1 Voice: {e}")
+        for member in lobby["team2"]:
             try:
                 await member.move_to(t_voice)
             except Exception as e:
-                logger.error(f"Failed to move {member} to T Voice: {e}")
+                logger.error(f"Failed to move {member} to Team2 Voice: {e}")
         # Start cleanup timer (placeholder)
         # ...
 
     async def reset_lobby(self, lobby, keep_voice_members=False):
+        # Stop any active view to prevent timeout issues
+        self.stop_current_view(lobby)
+        
         # Check if we're resetting from map veto phase and need to clean up veto message
         was_in_veto_phase = lobby["phase"] == 3
         veto_message_to_delete = lobby.get("veto_message") if was_in_veto_phase else None
@@ -1429,8 +1475,8 @@ class Matchmaking(commands.Cog):
             lobby["players"] = voice_members
         else:
             lobby["players"] = set()
-        lobby["ct_team"] = []
-        lobby["t_team"] = []
+        lobby["team1"] = []
+        lobby["team2"] = []
         lobby["map_pool"] = [map_info["name"] for map_info in Config.MAP_POOL]
         lobby["match_id"] = None
         
@@ -1457,6 +1503,8 @@ class Matchmaking(commands.Cog):
                            "Connect to the **Lobby** voice channel to join the queue!\n\n",
                 color=Config.EMBED_COLORS["waiting"],
             )
+            if Config.LOBBIES_WAITING_BANNER:
+                embed.set_image(url=Config.LOBBIES_WAITING_BANNER)
             if lobby.get("message"):
                 try:
                     await lobby["message"].delete()
@@ -1475,6 +1523,8 @@ class Matchmaking(commands.Cog):
                            "Connect to the **Lobby** voice channel to join the queue!\n\n",
                 color=Config.EMBED_COLORS["waiting"],
             )
+            if Config.LOBBIES_WAITING_BANNER:
+                embed.set_image(url=Config.LOBBIES_WAITING_BANNER)
             await lobby["message"].edit(embed=embed, view=None)
         if hasattr(lobby, "_just_finalized"):
             del lobby._just_finalized  # Save lobby state after reset
@@ -1607,6 +1657,8 @@ class Matchmaking(commands.Cog):
                                    "Connect to the **Lobby** voice channel to join the queue!\n\n",
                         color=Config.EMBED_COLORS["waiting"],
                     )
+                    if Config.LOBBIES_WAITING_BANNER:
+                        embed.set_image(url=Config.LOBBIES_WAITING_BANNER)
                     message = await text_channel.send(embed=embed)
 
             # Get player objects (only for players currently in voice)
@@ -1620,13 +1672,13 @@ class Matchmaking(commands.Cog):
                 "phase": 1,  # Always reset to waiting phase on restore
                 "players": current_players,
                 "message": message,
-                "ct_team": [],
-                "t_team": [],
+                "team1": [],
+                "team2": [],
                 "map_pool": json.loads(state.get("map_pool", "[]"))
                 or [map_info["name"] for map_info in Config.MAP_POOL],
                 "match_id": None,  # Clear match ID on restore
-                "ct_voice": None,
-                "t_voice": None,
+                "team1_voice": None,
+                "team2_voice": None,
                 "lobby_number": state.get("lobby_number", 1),
                 "required_role_id": state.get("required_role_id"),
                 "required_role_name": state.get(
@@ -2418,8 +2470,8 @@ class Matchmaking(commands.Cog):
 
     async def assign_party_members_to_teams(self, lobby, party_info, party_groups):
         """Automatically assign party members to their leader's team"""
-        ct_captain = lobby["ct_team"][0]
-        t_captain = lobby["t_team"][0]
+        team1_captain = lobby["team1"][0]
+        team2_captain = lobby["team2"][0]
 
         # Assign party members to their captain's team
         for party_id, party_members in party_groups.items():
@@ -2432,94 +2484,94 @@ class Matchmaking(commands.Cog):
 
             if party_leader_id:
                 # Assign all party members to the same team as their leader
-                if party_leader_id == ct_captain.id:
-                    # Leader is CT captain, assign all members to CT team
+                if party_leader_id == team1_captain.id:
+                    # Leader is Team1 captain, assign all members to Team1 team
                     for member in party_members:
                         if (
-                            member != ct_captain
+                            member != team1_captain
                             and member in lobby["available_players"]
                         ):
-                            lobby["ct_team"].append(member)
+                            lobby["team1"].append(member)
                             lobby["available_players"].remove(member)
-                elif party_leader_id == t_captain.id:
-                    # Leader is T captain, assign all members to T team
+                elif party_leader_id == team2_captain.id:
+                    # Leader is Team2 captain, assign all members to Team2 team
                     for member in party_members:
-                        if member != t_captain and member in lobby["available_players"]:
-                            lobby["t_team"].append(member)
+                        if member != team2_captain and member in lobby["available_players"]:
+                            lobby["team2"].append(member)
                             lobby["available_players"].remove(member)
                 else:
                     # Party leader is not a captain, assign the whole party to the smaller team
-                    ct_size = len(lobby["ct_team"])
-                    t_size = len(lobby["t_team"])
+                    team1_size = len(lobby["team1"])
+                    team2_size = len(lobby["team2"])
 
-                    if ct_size <= t_size:  # Assign to CT team
+                    if team1_size <= team2_size:  # Assign to Team1 team
                         for member in party_members:
                             if member in lobby["available_players"]:
-                                lobby["ct_team"].append(member)
+                                lobby["team1"].append(member)
                                 lobby["available_players"].remove(member)
                     else:
-                        # Assign to T team
+                        # Assign to Team2 team
                         for member in party_members:
                             if member in lobby["available_players"]:
-                                lobby["t_team"].append(member)
+                                lobby["team2"].append(member)
                                 lobby["available_players"].remove(member)
 
     async def determine_next_pick_balanced(self, lobby):
         """Determine which captain should pick next following proper draft flow"""
-        ct_size = len(lobby["ct_team"])
-        t_size = len(lobby["t_team"])
-        ct_captain = lobby["ct_team"][0]
-        t_captain = lobby["t_team"][0]
+        team1_size = len(lobby["team1"])
+        team2_size = len(lobby["team2"])
+        team1_captain = lobby["team1"][0]
+        team2_captain = lobby["team2"][0]
         current_pick = lobby.get("next_pick")
 
         # If teams are unbalanced, the smaller team ALWAYS picks to balance
-        if ct_size != t_size:
+        if team1_size != team2_size:
             # Clear any balancing flags since we're in imbalanced state
             lobby.pop("just_balanced", None)
             # Return the captain of the smaller team
-            if ct_size < t_size:
-                return ct_captain
+            if team1_size < team2_size:
+                return team1_captain
             else:
-                return t_captain
+                return team2_captain
 
         # Teams are balanced, use standard alternating draft
         # Check if we just finished balancing (teams just became equal)
         if lobby.get("just_balanced"):
             # Clear the flag and switch to the other captain
             lobby.pop("just_balanced", None)
-            if current_pick == ct_captain:
-                return t_captain
+            if current_pick == team1_captain:
+                return team2_captain
             else:
-                return ct_captain
+                return team1_captain
 
-        # Standard case: If no current pick set, CT captain starts
+        # Standard case: If no current pick set, Team1 captain starts
         if not current_pick:
-            return ct_captain
+            return team1_captain
 
         # Standard alternating: switch to the other captain
-        if current_pick == ct_captain:
-            return t_captain
+        if current_pick == team1_captain:
+            return team2_captain
         else:
-            return ct_captain
+            return team1_captain
 
     async def calculate_picks_needed(self, lobby):
         """Calculate how many players the current captain needs to pick based on proper draft flow"""
         if not lobby["available_players"]:
             return 0
 
-        ct_size = len(lobby["ct_team"])
-        t_size = len(lobby["t_team"])
+        team1_size = len(lobby["team1"])
+        team2_size = len(lobby["team2"])
         current_captain = lobby["next_pick"]
 
         # Determine which team the current captain belongs to
-        is_ct_captain = current_captain == lobby["ct_team"][0]
+        is_team1_captain = current_captain == lobby["team1"][0]
 
-        if is_ct_captain:
-            team_size = ct_size
-            other_team_size = t_size
+        if is_team1_captain:
+            team_size = team1_size
+            other_team_size = team2_size
         else:
-            team_size = t_size
-            other_team_size = ct_size
+            team_size = team2_size
+            other_team_size = team1_size
 
         # Calculate the team size difference
         team_diff = other_team_size - team_size
@@ -2547,22 +2599,22 @@ class Matchmaking(commands.Cog):
             current_captain = lobby["next_pick"]
 
             # Check if teams were imbalanced before this pick
-            ct_size_before = len(lobby["ct_team"])
-            t_size_before = len(lobby["t_team"])
-            was_imbalanced = ct_size_before != t_size_before
+            team1_size_before = len(lobby["team1"])
+            team2_size_before = len(lobby["team2"])
+            was_imbalanced = team1_size_before != team2_size_before
 
             # Add all picked players to the correct team
             for picked_member in picked_members:
-                if current_captain == lobby["ct_team"][0]:
-                    lobby["ct_team"].append(picked_member)
+                if current_captain == lobby["team1"][0]:
+                    lobby["team1"].append(picked_member)
                 else:
-                    lobby["t_team"].append(picked_member)
+                    lobby["team2"].append(picked_member)
                 lobby["available_players"].remove(picked_member)
 
             # Check if teams are now balanced after the pick
-            ct_size_after = len(lobby["ct_team"])
-            t_size_after = len(lobby["t_team"])
-            is_now_balanced = ct_size_after == t_size_after
+            team1_size_after = len(lobby["team1"])
+            team2_size_after = len(lobby["team2"])
+            is_now_balanced = team1_size_after == team2_size_after
 
             # If we just transitioned from imbalanced to balanced, set flag
             if was_imbalanced and is_now_balanced:
@@ -2571,14 +2623,14 @@ class Matchmaking(commands.Cog):
             # Handle automatic assignment of last player if only one remains
             if len(lobby["available_players"]) == 1:
                 last_player = lobby["available_players"][0]
-                ct_size = len(lobby["ct_team"])
-                t_size = len(lobby["t_team"])
+                team1_size = len(lobby["team1"])
+                team2_size = len(lobby["team2"])
 
                 # Assign to the smaller team
-                if ct_size <= t_size:
-                    lobby["ct_team"].append(last_player)
+                if team1_size <= team2_size:
+                    lobby["team1"].append(last_player)
                 else:
-                    lobby["t_team"].append(last_player)
+                    lobby["team2"].append(last_player)
                 lobby["available_players"].remove(last_player)
 
             # Update next pick based on balanced team logic
@@ -2586,15 +2638,15 @@ class Matchmaking(commands.Cog):
                 lobby["next_pick"] = await self.determine_next_pick_balanced(lobby)
 
             # --- New Draft UI ---
-            ct_lines = await self.format_team_list(
-                lobby["ct_team"], lobby.get("league_table")
+            team1_lines = await self.format_team_list(
+                lobby["team1"], lobby.get("league_table")
             )
-            t_lines = await self.format_team_list(
-                lobby["t_team"], lobby.get("league_table")
+            team2_lines = await self.format_team_list(
+                lobby["team2"], lobby.get("league_table")
             )
             desc = (
-                f"**Counter-Terrorists**\n{ct_lines}\n\n"
-                f"**Terrorists**\n{t_lines}\n\n"
+                f"**Team 1**\n{team1_lines}\n\n"
+                f"**Team 2**\n{team2_lines}\n\n"
             )
             if lobby["available_players"]:
                 picks_needed = await self.calculate_picks_needed(lobby)

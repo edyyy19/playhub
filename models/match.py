@@ -13,63 +13,63 @@ class Match:
 
     @classmethod
     async def create(
-        cls, ct_team: list, t_team: list, map_name: str, league: str = None
+        cls, team1: list, team2: list, team1_captain, team2_captain, map_name: str, league: str = None
     ):
-        # Get player data for CT team
-        ct_team_data = []
-        for member in ct_team:
+        # Get player data for Team 1
+        team1_players = []
+        for member in team1:
             user_data = await User.find(member.id)
             if user_data:
-                ct_team_data.append(
+                team1_players.append(
                     {
                         "discord_id": str(member.id),
                         "nickname": user_data.get("nickname", member.display_name),
-                        "kills": 0,
-                        "deaths": 0,
-                        "points_received": 0,
                     }
                 )
             else:
                 # Fallback if user not found in database
-                ct_team_data.append(
+                team1_players.append(
                     {
                         "discord_id": str(member.id),
                         "nickname": member.display_name,
-                        "kills": 0,
-                        "deaths": 0,
-                        "points_received": 0,
                     }
                 )
 
-        # Get player data for T team
-        t_team_data = []
-        for member in t_team:
+        # Get player data for Team 2
+        team2_players = []
+        for member in team2:
             user_data = await User.find(member.id)
             if user_data:
-                t_team_data.append(
+                team2_players.append(
                     {
                         "discord_id": str(member.id),
                         "nickname": user_data.get("nickname", member.display_name),
-                        "kills": 0,
-                        "deaths": 0,
-                        "points_received": 0,
                     }
                 )
             else:
                 # Fallback if user not found in database
-                t_team_data.append(
+                team2_players.append(
                     {
                         "discord_id": str(member.id),
                         "nickname": member.display_name,
-                        "kills": 0,
-                        "deaths": 0,
-                        "points_received": 0,
                     }
                 )
+
+        # Create teams structure
+        teams_data = {
+            "team1": {
+                "captain": team1_captain.display_name if hasattr(team1_captain, 'display_name') else str(team1_captain),
+                "players": team1_players
+            },
+            "team2": {
+                "captain": team2_captain.display_name if hasattr(team2_captain, 'display_name') else str(team2_captain),
+                "players": team2_players
+            }
+        }
 
         payload = {
-            "ct_team": json.dumps(ct_team_data),
-            "t_team": json.dumps(t_team_data),
+            "teams": json.dumps(teams_data),
+            "teams_stats": None,  # Will be populated when results are submitted
             "map": map_name,
             "league": league,  # Add league column
             "created_at": datetime.now().isoformat(),
@@ -106,23 +106,30 @@ class Match:
 
     @classmethod
     async def update_results(
-        cls, match_id: int, ct_team: list, t_team: list, ct_score: int, t_score: int
+        cls, match_id: int, team1: list, team2: list, team1_score: int, team2_score: int
     ):
         """Update match results and mark as submitted"""
         loop = asyncio.get_running_loop()
 
         def db_update():
-            # Include scores within the team data structure
-            ct_team_with_score = {"players": ct_team, "score": ct_score}
-            t_team_with_score = {"players": t_team, "score": t_score}
+            # Create teams_stats structure with scores and player statistics
+            teams_stats_data = {
+                "team1": {
+                    "score": team1_score,
+                    "players": team1
+                },
+                "team2": {
+                    "score": team2_score,
+                    "players": team2
+                }
+            }
 
             return (
                 Config.supabase()
                 .table(cls.TABLE)
                 .update(
                     {
-                        "ct_team": json.dumps(ct_team_with_score),
-                        "t_team": json.dumps(t_team_with_score),
+                        "teams_stats": json.dumps(teams_stats_data),
                         "results_submitted": True,
                         "ended_at": datetime.now().isoformat(),
                     }
@@ -176,7 +183,7 @@ class Match:
 
     @classmethod
     async def complete_submission(
-        cls, match_id: int, ct_team: list, t_team: list, ct_score: int, t_score: int
+        cls, match_id: int, team1: list, team2: list, team1_score: int, team2_score: int
     ):
         """
         Complete the submission process after successful lock.
@@ -185,17 +192,24 @@ class Match:
         loop = asyncio.get_running_loop()
 
         def db_complete():
-            # Include scores within the team data structure
-            ct_team_with_score = {"players": ct_team, "score": ct_score}
-            t_team_with_score = {"players": t_team, "score": t_score}
+            # Create teams_stats structure with scores and player statistics
+            teams_stats_data = {
+                "team1": {
+                    "score": team1_score,
+                    "players": team1
+                },
+                "team2": {
+                    "score": team2_score,
+                    "players": team2
+                }
+            }
 
             return (
                 Config.supabase()
                 .table(cls.TABLE)
                 .update(
                     {
-                        "ct_team": json.dumps(ct_team_with_score),
-                        "t_team": json.dumps(t_team_with_score),
+                        "teams_stats": json.dumps(teams_stats_data),
                         "results_submitted": True,
                         "ended_at": datetime.now().isoformat(),
                         "submission_in_progress": None,  # Clear the lock
@@ -254,59 +268,92 @@ class Match:
                 # Filter matches where the user participated
                 user_matches = []
                 for match in response.data:
-                    ct_team_data = json.loads(match.get("ct_team", "[]"))
-                    t_team_data = json.loads(match.get("t_team", "[]"))
+                    teams_data = json.loads(match.get("teams", "{}"))
+                    teams_stats_data = json.loads(match.get("teams_stats", "{}")) if match.get("teams_stats") else None
+                    
+                    # Handle backward compatibility - check if old format exists
+                    if not teams_data and (match.get("ct_team") or match.get("t_team")):
+                        # Old format fallback - convert to new format structure
+                        team1_team_data = json.loads(match.get("ct_team", "[]"))
+                        team2_team_data = json.loads(match.get("t_team", "[]"))
+                        
+                        # Handle both old format (just players array) and new format (with players and score)
+                        if isinstance(team1_team_data, list):
+                            team1_team = team1_team_data
+                        else:
+                            team1_team = team1_team_data.get("players", [])
 
-                    # Handle both old format (just players array) and new format (with players and score)
-                    if isinstance(ct_team_data, list):
-                        ct_team = ct_team_data
+                        if isinstance(team2_team_data, list):
+                            team2_team = team2_team_data
+                        else:
+                            team2_team = team2_team_data.get("players", [])
+                        
+                        all_players = team1_team + team2_team
+                        team1_score = team1_team_data.get("score", 0) if isinstance(team1_team_data, dict) else 0
+                        team2_score = team2_team_data.get("score", 0) if isinstance(team2_team_data, dict) else 0
                     else:
-                        ct_team = ct_team_data.get("players", [])
-
-                    if isinstance(t_team_data, list):
-                        t_team = t_team_data
-                    else:
-                        t_team = t_team_data.get("players", [])
+                        # New format - get players from teams column
+                        team1_data = teams_data.get("team1", {})
+                        team2_data = teams_data.get("team2", {})
+                        
+                        team1_players = team1_data.get("players", [])
+                        team2_players = team2_data.get("players", [])
+                        all_players = team1_players + team2_players
+                        
+                        # Get scores from teams_stats if available, otherwise 0
+                        if teams_stats_data:
+                            team1_score = teams_stats_data.get("team1", {}).get("score", 0)
+                            team2_score = teams_stats_data.get("team2", {}).get("score", 0)
+                        else:
+                            team1_score = 0
+                            team2_score = 0
 
                     # Check if user is in either team
                     user_in_match = False
-                    for player in ct_team + t_team:
+                    user_team = None
+                    for player in all_players:
                         if player.get("discord_id") == discord_id:
                             user_in_match = True
+                            # Determine which team the user was on
+                            if teams_data:  # New format
+                                team1_players = teams_data.get("team1", {}).get("players", [])
+                                if any(p.get("discord_id") == discord_id for p in team1_players):
+                                    user_team = "Team1"
+                                else:
+                                    user_team = "Team2"
+                            else:  # Old format fallback
+                                if any(p.get("discord_id") == discord_id for p in team1_team):
+                                    user_team = "Team1"
+                                else:
+                                    user_team = "Team2"
                             break
 
                     if user_in_match:
-                        # Extract final scores
-                        ct_score = 0
-                        t_score = 0
-
-                        if isinstance(ct_team_data, dict) and "score" in ct_team_data:
-                            ct_score = ct_team_data["score"]
-                        if isinstance(t_team_data, dict) and "score" in t_team_data:
-                            t_score = t_team_data["score"]
+                        # Determine if user won
+                        user_won = False
+                        if teams_stats_data:  # New format - use teams_stats for scores
+                            team1_score = teams_stats_data.get("team1", {}).get("score", 0)
+                            team2_score = teams_stats_data.get("team2", {}).get("score", 0)
+                            user_won = (user_team == "Team1" and team1_score > team2_score) or \
+                                      (user_team == "Team2" and team2_score > team1_score)
+                        elif teams_data and teams_data.get("team1", {}).get("score") is not None:  # Old format with scores in teams
+                            team1_score = teams_data.get("team1", {}).get("score", 0)
+                            team2_score = teams_data.get("team2", {}).get("score", 0)
+                            user_won = (user_team == "Team1" and team1_score > team2_score) or \
+                                      (user_team == "Team2" and team2_score > team1_score)
+                        else:  # Old format fallback
+                            user_won = (user_team == "Team1" and team1_score > team2_score) or \
+                                      (user_team == "Team2" and team2_score > team1_score)
 
                         # Add processed match data
                         match_info = {
                             "match_id": match.get("match_id"),
                             "map": match.get("map"),
                             "ended_at": match.get("ended_at"),
-                            "ct_score": ct_score,
-                            "t_score": t_score,
-                            "user_team": "CT"
-                            if any(p.get("discord_id") == discord_id for p in ct_team)
-                            else "T",
-                            "user_won": (
-                                ct_score > t_score
-                                and any(
-                                    p.get("discord_id") == discord_id for p in ct_team
-                                )
-                            )
-                            or (
-                                t_score > ct_score
-                                and any(
-                                    p.get("discord_id") == discord_id for p in t_team
-                                )
-                            ),
+                            "team1_score": team1_score,
+                            "team2_score": team2_score,
+                            "user_team": user_team,
+                            "user_won": user_won,
                         }
                         user_matches.append(match_info)
 
