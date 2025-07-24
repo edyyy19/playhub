@@ -67,13 +67,16 @@ class Matchmaking(commands.Cog):
     @app_commands.autocomplete(league_name=league_name_autocomplete)
     @app_commands.default_permissions(administrator=True)
     async def create_lobby(self, interaction: discord.Interaction, league_name: str):
+        # Defer the response immediately to prevent timeout
+        await interaction.response.defer(ephemeral=True)
+        
         # Verifică autorizația utilizatorului
         if not await Config.check_authorization(interaction):
             return
             
         # Check if interaction has a valid guild
         if not interaction.guild:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "This command can only be used in a server.", ephemeral=True
             )
             return
@@ -87,7 +90,7 @@ class Matchmaking(commands.Cog):
                 # Determine which role to use for the lobby
                 # Validate league name is provided
                 if not league_name or len(league_name.strip()) == 0:
-                    await interaction.response.send_message(
+                    await interaction.followup.send(
                         f"{Config.ICONS['unsuccess']} **League selection is required**\n"
                         "Please specify a league to create the lobby for. "
                         "Use the autocomplete to select from available leagues.",
@@ -104,7 +107,7 @@ class Matchmaking(commands.Cog):
                         description="The leagues system is currently not available. Please contact an administrator.",
                         color=Config.EMBED_COLORS["red"],
                     )
-                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    await interaction.followup.send(embed=embed, ephemeral=True)
                     return
 
                 league_data = await leagues_cog.get_league_by_name(league_name)
@@ -119,7 +122,7 @@ class Matchmaking(commands.Cog):
                         value="• Use the autocomplete to select from available leagues\n• Check the spelling of the league name\n• Use `/list_leagues` to see all available leagues",
                         inline=False,
                     )
-                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    await interaction.followup.send(embed=embed, ephemeral=True)
                     return
 
                 # Find the associated Discord role
@@ -142,7 +145,7 @@ class Matchmaking(commands.Cog):
                         value="• Contact an administrator to recreate the role\n• Use `/list_leagues` to check league status\n• Try recreating the league if necessary",
                         inline=False,
                     )
-                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    await interaction.followup.send(embed=embed, ephemeral=True)
                     return
 
                 lobby_role_name = lobby_role.name
@@ -167,7 +170,7 @@ class Matchmaking(commands.Cog):
                         value="• Go to Server Settings → Roles\n• Find my role and enable `Manage Channels`\n• Or contact an administrator",
                         inline=False,
                     )
-                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    await interaction.followup.send(embed=embed, ephemeral=True)
                     return
                 # Set up permission overwrites - everyone can see, only specific role can join
                 overwrites = {
@@ -290,7 +293,7 @@ class Matchmaking(commands.Cog):
                     text=f"Lobby is visible to everyone, but only {lobby_role_name} players can join voice!"
                 )
 
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
             except discord.Forbidden:
                 logger.error(f"Forbidden error creating lobby: Missing permissions")
                 embed = discord.Embed(
@@ -308,7 +311,7 @@ class Matchmaking(commands.Cog):
                     value="Please contact a server administrator to fix permissions.",
                     inline=False,
                 )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
             except discord.HTTPException as he:
                 logger.error(f"Discord HTTP error creating lobby: {he}")
                 embed = discord.Embed(
@@ -327,7 +330,7 @@ class Matchmaking(commands.Cog):
                     inline=False,
                 )
                 embed.set_footer(text=f"Error Code: {he.status}")
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
             except ValueError as ve:
                 logger.error(f"Validation error creating lobby: {ve}")
                 embed = discord.Embed(
@@ -345,7 +348,7 @@ class Matchmaking(commands.Cog):
                     value="• Contact an administrator\n• Check server configuration\n• Verify league setup is complete",
                     inline=False,
                 )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
             except Exception as e:
                 logger.error(f"Unexpected error creating lobby: {e}")
                 embed = discord.Embed(
@@ -364,7 +367,7 @@ class Matchmaking(commands.Cog):
                     inline=False,
                 )
                 embed.set_footer(text="Error logged for administrator review")
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
 
     # --- DRAFT PICK UI ---
     class DraftDropdown(discord.ui.Select):
@@ -391,6 +394,14 @@ class Matchmaking(commands.Cog):
             self.picks_needed = picks_needed
 
         async def callback(self, interaction: discord.Interaction):
+            # Critical validation: Check if lobby is still in draft phase
+            if self.lobby["phase"] != 2:
+                await interaction.response.send_message(
+                    "This lobby is no longer in draft phase. Please check the current status.",
+                    ephemeral=True,
+                )
+                return
+
             # Only allow the captain whose turn it is
             if interaction.user != self.lobby["next_pick"]:
                 await interaction.response.send_message(
@@ -399,7 +410,7 @@ class Matchmaking(commands.Cog):
                 )
                 return
 
-            # Get all selected players
+            # Get all selected players and validate they still exist
             picked_members = []
             for value in self.values:
                 picked_id = int(value)
@@ -408,6 +419,21 @@ class Matchmaking(commands.Cog):
                 )
                 if picked_member:
                     picked_members.append(picked_member)
+                else:
+                    # Player no longer available
+                    await interaction.response.send_message(
+                        "One or more selected players are no longer available for draft.",
+                        ephemeral=True,
+                    )
+                    return
+
+            # Validate we have valid picks
+            if not picked_members:
+                await interaction.response.send_message(
+                    "No valid players selected for draft.",
+                    ephemeral=True,
+                )
+                return
 
             # Acknowledge the interaction
             await interaction.response.defer(ephemeral=True)
@@ -423,20 +449,28 @@ class Matchmaking(commands.Cog):
             self.add_item(draft_dropdown)
 
         async def on_timeout(self):
-            # Only trigger draft timeout if phase is 2 (drafting) and captain hasn't changed
-            # Also check if this view is still the current active one
-            if (self.lobby["phase"] == 2 and self.lobby.get("next_pick") and 
-                self.lobby.get("current_view") == self):
-                # Double-check that this view is still the active one
-                try:
+            # Enhanced timeout validation with safety checks
+            try:
+                # Only trigger draft timeout if phase is 2 (drafting) and captain hasn't changed
+                # Also check if this view is still the current active one
+                if (self.lobby["phase"] == 2 and 
+                    self.lobby.get("next_pick") and 
+                    self.lobby.get("current_view") == self and
+                    self.lobby["category"].id in self.cog.active_lobbies):
+                    
+                    logger.info(f"Draft timeout triggered for lobby #{self.lobby.get('lobby_number', 'unknown')}, captain: {self.lobby['next_pick'].display_name}")
+                    
+                    # Double-check that this view is still the active one
                     await self.cog.handle_timeout(
                         self.lobby, reason="Draft pick timeout"
                     )
-                except Exception as e:
-                    # If handle_timeout fails, it might be because it's already been called
-                    logger.warning(
-                        f"Draft timeout failed, possibly due to race condition: {e}"
-                    )
+                else:
+                    logger.debug(f"Draft timeout ignored for lobby #{self.lobby.get('lobby_number', 'unknown')} - no longer active or phase changed")
+            except Exception as e:
+                # If handle_timeout fails, it might be because it's already been called
+                logger.warning(
+                    f"Draft timeout failed for lobby #{self.lobby.get('lobby_number', 'unknown')}, possibly due to race condition: {e}"
+                )
 
     # --- MAP VETO UI ---
     class VetoDropdown(discord.ui.Select):
@@ -777,7 +811,7 @@ class Matchmaking(commands.Cog):
                         logger.error(f"Failed to delete channel {channel.name}: {e}")
                 del self._empty_since[channel_id]
         for lobby in self.active_lobbies.values():
-            for team in ["ct_voice", "t_voice"]:
+            for team in ["team1_voice", "team2_voice"]:
                 channel = lobby.get(team)
                 if (
                     channel
@@ -1135,15 +1169,18 @@ class Matchmaking(commands.Cog):
             lobby["available_players"].remove(last_player)
 
         # Determine next pick based on team balance after party assignments
+        # Set flag to indicate this is the start of draft (Team1 should go first if balanced)
+        lobby["draft_start"] = True
         lobby["next_pick"] = await self.determine_next_pick_balanced(lobby)
 
-        # --- New Draft UI ---
-        team1_lines = await self.format_team_list(
-            lobby["team1"], lobby.get("league_table")
+        # --- New Draft UI --- 
+        # Optimize: Get both team formats in parallel and cache league_table
+        league_table = lobby.get("league_table")
+        team1_lines, team2_lines = await asyncio.gather(
+            self.format_team_list(lobby["team1"], league_table),
+            self.format_team_list(lobby["team2"], league_table)
         )
-        team2_lines = await self.format_team_list(
-            lobby["team2"], lobby.get("league_table")
-        )
+        
         desc = (
             f"**Team 1**\n{team1_lines}\n\n" f"**Team 2**\n{team2_lines}\n\n"
         )
@@ -1171,75 +1208,15 @@ class Matchmaking(commands.Cog):
             self.stop_current_view(lobby)
             view = None
 
-        await lobby["message"].edit(embed=embed, view=view)
+        try:
+            await lobby["message"].edit(embed=embed, view=view)
+        except Exception as e:
+            logger.error(f"Failed to update lobby message in start_captain_selection: {e}")
+            return
+            
         # If no players left to draft, immediately proceed to map veto
         if not lobby["available_players"]:
             await self.start_map_veto(lobby)
-
-    async def handle_draft_pick(self, lobby, picked_member):
-        async with self.lobby_locks[lobby["category"].guild.id]:
-            # Add picked player to the correct team
-            if lobby["next_pick"] == lobby["team1"][0]:
-                lobby["team1"].append(picked_member)
-            else:
-                lobby["team2"].append(picked_member)
-            lobby["available_players"].remove(picked_member)
-
-            # If there's only 1 player left, automatically assign them to the other team
-            if len(lobby["available_players"]) == 1:
-                last_player = lobby["available_players"][0]
-                team1_size = len(lobby["team1"])
-                team2_size = len(lobby["team2"])
-
-                # Assign to the smaller team
-                if team1_size <= team2_size:
-                    lobby["team1"].append(last_player)
-                else:
-                    lobby["team2"].append(last_player)
-                lobby["available_players"].remove(last_player)
-
-            # Update next pick based on balanced team logic
-            if lobby["available_players"]:
-                lobby["next_pick"] = await self.determine_next_pick_balanced(lobby)
-
-            # --- New Draft UI ---
-            team1_lines = await self.format_team_list(
-                lobby["team1"], lobby.get("league_table")
-            )
-            team2_lines = await self.format_team_list(
-                lobby["team2"], lobby.get("league_table")
-            )
-            desc = (
-                f"**Team 1**\n{team1_lines}\n\n"
-                f"**Team 2**\n{team2_lines}\n\n"
-            )
-            if lobby["available_players"]:
-                picks_needed = await self.calculate_picks_needed(lobby)
-                if picks_needed > 1:
-                    desc += f"Captain {lobby['next_pick'].mention} needs to pick {picks_needed} players…"
-                else:
-                    desc += (
-                        f"Captain {lobby['next_pick'].mention} is currently picking…"
-                    )
-            else:
-                desc += "All players have been drafted."
-            embed = discord.Embed(
-                title="Drafting Players Phase",
-                description=desc,
-                color=Config.EMBED_COLORS["draft"],
-            )
-            embed.set_footer(text="Next Phase: Map Veto")
-            if lobby["available_players"]:
-                view = await self.get_draft_view(lobby)
-                view = self.set_current_view(lobby, view)
-            else:
-                self.stop_current_view(lobby)
-                view = None
-
-            await lobby["message"].edit(embed=embed, view=view)
-            # If no players left to draft, immediately proceed to map veto
-            if not lobby["available_players"]:
-                await self.start_map_veto(lobby)
 
     async def start_map_veto(self, lobby):
         lobby["phase"] = 3
@@ -2065,23 +2042,32 @@ class Matchmaking(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to cleanup orphaned team channels: {e}")
 
-    async def get_default_league_from_config(self):
-        """Get the default league from the config table"""
+    async def get_default_league_from_config(self, max_retries=3):
+        """Get the default league from the config table with retry logic"""
         import asyncio
 
         loop = asyncio.get_running_loop()
 
         def db_get():
-            try:
-                response = (
-                    Config.supabase().table("config").select("default_league").execute()
-                )
-                if response.data and len(response.data) > 0:
-                    return response.data[0].get("default_league")
-                return None
-            except Exception as e:
-                logger.error(f"Failed to get default league from config: {e}")
-                return None
+            for attempt in range(max_retries):
+                try:
+                    response = (
+                        Config.supabase().table("config").select("default_league").execute()
+                    )
+                    if response.data and len(response.data) > 0:
+                        return response.data[0].get("default_league")
+                    return None
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        # Wait before retry with exponential backoff
+                        import time
+                        wait_time = (2 ** attempt) * 0.5  # 0.5s, 1s, 2s
+                        logger.warning(f"Database connection failed (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
+                        time.sleep(wait_time)
+                    else:
+                        logger.error(f"Failed to get default league from config after {max_retries} attempts: {e}")
+                        return None
+            return None
 
         return await loop.run_in_executor(None, db_get)
 
@@ -2523,35 +2509,52 @@ class Matchmaking(commands.Cog):
         team1_captain = lobby["team1"][0]
         team2_captain = lobby["team2"][0]
         current_pick = lobby.get("next_pick")
+        is_draft_start = lobby.get("draft_start", False)
 
         # If teams are unbalanced, the smaller team ALWAYS picks to balance
         if team1_size != team2_size:
             # Clear any balancing flags since we're in imbalanced state
             lobby.pop("just_balanced", None)
+            lobby.pop("draft_start", None)
             # Return the captain of the smaller team
             if team1_size < team2_size:
+                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Team1 ({team1_size}) < Team2 ({team2_size}), Team1 captain picks to balance")
                 return team1_captain
             else:
+                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Team2 ({team2_size}) < Team1 ({team1_size}), Team2 captain picks to balance")
                 return team2_captain
 
-        # Teams are balanced, use standard alternating draft
+        # Teams are balanced - handle various scenarios
+        logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Teams balanced ({team1_size} vs {team2_size})")
+
+        # Special case: Draft just started after party assignments (Team1 always starts)
+        if is_draft_start:
+            lobby.pop("draft_start", None)
+            logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Draft start - Team1 captain goes first")
+            return team1_captain
+
         # Check if we just finished balancing (teams just became equal)
         if lobby.get("just_balanced"):
-            # Clear the flag and switch to the other captain
+            # Clear the flag and continue with the captain who was picking (they might need more picks)
             lobby.pop("just_balanced", None)
             if current_pick == team1_captain:
-                return team2_captain
-            else:
+                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Just balanced - Team1 captain continues")
                 return team1_captain
+            else:
+                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Just balanced - Team2 captain continues")
+                return team2_captain
 
         # Standard case: If no current pick set, Team1 captain starts
         if not current_pick:
+            logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: No current pick - Team1 captain starts")
             return team1_captain
 
         # Standard alternating: switch to the other captain
         if current_pick == team1_captain:
+            logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Alternating from Team1 to Team2 captain")
             return team2_captain
         else:
+            logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Alternating from Team2 to Team1 captain")
             return team1_captain
 
     async def calculate_picks_needed(self, lobby):
@@ -2562,27 +2565,30 @@ class Matchmaking(commands.Cog):
         team1_size = len(lobby["team1"])
         team2_size = len(lobby["team2"])
         current_captain = lobby["next_pick"]
+        available_count = len(lobby["available_players"])
 
         # Determine which team the current captain belongs to
         is_team1_captain = current_captain == lobby["team1"][0]
 
         if is_team1_captain:
-            team_size = team1_size
+            current_team_size = team1_size
             other_team_size = team2_size
         else:
-            team_size = team2_size
+            current_team_size = team2_size
             other_team_size = team1_size
 
         # Calculate the team size difference
-        team_diff = other_team_size - team_size
+        team_diff = other_team_size - current_team_size
 
         # If the current captain's team is smaller, they need to pick multiple players to balance
         if team_diff > 0:
-            # Pick enough players to balance the teams (but not exceed the other team size)
-            picks_needed = team_diff
+            # Pick enough players to balance the teams, but don't exceed available players
+            picks_needed = min(team_diff, available_count)
+            logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Captain needs {picks_needed} picks to balance teams (diff: {team_diff}, available: {available_count})")
         else:
             # Standard draft: pick 1 player (teams are equal or current team is larger)
-            picks_needed = 1
+            picks_needed = min(1, available_count)
+            logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Standard 1 pick (teams balanced or current team larger)")
 
         # Don't pick more players than available
         picks_needed = min(picks_needed, len(lobby["available_players"]))
@@ -2596,7 +2602,29 @@ class Matchmaking(commands.Cog):
     async def handle_draft_picks(self, lobby, picked_members):
         """Handle multiple draft picks at once"""
         async with self.lobby_locks[lobby["category"].guild.id]:
-            current_captain = lobby["next_pick"]
+            # Critical validation: Ensure lobby is still in correct phase
+            if lobby["phase"] != 2:
+                logger.warning(f"Draft picks attempted on lobby #{lobby.get('lobby_number', 'unknown')} in phase {lobby['phase']}")
+                return
+
+            # Validate lobby still exists
+            if lobby["category"].id not in self.active_lobbies:
+                logger.warning(f"Draft picks attempted on non-existent lobby #{lobby.get('lobby_number', 'unknown')}")
+                return
+
+            # Validate current captain still exists and is correct
+            current_captain = lobby.get("next_pick")
+            if not current_captain:
+                logger.warning(f"Draft picks attempted with no current captain in lobby #{lobby.get('lobby_number', 'unknown')}")
+                return
+
+            # Validate all picked members are still available
+            for picked_member in picked_members:
+                if picked_member not in lobby["available_players"]:
+                    logger.warning(f"Attempted to pick unavailable player: {picked_member} in lobby #{lobby.get('lobby_number', 'unknown')}")
+                    return
+
+            logger.info(f"Processing draft picks in lobby #{lobby.get('lobby_number', 'unknown')}: {[p.display_name for p in picked_members]} by captain {current_captain.display_name}")
 
             # Check if teams were imbalanced before this pick
             team1_size_before = len(lobby["team1"])
@@ -2609,7 +2637,12 @@ class Matchmaking(commands.Cog):
                     lobby["team1"].append(picked_member)
                 else:
                     lobby["team2"].append(picked_member)
-                lobby["available_players"].remove(picked_member)
+                
+                # Safe removal with error handling
+                try:
+                    lobby["available_players"].remove(picked_member)
+                except ValueError:
+                    logger.warning(f"Player {picked_member} was not in available_players list")
 
             # Check if teams are now balanced after the pick
             team1_size_after = len(lobby["team1"])
@@ -2619,6 +2652,7 @@ class Matchmaking(commands.Cog):
             # If we just transitioned from imbalanced to balanced, set flag
             if was_imbalanced and is_now_balanced:
                 lobby["just_balanced"] = True
+                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Teams just became balanced ({team1_size_after} vs {team2_size_after})")
 
             # Handle automatic assignment of last player if only one remains
             if len(lobby["available_players"]) == 1:
@@ -2629,13 +2663,16 @@ class Matchmaking(commands.Cog):
                 # Assign to the smaller team
                 if team1_size <= team2_size:
                     lobby["team1"].append(last_player)
+                    logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Auto-assigned last player {last_player.display_name} to Team1")
                 else:
                     lobby["team2"].append(last_player)
+                    logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Auto-assigned last player {last_player.display_name} to Team2")
                 lobby["available_players"].remove(last_player)
 
             # Update next pick based on balanced team logic
             if lobby["available_players"]:
                 lobby["next_pick"] = await self.determine_next_pick_balanced(lobby)
+                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Next pick determined: {lobby['next_pick'].display_name}")
 
             # --- New Draft UI ---
             team1_lines = await self.format_team_list(
@@ -2668,13 +2705,30 @@ class Matchmaking(commands.Cog):
 
             if lobby["available_players"]:
                 view = await self.get_draft_view(lobby)
+                view = self.set_current_view(lobby, view)
             else:
+                self.stop_current_view(lobby)
                 view = None
 
-            await lobby["message"].edit(embed=embed, view=view)
+            try:
+                await lobby["message"].edit(embed=embed, view=view)
+            except discord.NotFound:
+                logger.error(f"Lobby message not found during draft update for lobby #{lobby.get('lobby_number', 'unknown')}")
+                return
+            except discord.Forbidden:
+                logger.error(f"Missing permissions to edit lobby message for lobby #{lobby.get('lobby_number', 'unknown')}")
+                return
+            except Exception as e:
+                logger.error(f"Unexpected error updating draft message: {e}")
+                return
 
             if not lobby["available_players"]:
-                await self.start_map_veto(lobby)
+                try:
+                    await self.start_map_veto(lobby)
+                except Exception as e:
+                    logger.error(f"Failed to start map veto after draft completion: {e}")
+                    # Reset lobby to prevent stuck state
+                    await self.reset_lobby(lobby)
 
     @staticmethod
     def get_map_emoji(map_name):

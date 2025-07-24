@@ -22,20 +22,20 @@ class Config:
 
     # Map pool with names and emojis
     MAP_POOL = [
-        {"name": "Sandstone", "emoji": "<:sandstone_emoji:1384340276264435763>"},
-        {"name": "Rust", "emoji": "<:rust_emoji:1384340266798022656>"},
-        # {"name": "Province", "emoji": "<:province_emoji:1384340263014498395>"},
-        # {"name": "Breeze", "emoji": "<:breeze_emoji:1384340288469729370>"},
-        # {"name": "Dune", "emoji": "<:dune_emoji:1384340292920021145>"},
-        # {"name": "Zone7", "emoji": "<:zone7_emoji:1384340282174345276>"},
-        # {"name": "Sakura", "emoji": "<:sakura_emoji:1384340271348584519>"},
+        {"name": "Sandstone", "emoji": "<:sandstone_emoji:1397905555057807382>"},
+        {"name": "Rust", "emoji": "<:rust_emoji:1397905569825951774>"},
+        {"name": "Province", "emoji": "<:province_emoji:1397905564520022037>"},
+        {"name": "Breeze", "emoji": "<:breeze_emoji:1397905561407979570>"},
+        {"name": "Dune", "emoji": "<:dune:1397905722372521997>"},
+        {"name": "Zone7", "emoji": "<:zone7_emoji:1397905558006136963>"},
+        {"name": "Sakura", "emoji": "<:sakura_emoji:1397905551526203452>"},
     ]
 
-    PLAYERS_REQUIRED = 4
+    PLAYERS_REQUIRED = 10
     MAX_PARTY_MEMBERS = 2
     
     # Authorized user IDs for restricted commands
-    AUTHORIZED_USERS = [245974474111844354]
+    AUTHORIZED_USERS = [245974474111844354,1102901572519858206,301123036487352321]
     
     ICONS = {
         "changes": "<:discord_changes:1397568117839761580>",

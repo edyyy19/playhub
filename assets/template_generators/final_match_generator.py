@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 class FinalMatchTemplateGenerator:
     """Generator pentru template-ul final de meci folosind Pillow"""
     
-    def __init__(self, background_image_path: str = "template_images/arena_faceit_match_details.png"):
+    def __init__(self, background_image_path: str = "assets/template_images/arena_faceit_match_details.png"):
         self.background_image_path = background_image_path
-        self.default_font_path = "fonts/font-black.ttf"
+        self.default_font_path = "assets/fonts/font-black.ttf"
         
     async def generate_final_match_image(
         self,
@@ -45,8 +45,8 @@ class FinalMatchTemplateGenerator:
             bool: True dacă generarea a reușit, False altfel
         """
         try:
-            # Get the project root directory
-            project_root = os.path.dirname(os.path.dirname(__file__))
+            # Get the project root directory (din assets/template_generators/ urcăm 2 niveluri)
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
             
             # Încarcă imaginea de fundal
             background_path = os.path.join(project_root, self.background_image_path)
@@ -176,28 +176,40 @@ class FinalMatchTemplateGenerator:
             stats_result = await Stats.get_user_stats(player.id, league_table)
             if not stats_result or not stats_result.get("success"):
                 points = 0
+                logger.info(f"No stats found for player {getattr(player, 'display_name', player)}, using 0 points")
             else:
                 stats_data = stats_result.get("stats", {})
                 points = stats_data.get("points", 0)
+                logger.info(f"Player {getattr(player, 'display_name', player)} has {points} points")
             
             # Folosește funcția existentă din LevelsCog pentru a obține calea
             level_icon_path = LevelsCog.get_level_icon_path(points)
+            logger.info(f"LevelsCog returned path: {level_icon_path}")
             
-            # Adaptează calea pentru a fi relativă la project_root în loc de assets/
+            # LevelsCog returnează "assets/level_icons/level1.png" 
+            # Trebuie să construim calea completă față de project_root
             if level_icon_path:
-                # LevelsCog returnează "assets/level_icons/..." dar noi suntem deja în assets/
-                # Trebuie să urcăm la project_root și apoi să mergem la calea completă
-                project_root = os.path.dirname(os.path.dirname(__file__))
+                # Din assets/template_generators/, project_root este ../../ (urcăm 2 niveluri)
+                project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
                 full_level_icon_path = os.path.join(project_root, level_icon_path)
+                logger.info(f"Full level icon path: {full_level_icon_path}")
                 
                 # Verifică dacă fișierul există
                 if os.path.exists(full_level_icon_path):
+                    logger.info(f"Level icon found for {getattr(player, 'display_name', player)}: {full_level_icon_path}")
                     return full_level_icon_path
+                else:
+                    logger.warning(f"Level icon not found at: {full_level_icon_path}")
             
             # Fallback la level 1 dacă fișierul nu există
-            project_root = os.path.dirname(os.path.dirname(__file__))
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
             fallback_path = os.path.join(project_root, "assets", "level_icons", "level1.png")
-            return fallback_path if os.path.exists(fallback_path) else None
+            if os.path.exists(fallback_path):
+                logger.info(f"Using fallback level icon for {getattr(player, 'display_name', player)}: {fallback_path}")
+                return fallback_path
+            else:
+                logger.warning(f"Fallback level icon not found at: {fallback_path}")
+                return None
                 
         except Exception as e:
             logger.warning(f"Failed to get level icon for player {player}: {e}")
@@ -291,7 +303,7 @@ class FinalMatchTemplateGenerator:
     def get_image_size(self) -> tuple:
         """Returnează dimensiunile imaginii de fundal"""
         try:
-            project_root = os.path.dirname(os.path.dirname(__file__))
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
             background_path = os.path.join(project_root, self.background_image_path)
             if os.path.exists(background_path):
                 with Image.open(background_path) as img:

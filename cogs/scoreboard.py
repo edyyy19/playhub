@@ -11,6 +11,7 @@ from datetime import datetime
 from models.match import Match
 from models.stats import Stats
 from models.scoreboard_config import ScoreboardConfig
+from models.season import Season
 from assets.template_generators.scoreboard_generator import ScoreboardResultsTemplateGenerator
 
 logger = logging.getLogger(__name__)
@@ -156,7 +157,9 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
 
             message = await self.bot.wait_for(
                 "message", check=check, timeout=60.0
-            )  # Show processing embed
+            )  
+            
+            # Show processing embed
             processing_embed = discord.Embed(
                 title=f"{Config.ICONS['updating']} Processing Screenshot",
                 description="Analyzing screenshot data...",
@@ -174,8 +177,8 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
             # Get the image URL
             image_url = message.attachments[0].url
 
-            # Process the image with OpenAI
-            await self.process_scoreboard_image(
+            # Process the image with OpenAI GPT
+            await self.process_scoreboard_with_gpt(
                 interaction,
                 image_url,
                 match_data,
@@ -198,7 +201,7 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
                 "Timeout: No screenshot uploaded within 60 seconds.", ephemeral=True
             )
 
-    async def process_scoreboard_image(
+    async def process_scoreboard_with_gpt(
         self,
         interaction,
         image_url,
@@ -207,9 +210,18 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
         screenshot_message=None,
         processing_message=None,
     ):
-        """Process the scoreboard image using OpenAI Vision API"""
+        """Process the scoreboard image using advanced OpenAI GPT with player matching"""
         try:
-            # Define the synchronous OpenAI call function
+            # Get teams data from database
+            teams_data = json.loads(match_data.get("teams", "{}"))
+            team1_players = teams_data.get("team1", {}).get("players", [])
+            team2_players = teams_data.get("team2", {}).get("players", [])
+            
+            # Create the expected players list for GPT
+            team1_names = [p["nickname"] for p in team1_players]
+            team2_names = [p["nickname"] for p in team2_players]
+            
+            # Define the advanced OpenAI call function with player matching
             def make_openai_call():
                 return client.chat.completions.create(
                     model="gpt-4o",
@@ -219,36 +231,82 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
                             "content": [
                                 {
                                     "type": "text",
-                                    "text": """Analyze this scoreboard screenshot and extract player statistics. 
+                                    "text": f"""Analyze this Standoff 2 scoreboard screenshot and extract player statistics with smart player matching.
 
-IMPORTANT: First verify this is a Standoff 2 scoreboard with Counter-Terrorists vs Terrorists teams.
+EXPECTED PLAYERS FROM DATABASE:
+Team 1: {', '.join(team1_names)}
+Team 2: {', '.join(team2_names)}
+
+INSTRUCTIONS:
+1. First verify this is a valid Standoff 2 scoreboard with Counter-Terrorists vs Terrorists teams
+2. Extract all visible player names and their stats (kills, assists, deaths)
+3. CRITICAL: When extracting player names, REMOVE clan tags automatically
+   - Clan tags are ALWAYS in format "[TAG] PlayerName" 
+   - Extract ONLY the clean player name without the "[TAG] " prefix
+   - Examples: If screenshot shows "[EXTN] User-1", extract as "User-1"
+   - If screenshot shows "[PRO] Player123", extract as "Player123"
+   - Always remove the entire "[TAG] " part before processing
+4. Match the clean extracted names directly to database players:
+   - Try exact name matches first
+   - Then try substring matching (database name contained in clean extracted name)
+   - Handle variations like special characters, numbers
+   - Match case-insensitively
+5. Use FIXED team mapping: Team1 = Terrorists, Team2 = Counter-Terrorists
+6. Assign unmatched database players default stats (0 kills, 0 assists, 13 deaths)
 
 Return ONLY valid JSON in this exact format:
-{
+{{
   "game_detected": "standoff2" or "unknown",
-  "confidence": number (0.0-1.0 how confident this is a valid Standoff 2 scoreboard),
-  "teams": {
-    "Counter-Terrorists": {
-      "score": integer,
+  "confidence": number (0.0-1.0 confidence this is valid Standoff 2 scoreboard),
+  "teams": {{
+    "team1": {{
+      "score": integer (Terrorists score),
       "players": [
-        {"name": "exact_player_name_without_clan_tag", "kills": integer, "assists": integer, "deaths": integer}
+        {{
+          "nickname": "exact_database_player_name",
+          "discord_id": "will_be_filled_by_system",
+          "kills": integer,
+          "assists": integer, 
+          "deaths": integer,
+          "matched_from": "clean_extracted_name_if_matched" or "default_stats"
+        }}
       ]
-    },
-    "Terrorists": {
-      "score": integer, 
+    }},
+    "team2": {{
+      "score": integer (Counter-Terrorists score),
       "players": [
-        {"name": "exact_player_name_without_clan_tag", "kills": integer, "assists": integer, "deaths": integer}
+        {{
+          "nickname": "exact_database_player_name", 
+          "discord_id": "will_be_filled_by_system",
+          "kills": integer,
+          "assists": integer,
+          "deaths": integer,
+          "matched_from": "clean_extracted_name_if_matched" or "default_stats"
+        }}
       ]
-    }
-  }
-}
-Extract exact player names, kills, assists, and deaths as shown. Pay attention to special characters, numbers, and capitalization.""",
+    }}
+  }},
+  "matching_details": [
+    "details about each matching attempt for debugging"
+  ]
+}}
+
+IMPORTANT RULES:
+- Include ALL database players in the result (either with matched stats or default stats)
+- Use exact database nicknames in the result WITHOUT clan tags (clean names only)
+- Team1 = Terrorists (T side), Team2 = Counter-Terrorists (CT side)
+- If a database player isn't found in screenshot, give them default stats: 0K/0A/13D
+- Confidence should be 0.8+ only for clear Standoff 2 scoreboards
+- Extract exact numbers for kills, assists, deaths as shown in screenshot
+- CRITICAL: When reading player names from screenshot, automatically strip "[TAG] " prefixes
+- Store clean extracted name in "matched_from" (not the original with tag)
+- VERY IMPORTANT: Extract players WITHOUT clan tags from the very beginning""",
                                 },
                                 {"type": "image_url", "image_url": {"url": image_url}},
                             ],
                         }
                     ],
-                    max_tokens=1000,
+                    max_tokens=2000,
                 )
 
             # Run the OpenAI call in a separate thread to avoid blocking Discord's event loop
@@ -280,15 +338,26 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                     json_content = content
 
                 extracted_data = json.loads(json_content)
+                logger.info(f"GPT extracted data: {json.dumps(extracted_data, indent=2)}")
+                
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse OpenAI JSON response: {e}")
+                logger.error(f"Raw response: {content}")
+                
+                # Release the submission lock since parsing failed
+                try:
+                    await Match.release_submission_lock(match_data["match_id"])
+                except Exception as lock_error:
+                    logger.error(f"Failed to release submission lock: {lock_error}")
+
+                await self._delete_screenshot_safely(screenshot_message)
                 await interaction.followup.send(
                     "Failed to parse scoreboard data. Please try again.", ephemeral=True
                 )
                 return
 
-            # Validate and match players
-            await self.validate_and_update_match(
+            # Validate and process the GPT results
+            await self.process_gpt_results(
                 interaction,
                 extracted_data,
                 match_data,
@@ -298,13 +367,13 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             )
 
         except Exception as e:
-            logger.error(f"Error processing scoreboard image: {e}")
+            logger.error(f"Error processing scoreboard with GPT: {e}")
 
             # Release the submission lock since an error occurred
             try:
                 await Match.release_submission_lock(match_data["match_id"])
                 logger.info(
-                    f"Released submission lock for match {match_data['match_id']} due to an processing error"
+                    f"Released submission lock for match {match_data['match_id']} due to processing error"
                 )
             except Exception as lock_error:
                 logger.error(f"Failed to release submission lock: {lock_error}")
@@ -317,7 +386,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 ephemeral=True,
             )
 
-    async def validate_and_update_match(
+    async def process_gpt_results(
         self,
         interaction,
         extracted_data,
@@ -326,7 +395,7 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
         screenshot_message=None,
         processing_message=None,
     ):
-        """Validate extracted data against database and update match results"""
+        """Process and validate GPT results, then update match"""
         try:
             # Store guild ID for later use in role management
             self._guild_id = interaction.guild.id
@@ -357,363 +426,165 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 )
                 return
 
-            # Get teams data from new structure
-            teams_data = json.loads(match_data.get("teams", "{}"))
-            team1_players = teams_data.get("team1", {}).get("players", [])
-            team2_players = teams_data.get("team2", {}).get("players", [])
+            # Get teams data from GPT response
+            teams = extracted_data.get("teams", {})
+            team1_data = teams.get("team1", {})
+            team2_data = teams.get("team2", {})
             
-            all_db_players = team1_players + team2_players
-
-            # Get all extracted players from both teams (since teams switch at round 15)
-            teams_data_extracted = extracted_data.get("teams", {})
-            ct_data = teams_data_extracted.get("Counter-Terrorists", {})
-            t_data = teams_data_extracted.get("Terrorists", {})
-            all_extracted_players = ct_data.get("players", []) + t_data.get("players", [])
-
-            # Match players within their respective teams using FIXED team mapping
-            # RULE: team1 is always T side, team2 is always CT side in screenshots
-            matched_players, match_details = self.match_players_with_fixed_mapping(
-                team1_players, team2_players, ct_data, t_data
-            )
-
-            # Validate that we matched at least 40% of the players (increased from 30% for better accuracy)
-            total_db_players = len(all_db_players)
-            matched_count = len(matched_players)
-            match_rate = matched_count / total_db_players if total_db_players > 0 else 0
-
-            if match_rate < 0.4:
-                # Release the submission lock since not enough players matched
-                try:
-                    await Match.release_submission_lock(match_data["match_id"])
-                    logger.info(
-                        f"Released submission lock for match {match_data['match_id']} due to insufficient player matches ({match_rate:.1%})"
-                    )
-                except Exception as lock_error:
-                    logger.error(f"Failed to release submission lock: {lock_error}")
-
-                # Delete the screenshot since submission failed
-                await self._delete_screenshot_safely(screenshot_message)
-
-                # Create embed for player matching error
-                embed = discord.Embed(
-                    title=f"{Config.ICONS['unsuccess']} Insufficient Player Matches",
-                    description=f"Found {matched_count}/{total_db_players} players ({match_rate:.1%}) - Need at least 40% to validate match.",
-                    color=Config.EMBED_COLORS["red"],  # Red color
-                )
-
-                # Expected players field
-                expected_players = ", ".join([p["nickname"] for p in all_db_players])
-                embed.add_field(
-                    name="Expected Players", value=expected_players, inline=False
-                )
-
-                # Extracted players field
-                extracted_names = [p["name"] for p in all_extracted_players]
-                extracted_players = (
-                    ", ".join(extracted_names) if extracted_names else "None"
-                )
-                embed.add_field(
-                    name="Extracted Players", value=extracted_players, inline=False
-                )
-
-                # Matching details field
-                matching_details = (
-                    "\n".join(match_details) if match_details else "No matches found"
-                )
-                embed.add_field(
-                    name="Matching Details",
-                    value=f"```\n{matching_details}\n```",
-                    inline=False,
-                )
-
-                # Solution field
-                embed.add_field(
-                    name=f"{Config.ICONS['info']} Solution",
-                    value="Please ensure the scoreboard shows players from your match with clear, readable names.",
-                    inline=False,
-                )
-
-                await interaction.followup.send(embed=embed, ephemeral=True)
-                return
-
-            # Use FIXED team mapping: team1 = T side, team2 = CT side
-            screenshot_team1_data = teams_data_extracted.get("Terrorists", {})  # team1 = T
-            screenshot_team2_data = teams_data_extracted.get("Counter-Terrorists", {})  # team2 = CT
-            
-            logger.info("Using FIXED team mapping: Team1 = T side, Team2 = CT side")
-
-            # Skip complex team validation since we use fixed mapping
-            # Just validate basic requirements (minimum players)
-            total_db_players = len(team1_players + team2_players)
-            matched_count = len(matched_players)
-            match_rate = matched_count / total_db_players if total_db_players > 0 else 0
-            
-            if match_rate < 0.4:
-                # Release the submission lock since not enough players matched
-                try:
-                    await Match.release_submission_lock(match_data["match_id"])
-                    logger.info(f"Released submission lock for match {match_data['match_id']} due to insufficient matches ({match_rate:.1%})")
-                except Exception as lock_error:
-                    logger.error(f"Failed to release submission lock: {lock_error}")
-
-                # Delete the screenshot since submission failed
-                await self._delete_screenshot_safely(screenshot_message)
-
-                embed = discord.Embed(
-                    title=f"{Config.ICONS['unsuccess']} Insufficient Player Matches",
-                    description=f"Only {matched_count}/{total_db_players} players matched ({match_rate:.1%}). Need at least 40%.",
-                    color=Config.EMBED_COLORS["red"],
-                )
-                await interaction.followup.send(embed=embed, ephemeral=True)
-                return
-
-            # Get scores from the mapped screenshot teams
-            team1_score = screenshot_team1_data.get("score", 0)
-            team2_score = screenshot_team2_data.get("score", 0)
+            # Get scores
+            team1_score = team1_data.get("score", 0)
+            team2_score = team2_data.get("score", 0)
 
             # Validate score reasonableness
             if team1_score < 0 or team2_score < 0 or (team1_score == 0 and team2_score == 0):
                 # Release the submission lock since scores are invalid
                 try:
                     await Match.release_submission_lock(match_data["match_id"])
-                    logger.info(
-                        f"Released submission lock for match {match_data['match_id']} due to invalid scores"
-                    )
                 except Exception as lock_error:
                     logger.error(f"Failed to release submission lock: {lock_error}")
 
-                # Delete the screenshot since submission failed
                 await self._delete_screenshot_safely(screenshot_message)
-
                 await interaction.followup.send(
-                    f"Invalid scores detected: Team1({team1_score}) vs Team2({team2_score})\n"
-                    f"Please verify the scoreboard is clear and shows the final scores.",
+                    f"Invalid scores detected: {team1_score} - {team2_score}\n"
+                    f"Please ensure the scoreboard shows valid final scores.",
                     ephemeral=True,
                 )
                 return
 
             if team1_score == team2_score:
-                # Release the submission lock since match is a tie
+                # Release the submission lock since it's a tie
                 try:
                     await Match.release_submission_lock(match_data["match_id"])
-                    logger.info(
-                        f"Released submission lock for match {match_data['match_id']} due to tie score"
-                    )
                 except Exception as lock_error:
                     logger.error(f"Failed to release submission lock: {lock_error}")
 
-                # Delete the screenshot since submission failed
                 await self._delete_screenshot_safely(screenshot_message)
-
                 await interaction.followup.send(
-                    "The match appears to be a tie. Please verify the scoreboard.",
+                    f"Tied matches are not supported: {team1_score} - {team2_score}\n"
+                    f"Please submit results only for completed matches.",
                     ephemeral=True,
                 )
                 return
 
-            # Determine winning team based on scores
-            team1_won = team1_score > team2_score
+            # Get original teams data to fill in discord_ids
+            original_teams_data = json.loads(match_data.get("teams", "{}"))
+            original_team1_players = original_teams_data.get("team1", {}).get("players", [])
+            original_team2_players = original_teams_data.get("team2", {}).get("players", [])
 
-            # Process teams using the mapped data
+            # Process team1 players (fill in discord_ids and calculate points)
             updated_team1 = []
-            updated_team2 = []
-
-            # Process team1 players from mapped screenshot data (T side)
-            for screenshot_player in screenshot_team1_data.get("players", []):
-                player_name = screenshot_player["name"]
-                # Find the corresponding database player - check ALL players first
-                matched_db_player = None
-                for nickname, screenshot_data in matched_players.items():
-                    if screenshot_data["name"] == player_name:
-                        # Find this nickname in database
-                        for p in team1_players + team2_players:
-                            if p["nickname"] == nickname:
-                                matched_db_player = p
-                                break
-                        break
-
-                # Only process if player belongs to team1
-                if matched_db_player and matched_db_player in team1_players:
-                    db_player = matched_db_player.copy()
-                    # Use screenshot stats and database player info
-                    db_player["kills"] = screenshot_player["kills"]
-                    db_player["assists"] = screenshot_player.get("assists", 0)
-                    db_player["deaths"] = screenshot_player["deaths"]
-
-                    # Calculate rating using bot formula: (KILLS + 0.5 × ASSISTS) / max(1, DEATHS)
-                    kills = db_player["kills"]
-                    assists = db_player["assists"]
-                    deaths = max(1, db_player["deaths"])  # Prevent division by zero
-                    db_player["rating"] = round((kills + 0.5 * assists) / deaths, 1)
-
-                    # Calculate points based on league type
-                    discord_id = int(db_player["discord_id"])
+            for gpt_player in team1_data.get("players", []):
+                # Find original player by nickname
+                original_player = next((p for p in original_team1_players if p["nickname"] == gpt_player["nickname"]), None)
+                if original_player:
+                    # Calculate points based on win/loss and league type
+                    team1_won = team1_score > team2_score
                     match_league = match_data.get("league")
                     default_league = await self.get_default_league_from_config()
 
                     if match_league == default_league:
                         # Default league: use level-based point calculation
                         current_points = await self.get_player_current_points(
-                            discord_id, match_league
+                            int(original_player["discord_id"]), match_league
                         )
                         is_challenger = await self.check_challenger_status(
-                            discord_id, current_points
+                            int(original_player["discord_id"]), current_points
                         )
                         points_received = await self.calculate_level_based_points(
-                            discord_id, team1_won, match_league, is_challenger
+                            int(original_player["discord_id"]), team1_won, match_league, is_challenger
                         )
                     else:
                         # Non-default league: use fixed points
                         points_received = 25 if team1_won else -25
-
-                    # Map points_received to points for the generator
-                    db_player["points"] = points_received
-                    db_player["points_received"] = points_received  # Keep for database
-
-                    updated_team1.append(db_player)
-                    logger.info(f"Processed Team1 player '{db_player['nickname']}' from T side - Rating: {db_player['rating']}, Points: {db_player['points']}")
-                elif matched_db_player and matched_db_player in team2_players:
-                    logger.warning(f"Team2 player '{matched_db_player['nickname']}' found in T side (should be in CT side)")
-
-            # Process team2 players from mapped screenshot data (CT side)
-            for screenshot_player in screenshot_team2_data.get("players", []):
-                player_name = screenshot_player["name"]
-                # Find the corresponding database player - check ALL players first
-                matched_db_player = None
-                for nickname, screenshot_data in matched_players.items():
-                    if screenshot_data["name"] == player_name:
-                        # Find this nickname in database
-                        for p in team1_players + team2_players:
-                            if p["nickname"] == nickname:
-                                matched_db_player = p
-                                break
-                        break
-
-                # Only process if player belongs to team2
-                if matched_db_player and matched_db_player in team2_players:
-                    db_player = matched_db_player.copy()
-                    # Use screenshot stats and database player info
-                    db_player["kills"] = screenshot_player["kills"]
-                    db_player["assists"] = screenshot_player.get("assists", 0)
-                    db_player["deaths"] = screenshot_player["deaths"]
-
+                    
                     # Calculate rating using bot formula: (KILLS + 0.5 × ASSISTS) / max(1, DEATHS)
-                    kills = db_player["kills"]
-                    assists = db_player["assists"]
-                    deaths = max(1, db_player["deaths"])  # Prevent division by zero
-                    db_player["rating"] = round((kills + 0.5 * assists) / deaths, 1)
+                    kills = gpt_player.get("kills", 0)
+                    assists = gpt_player.get("assists", 0)
+                    deaths = max(1, gpt_player.get("deaths", 13))  # Prevent division by zero
+                    rating = round((kills + 0.5 * assists) / deaths, 1)
+                    
+                    updated_player = {
+                        "nickname": gpt_player["nickname"],
+                        "discord_id": original_player["discord_id"],
+                        "kills": kills,
+                        "assists": assists,
+                        "deaths": gpt_player.get("deaths", 13),
+                        "rating": rating,
+                        "points": points_received,  # For generator
+                        "points_received": points_received,  # For database
+                        "matched_from": gpt_player.get("matched_from", "default_stats")
+                    }
+                    updated_team1.append(updated_player)
 
-                    # Calculate points based on league type
-                    discord_id = int(db_player["discord_id"])
+            # Process team2 players (fill in discord_ids and calculate points)
+            updated_team2 = []
+            for gpt_player in team2_data.get("players", []):
+                # Find original player by nickname
+                original_player = next((p for p in original_team2_players if p["nickname"] == gpt_player["nickname"]), None)
+                if original_player:
+                    # Calculate points based on win/loss and league type
+                    team2_won = team2_score > team1_score
                     match_league = match_data.get("league")
                     default_league = await self.get_default_league_from_config()
 
                     if match_league == default_league:
                         # Default league: use level-based point calculation
                         current_points = await self.get_player_current_points(
-                            discord_id, match_league
+                            int(original_player["discord_id"]), match_league
                         )
                         is_challenger = await self.check_challenger_status(
-                            discord_id, current_points
+                            int(original_player["discord_id"]), current_points
                         )
-                        team2_won = not team1_won
                         points_received = await self.calculate_level_based_points(
-                            discord_id, team2_won, match_league, is_challenger
+                            int(original_player["discord_id"]), team2_won, match_league, is_challenger
                         )
                     else:
                         # Non-default league: use fixed points
-                        team2_won = not team1_won
                         points_received = 25 if team2_won else -25
-
-                    # Map points_received to points for the generator
-                    db_player["points"] = points_received
-                    db_player["points_received"] = points_received  # Keep for database
-
-                    updated_team2.append(db_player)
-                    logger.info(f"Processed Team2 player '{db_player['nickname']}' from CT side - Rating: {db_player['rating']}, Points: {db_player['points']}")
-                elif matched_db_player and matched_db_player in team1_players:
-                    logger.warning(f"Team1 player '{matched_db_player['nickname']}' found in CT side (should be in T side)")
-                    db_player["assists"] = screenshot_player.get("assists", 0)
-                    db_player["deaths"] = screenshot_player["deaths"]
-
-                    # Calculate points based on league type
-                    discord_id = int(db_player["discord_id"])
-                    match_league = match_data.get("league")
-                    default_league = await self.get_default_league_from_config()
-
-                    if match_league == default_league:
-                        # Default league: use level-based point calculation
-                        current_points = await self.get_player_current_points(
-                            discord_id, match_league
-                        )
-                        is_challenger = await self.check_challenger_status(
-                            discord_id, current_points
-                        )
-                        team2_won = not team1_won
-                        db_player[
-                            "points_received"
-                        ] = await self.calculate_level_based_points(
-                            discord_id, team2_won, match_league, is_challenger
-                        )
-                    else:
-                        # Non-default league: use fixed points
-                        team2_won = not team1_won
-                        db_player["points_received"] = 25 if team2_won else -25
-
-                    updated_team2.append(db_player)
-
-            # Add missing players with default stats to their correct teams
-            # Find players who weren't processed into either team
-            processed_players = {p["discord_id"] for p in updated_team1 + updated_team2}
-
-            for db_player in all_db_players:
-                if db_player["discord_id"] not in processed_players:
-                    # Create player with default stats
-                    unmatched_player = db_player.copy()
-                    unmatched_player["kills"] = 0
-                    unmatched_player["assists"] = 0
-                    unmatched_player["deaths"] = 13
                     
                     # Calculate rating using bot formula: (KILLS + 0.5 × ASSISTS) / max(1, DEATHS)
-                    kills = unmatched_player["kills"]
-                    assists = unmatched_player["assists"]
-                    deaths = max(1, unmatched_player["deaths"])  # Prevent division by zero
-                    unmatched_player["rating"] = round((kills + 0.5 * assists) / deaths, 1)
+                    kills = gpt_player.get("kills", 0)
+                    assists = gpt_player.get("assists", 0)
+                    deaths = max(1, gpt_player.get("deaths", 13))  # Prevent division by zero
+                    rating = round((kills + 0.5 * assists) / deaths, 1)
                     
-                    # Default penalty for missing players
-                    points_received = -10
-                    unmatched_player["points"] = points_received  # For generator
-                    unmatched_player["points_received"] = points_received  # For database
+                    updated_player = {
+                        "nickname": gpt_player["nickname"],
+                        "discord_id": original_player["discord_id"],
+                        "kills": kills,
+                        "assists": assists,
+                        "deaths": gpt_player.get("deaths", 13),
+                        "rating": rating,
+                        "points": points_received,  # For generator
+                        "points_received": points_received,  # For database
+                        "matched_from": gpt_player.get("matched_from", "default_stats")
+                    }
+                    updated_team2.append(updated_player)
 
-                    # Add to correct team based on database team assignment
-                    if db_player in team1_players:
-                        updated_team1.append(unmatched_player)
-                        logger.info(f"Added missing Team1 player '{db_player['nickname']}' with default stats (0K/0A/13D, Rating: {unmatched_player['rating']}, Points: {unmatched_player['points']})")
-                    elif db_player in team2_players:
-                        updated_team2.append(unmatched_player)
-                        logger.info(f"Added missing Team2 player '{db_player['nickname']}' with default stats (0K/0A/13D, Rating: {unmatched_player['rating']}, Points: {unmatched_player['points']})")
-                    else:
-                        logger.warning(f"Could not determine team for missing player '{db_player['nickname']}'")
-
-            # Update database
-            # Create copies of teams without rating for database storage
+            # Update database - create copies without extra fields for database storage
             team1_for_db = []
             team2_for_db = []
             
             for player in updated_team1:
-                db_player = player.copy()
-                if "rating" in db_player:
-                    del db_player["rating"]  # Remove rating from database copy
-                if "points" in db_player:
-                    del db_player["points"]   # Remove generator points from database copy
+                db_player = {
+                    "nickname": player["nickname"],
+                    "discord_id": player["discord_id"],
+                    "kills": player["kills"],
+                    "assists": player["assists"],
+                    "deaths": player["deaths"],
+                    "points_received": player["points_received"]
+                }
                 team1_for_db.append(db_player)
             
             for player in updated_team2:
-                db_player = player.copy()
-                if "rating" in db_player:
-                    del db_player["rating"]  # Remove rating from database copy
-                if "points" in db_player:
-                    del db_player["points"]   # Remove generator points from database copy
+                db_player = {
+                    "nickname": player["nickname"],
+                    "discord_id": player["discord_id"],
+                    "kills": player["kills"],
+                    "assists": player["assists"],
+                    "deaths": player["deaths"],
+                    "points_received": player["points_received"]
+                }
                 team2_for_db.append(db_player)
             
             await Match.complete_submission(
@@ -739,15 +610,13 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             )
 
             # Delete the screenshot message to clean up
-            if screenshot_message:
-                try:
-                    await screenshot_message.delete()
-                except discord.NotFound:
-                    pass  # Message already deleted
-                except discord.Forbidden:
-                    logger.warning(
-                        "No permission to delete screenshot message"
-                    )  # Update processing message or send new success embed
+            await self._delete_screenshot_safely(screenshot_message)
+            
+            # Show success message
+            matching_details = extracted_data.get("matching_details", [])
+            matched_count = sum(1 for p in updated_team1 + updated_team2 if p.get("matched_from", "") != "default_stats")
+            total_players = len(updated_team1 + updated_team2)
+            
             success_embed = discord.Embed(
                 title=f"{Config.ICONS['success']} Scoreboard Successfully Processed",
                 description="Screenshot analysis completed successfully!",
@@ -755,14 +624,15 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
             )
             success_embed.add_field(
                 name=f"{Config.ICONS['stats']} Match Results",
-                value=f"**Matched:** {matched_count}/{total_db_players} players ({match_rate:.1%})\n"
+                value=f"**Matched:** {matched_count}/{total_players} players\n"
                 f"**Team 1:** {len(updated_team1)} players\n"
                 f"**Team 2:** {len(updated_team2)} players",
                 inline=True,
             )
             success_embed.add_field(
                 name="⚙️ Processing Details",
-                value="• Missing players assigned default stats (0K/0A/13D)\n"
+                value="• Players automatically matched\n"
+                "• Missing players assigned default stats\n"
                 "• Results posted to scoreboard channel\n"
                 "• Player statistics updated",
                 inline=True,
@@ -778,13 +648,13 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 await interaction.followup.send(embed=success_embed, ephemeral=True)
 
         except Exception as e:
-            logger.error(f"Error validating and updating match: {e}")
+            logger.error(f"Error processing GPT results: {e}")
 
             # Release the submission lock since an error occurred
             try:
                 await Match.release_submission_lock(match_data["match_id"])
                 logger.info(
-                    f"Released submission lock for match {match_data['match_id']} due to error"
+                    f"Released submission lock for match {match_data['match_id']} due to processing error"
                 )
             except Exception as lock_error:
                 logger.error(f"Failed to release submission lock: {lock_error}")
@@ -796,87 +666,12 @@ Extract exact player names, kills, assists, and deaths as shown. Pay attention t
                 "Error processing match results. Please try again.", ephemeral=True
             )
 
-    def match_players_with_fixed_mapping(self, team1_players, team2_players, ct_data, t_data):
-        """
-        Match players using FIXED team mapping: team1 = T side, team2 = CT side
-        This eliminates the need for complex team mapping logic.
-        """
-        matched = {}
-        match_details = []
-        
-        logger.info("Starting player matching with FIXED mapping...")
-        logger.info("RULE: Team1 = T side, Team2 = CT side")
-        logger.info(f"Team1 players: {[p['nickname'] for p in team1_players]}")
-        logger.info(f"Team2 players: {[p['nickname'] for p in team2_players]}")
-        
-        # Match team1 players with T side
-        team1_matched, team1_details = self.match_team_players(
-            team1_players, t_data.get("players", []), "Team1 (T side)"
-        )
-        matched.update(team1_matched)
-        match_details.extend(team1_details)
-        
-        # Match team2 players with CT side
-        team2_matched, team2_details = self.match_team_players(
-            team2_players, ct_data.get("players", []), "Team2 (CT side)"
-        )
-        matched.update(team2_matched)
-        match_details.extend(team2_details)
-        
-        logger.info(f"Fixed mapping complete:")
-        logger.info(f"  - Team1 (T) matched: {len(team1_matched)}/{len(team1_players)}")
-        logger.info(f"  - Team2 (CT) matched: {len(team2_matched)}/{len(team2_players)}")
-        logger.info(f"  - Total matched: {len(matched)}/{len(team1_players + team2_players)}")
-        
-        return matched, match_details
-
-    def match_team_players(self, db_team_players, screenshot_team_players, team_name):
-        """
-        Match players from a specific database team with players from the corresponding screenshot team
-        """
-        matched = {}
-        used_extracted = set()
-        match_details = []
-        
-        db_player_names = [p["nickname"] for p in db_team_players]
-        
-        logger.info(f"Matching {team_name}:")
-        logger.info(f"  Database players: {db_player_names}")
-        logger.info(f"  Screenshot players: {[p['name'] for p in screenshot_team_players]}")
-
-        # Step 1: Find exact substring matches (DB name must be contained in screenshot name)
-        for db_player in db_player_names:
-            for extracted_player in screenshot_team_players:
-                if extracted_player["name"] in used_extracted:
-                    continue
-
-                # Check if DB player name is a substring of screenshot name (case insensitive)
-                db_lower = db_player.lower()
-                screenshot_lower = extracted_player["name"].lower()
-                
-                if db_lower in screenshot_lower:
-                    matched[db_player] = extracted_player
-                    used_extracted.add(extracted_player["name"])
-                    match_details.append(
-                        f"✅ [{team_name}] '{db_player}' → '{extracted_player['name']}' [SUBSTRING MATCH]"
-                    )
-                    break
-
-        # Log unmatched players (will receive default stats)
-        for db_player in db_player_names:
-            if db_player not in matched:
-                available_names = [p["name"] for p in screenshot_team_players if p["name"] not in used_extracted]
-                match_details.append(
-                    f"❌ [{team_name}] '{db_player}' → no substring match found (available: {available_names}) [WILL USE DEFAULT STATS]"
-                )
-
-        return matched, match_details
-
     async def update_user_stats(self, all_players, match_data):
         """Update user statistics in database and manage level roles"""
         # Extract league from match data
         league_name = match_data.get("league")
         logger.info(f"Updating stats for match in league: {league_name}")
+        
         # Get the default league from config table to determine if level roles should be updated
         default_league = await self.get_default_league_from_config()
         is_default_league = league_name == default_league
@@ -1064,8 +859,6 @@ class SubmitScoreboardView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         # Check if there's an active season
-        from models.season import Season
-
         if not await Season.is_season_active():
             # Get the next season number
             last_season_id = await Season.get_last_season_id()
@@ -1105,7 +898,6 @@ class Scoreboard(commands.Cog):
 
     async def _retry_recreate_views(self):
         """Retry recreating persistent views after a delay"""
-        import asyncio
         await asyncio.sleep(30)  # Wait 30 seconds before retry
         try:
             logger.info("Retrying to recreate scoreboard persistent views...")
@@ -1271,6 +1063,7 @@ class Scoreboard(commands.Cog):
                 f"**Submission Channel:** {submission_channel.mention}\n"
                 f"**Results Channel:** {target_channel.mention}\n\n"
                 f"Users can now submit match results using the button above.\n"
+                f"Screenshots will be automatically analyzed and processed.\n"
                 f"This configuration will persist across bot restarts.",
                 color=Config.EMBED_COLORS["light_green"],
             )

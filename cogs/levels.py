@@ -40,7 +40,7 @@ class LevelsCog(commands.Cog):
             "color": 0xBBBBBB,
             "win_points": 70,
             "loss_points": -5,
-            "emoji": "<:level1:1380672303360118804>",
+            "emoji": "<:level1:1397901687473180813>",
         },
         2: {
             "min_points": 501,
@@ -48,7 +48,7 @@ class LevelsCog(commands.Cog):
             "color": 0x4ADE80,
             "win_points": 70,
             "loss_points": -10,
-            "emoji": "<:level2:1380672304928919583>",
+            "emoji": "<:level2:1397901690190958622>",
         },
         3: {
             "min_points": 751,
@@ -56,7 +56,7 @@ class LevelsCog(commands.Cog):
             "color": 0x4ADE80,
             "win_points": 55,
             "loss_points": -10,
-            "emoji": "<:level3:1380672307034460371>",
+            "emoji": "<:level3:1397901669140004905>",
         },
         4: {
             "min_points": 901,
@@ -64,7 +64,7 @@ class LevelsCog(commands.Cog):
             "color": 0xF8C627,
             "win_points": 55,
             "loss_points": -13,
-            "emoji": "<:level4:1380672309148516524>",
+            "emoji": "<:level4:1397901670792298526>",
         },
         5: {
             "min_points": 1051,
@@ -72,7 +72,7 @@ class LevelsCog(commands.Cog):
             "color": 0xF8C627,
             "win_points": 55,
             "loss_points": -20,
-            "emoji": "<:level5:1380672311249600615>",
+            "emoji": "<:level5:1397901672608698400>",
         },
         6: {
             "min_points": 1201,
@@ -80,7 +80,7 @@ class LevelsCog(commands.Cog):
             "color": 0xF8C627,
             "win_points": 40,
             "loss_points": -24,
-            "emoji": "<:level6:1380672313401540689>",
+            "emoji": "<:level6:1397901674605183066>",
         },
         7: {
             "min_points": 1351,
@@ -88,7 +88,7 @@ class LevelsCog(commands.Cog):
             "color": 0xF8C627,
             "win_points": 40,
             "loss_points": -28,
-            "emoji": "<:level7:1380672315410350291>",
+            "emoji": "<:level7:1397901676613996544>",
         },
         8: {
             "min_points": 1531,
@@ -96,7 +96,7 @@ class LevelsCog(commands.Cog):
             "color": 0xFA6E22,
             "win_points": 40,
             "loss_points": -34,
-            "emoji": "<:level8:1380672318195499039>",
+            "emoji": "<:level8:1397901678480461956>",
         },
         9: {
             "min_points": 1751,
@@ -104,7 +104,7 @@ class LevelsCog(commands.Cog):
             "color": 0xFA6E22,
             "win_points": 30,
             "loss_points": -40,
-            "emoji": "<:level9:1380672319898255450>",
+            "emoji": "<:level9:1397901680795844719>",
         },
         10: {
             "min_points": 2001,
@@ -112,7 +112,7 @@ class LevelsCog(commands.Cog):
             "color": 0xDD0226,
             "win_points": 20,
             "loss_points": -45,
-            "emoji": "<:level10:1380672321525776485>",
+            "emoji": "<:level10:1397901683463422024>",
         },
     }
 
@@ -121,7 +121,7 @@ class LevelsCog(commands.Cog):
         "color": 0xDD0226,
         "win_points": 15,
         "loss_points": -48,
-        "emoji": "<:challenger:1380672301129011222>",
+        "emoji": "<:challenger:1397901684952268871>",
     }
 
     @staticmethod

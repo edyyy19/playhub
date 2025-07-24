@@ -136,53 +136,63 @@ class Stats:
         return db_result
 
     @classmethod
-    async def get_user_stats(cls, discord_id: int, league_name: str = None):
+    async def get_user_stats(cls, discord_id: int, league_name: str = None, max_retries: int = 3):
         """Get user's current statistics from the specified league table (or default league if not specified)"""
         loop = asyncio.get_running_loop()
 
         def db_select():
-            try:
-                # If no league is specified, get the default league from config
-                table_name = league_name
-                if not table_name:
-                    config_response = (
-                        Config.supabase().table("config").select("*").execute()
-                    )
-                    if not config_response.data:
-                        logger.error("No config found in database")
-                        return None
-
-                    config_data = config_response.data[0]
-                    table_name = config_data.get("default_league")
-
+            table_name = league_name
+            
+            for attempt in range(max_retries):
+                try:
+                    # If no league is specified, get the default league from config
                     if not table_name:
-                        logger.error("No default league configured")
+                        config_response = (
+                            Config.supabase().table("config").select("*").execute()
+                        )
+                        if not config_response.data:
+                            logger.error("No config found in database")
+                            return None
+
+                        config_data = config_response.data[0]
+                        table_name = config_data.get("default_league")
+
+                        if not table_name:
+                            logger.error("No default league configured")
+                            return None
+
+                    # Get user stats from the league table (table_name is the actual table name)
+                    response = (
+                        Config.supabase()
+                        .table(table_name)
+                        .select("*")
+                        .eq("discord_id", str(discord_id))
+                        .execute()
+                    )
+
+                    if response.data:
+                        return {
+                            "success": True,
+                            "stats": response.data[0],
+                            "league": table_name,
+                        }
+                    else:
+                        logger.warning(
+                            f"User {discord_id} not found in league table {table_name}"
+                        )
                         return None
 
-                # Get user stats from the league table (table_name is the actual table name)
-                response = (
-                    Config.supabase()
-                    .table(table_name)
-                    .select("*")
-                    .eq("discord_id", str(discord_id))
-                    .execute()
-                )
-
-                if response.data:
-                    return {
-                        "success": True,
-                        "stats": response.data[0],
-                        "league": table_name,
-                    }
-                else:
-                    logger.warning(
-                        f"User {discord_id} not found in league table {table_name}"
-                    )
-                    return None
-
-            except Exception as e:
-                logger.error(f"Error getting stats from league table {table_name}: {e}")
-                return None
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        # Wait before retry with exponential backoff
+                        import time
+                        wait_time = (2 ** attempt) * 0.5  # 0.5s, 1s, 2s
+                        logger.warning(f"Database connection failed getting stats (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
+                        time.sleep(wait_time)
+                    else:
+                        logger.error(f"Error getting stats from league table {table_name} after {max_retries} attempts: {e}")
+                        return None
+            return None
 
         return await loop.run_in_executor(None, db_select)
 

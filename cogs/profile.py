@@ -371,8 +371,6 @@ class Profile(commands.Cog):
                 match_date = "Unknown"
                 if match.get("ended_at"):
                     try:
-                        from datetime import datetime
-
                         dt = datetime.fromisoformat(
                             match["ended_at"].replace("Z", "+00:00")
                         )

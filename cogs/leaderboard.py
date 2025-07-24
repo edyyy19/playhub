@@ -627,7 +627,7 @@ class Leaderboard(commands.Cog):
             response = (
                 Config.supabase()
                 .table(league_table_name)
-                .select("discord_id, points, wins, loses")
+                .select("discord_id, points, wins, loses, kills, deaths")
                 .order("points", desc=True)
                 .execute()
             )
