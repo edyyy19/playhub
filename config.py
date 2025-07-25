@@ -26,7 +26,7 @@ class Config:
         {"name": "Rust", "emoji": "<:rust_emoji:1397905569825951774>"},
         {"name": "Province", "emoji": "<:province_emoji:1397905564520022037>"},
         {"name": "Breeze", "emoji": "<:breeze_emoji:1397905561407979570>"},
-        {"name": "Dune", "emoji": "<:dune:1397905722372521997>"},
+        {"name": "Dune", "emoji": "<:dune_emoji:1397905722372521997>"},
         {"name": "Zone7", "emoji": "<:zone7_emoji:1397905558006136963>"},
         {"name": "Sakura", "emoji": "<:sakura_emoji:1397905551526203452>"},
     ]
@@ -48,10 +48,11 @@ class Config:
         "season": "<:discord_season:1397568107496603758>",
         "stats": "<:discord_stats:1397568109472251954>",
         "stats_yellow": "<:discord_stats_yellow:1398291689738862723>",
+        "stats_lightgreen":"<:discord_stats_lightgreen:1398376023120281641>",
         "user": "<:discord_user:1397568111208562688>",
         "calendar": "<:discord_calendar:1397568115478499458>",
         "camera": "<:discord_camera:1397568144813330452>",
-        "crosshair": "<:discord_crosshair:1397568197879660635>",
+        "crosshair": "<:discord_crosshair_1:1398370225652629614>",
         "clock": "<:discord_clock:1397568165432656033>",
         "clock_yellow": "<:discord_clock_yellow:1397568180528091277>",
         "clock_lightgreen": "<:discord_clock_lightgreen:1397568172827086900>",
@@ -64,6 +65,8 @@ class Config:
         "sql": "<:discord_sql:1397568253295067177>",
         "fix": "<:discord_fix:1397568204867633252>",
         "wave": "<:discord_wave:1397568113679274044>",
+        "id": "<:discord_id:1398370238017437818>",
+        "game": "<:discord_game:1398371217760587776>",
 }
 
 

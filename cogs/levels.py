@@ -183,20 +183,20 @@ class LevelsCog(commands.Cog):
 
     @staticmethod
     def get_level_icon_path(points):
-        """Get the level icon PNG file path based on points"""
+        """Get the level icon WebP file path based on points"""
         import os
         
         # Check if player is Challenger level
         if points >= LevelsCog.CHALLENGER_CONFIG["min_points"]:
-            return os.path.join("assets", "level_icons", "challenger.png")
+            return os.path.join("assets", "level_icons", "challenger.webp")
         
         # Otherwise, get the regular level icon
         for level, config in LevelsCog.LEVEL_CONFIG.items():
             if config["min_points"] <= points <= config["max_points"]:
-                return os.path.join("assets", "level_icons", f"level{level}.png")
+                return os.path.join("assets", "level_icons", f"level{level}.webp")
 
         # Default to level 10 icon for points above 2001 but below challenger
-        return os.path.join("assets", "level_icons", "level10.png")
+        return os.path.join("assets", "level_icons", "level10.webp")
 
     async def get_top_10_players(self):
         """Get the top 10 players by points from database"""

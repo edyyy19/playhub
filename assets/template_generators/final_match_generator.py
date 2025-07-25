@@ -5,20 +5,350 @@ Replaces HTML2Image for final match embed generation
 
 import os
 from PIL import Image, ImageDraw, ImageFont
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 import logging
 import io
+import asyncio
+import time
+import weakref
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
 
 class FinalMatchTemplateGenerator:
-    """Generator pentru template-ul final de meci folosind Pillow"""
+    """Generator pentru template-ul final de meci folosind Pillow cu cache optimizat"""
     
-    def __init__(self, background_image_path: str = "assets/template_images/arena_faceit_match_details.png"):
+    def __init__(self, background_image_path: str = "assets/template_images/arena_faceit_match_details.webp"):
         self.background_image_path = background_image_path
         self.default_font_path = "assets/fonts/font-black.ttf"
         
+        # Cache pentru optimizare cu toate variabilele necesare
+        self._font_cache: Dict[int, tuple] = {}  # size -> (font, timestamp)
+        self._avatar_cache: Dict[str, tuple] = {}  # user_id -> (avatar_data, timestamp)
+        self._level_icon_cache: Dict[str, tuple] = {}  # path -> (image, timestamp)
+        self._level_icons_cache: Dict[str, Image.Image] = {}  # path -> processed_image (legacy)
+        self._circular_mask_cache: Dict[int, Image.Image] = {}  # size -> mask
+        self._template_cache: Optional[Image.Image] = None
+        self._template_cache_time: float = 0
+        
+        # Cache settings - durate în secunde
+        self.avatar_cache_duration = 300  # 5 minutes
+        self.font_cache_duration = 1800  # 30 minutes
+        self.level_icon_cache_duration = 600  # 10 minutes
+        self.template_cache_duration = 1800  # 30 minutes
+        
+        # Pre-load level icons at startup
+        asyncio.create_task(self._preload_level_icons())
+        
+    async def _preload_level_icons(self):
+        """Pre-încarcă toate icon-urile de level în cache pentru performanță maximă"""
+        try:
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            level_icons_dir = os.path.join(project_root, "assets", "level_icons")
+            
+            if not os.path.exists(level_icons_dir):
+                logger.warning(f"Level icons directory not found: {level_icons_dir}")
+                return
+            
+            # Pre-load all level icons (WebP format pentru performanță optimă)
+            icon_files = [
+                "level1.webp", "level2.webp", "level3.webp", "level4.webp", "level5.webp",
+                "level6.webp", "level7.webp", "level8.webp", "level9.webp", "level10.webp",
+                "challenger.webp"
+            ]
+            
+            for icon_file in icon_files:
+                icon_path = os.path.join(level_icons_dir, icon_file)
+                if os.path.exists(icon_path):
+                    try:
+                        # Pre-process icon pentru toate mărimile comune
+                        original_icon = Image.open(icon_path)
+                        if original_icon.mode != 'RGBA':
+                            original_icon = original_icon.convert('RGBA')
+                        
+                        # Pre-process pentru 100px (mărimea standard)
+                        processed_icon = self._process_level_icon(original_icon, 100)
+                        self._level_icons_cache[f"{icon_path}_100"] = processed_icon
+                        
+                        logger.debug(f"Pre-loaded level icon: {icon_file}")
+                    except Exception as e:
+                        logger.warning(f"Failed to pre-load level icon {icon_file}: {e}")
+                        
+            logger.info(f"Pre-loaded {len(self._level_icons_cache)} level icons into cache")
+            
+        except Exception as e:
+            logger.error(f"Error pre-loading level icons: {e}")
+    
+    def _get_cached_font(self, size: int) -> ImageFont.FreeTypeFont:
+        """Returnează font-ul din cache sau îl încarcă și îl cache-uiește"""
+        if size not in self._font_cache:
+            try:
+                project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                font_path = os.path.join(project_root, self.default_font_path)
+                self._font_cache[size] = ImageFont.truetype(font_path, size)
+                logger.debug(f"Cached font size {size}")
+            except (OSError, IOError) as e:
+                logger.warning(f"Custom font not found ({e}), using default for size {size}")
+                self._font_cache[size] = ImageFont.load_default()
+        
+        return self._font_cache[size]
+    
+    def _get_circular_mask(self, size: int) -> Image.Image:
+        """Returnează mask-ul circular din cache sau îl creează și îl cache-uiește"""
+        if size not in self._circular_mask_cache:
+            mask = Image.new('L', (size, size), 0)
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.ellipse((0, 0, size, size), fill=255)
+            self._circular_mask_cache[size] = mask
+            logger.debug(f"Created circular mask for size {size}")
+        
+        return self._circular_mask_cache[size]
+    
+    def _process_level_icon(self, level_icon: Image.Image, size: int) -> Image.Image:
+        """Procesează iconița de level (face pătrată și redimensionează)"""
+        # Obține dimensiunile originale
+        original_width, original_height = level_icon.size
+        
+        # Dacă imaginea nu este pătrată, o forțăm să fie pătrată
+        if original_width != original_height:
+            max_size = max(original_width, original_height)
+            square_icon = Image.new('RGBA', (max_size, max_size), (0, 0, 0, 0))
+            
+            paste_x = (max_size - original_width) // 2
+            paste_y = (max_size - original_height) // 2
+            square_icon.paste(level_icon, (paste_x, paste_y), level_icon)
+            level_icon = square_icon
+        
+        # Redimensionează la mărimea dorită
+        return level_icon.resize((size, size), Image.Resampling.LANCZOS)
+    
+    async def _get_cached_avatar(self, player) -> Optional[Image.Image]:
+        """Returnează avatarul din cache sau îl descarcă și îl cache-uiește"""
+        if not hasattr(player, 'id'):
+            return None
+            
+        user_id = str(player.id)
+        current_time = time.time()
+        
+        # Verifică cache-ul
+        if user_id in self._avatar_cache:
+            avatar_data, timestamp = self._avatar_cache[user_id]
+            if current_time - timestamp < self.avatar_cache_duration:
+                return avatar_data
+            else:
+                # Cache expirat, șterge intrarea
+                del self._avatar_cache[user_id]
+        
+        # Descarcă și procesează avatarul
+        try:
+            avatar_obj = self._get_avatar(player)
+            if not avatar_obj:
+                return None
+                
+            avatar_bytes = await avatar_obj.read()
+            avatar_image = Image.open(io.BytesIO(avatar_bytes))
+            
+            if avatar_image.mode != 'RGB':
+                avatar_image = avatar_image.convert('RGB')
+            
+            # Cache avatarul procesat
+            self._avatar_cache[user_id] = (avatar_image, current_time)
+            logger.debug(f"Cached avatar for user {user_id}")
+            
+            return avatar_image
+            
+        except Exception as e:
+            logger.warning(f"Failed to get avatar for {player}: {e}")
+            return None
+    async def _batch_get_player_stats(self, players: List[Union[str, object]], league_table=None) -> Dict[str, int]:
+        """Obține statisticile pentru toți jucătorii cu un singur batch query optimizat"""
+        try:
+            if not players:
+                return {}
+                
+            # Import local pentru a evita circular imports
+            from config import Config
+            
+            # Filtrează doar jucătorii cu ID valid
+            valid_players = [p for p in players if hasattr(p, 'id')]
+            if not valid_players:
+                return {}
+            
+            # Obține config-ul o singură dată pentru toți jucătorii
+            table_name = league_table
+            if not table_name:
+                try:
+                    config_response = await asyncio.get_event_loop().run_in_executor(
+                        None, 
+                        lambda: Config.supabase().table("config").select("*").execute()
+                    )
+                    if config_response.data:
+                        config_data = config_response.data[0]
+                        table_name = config_data.get("default_league")
+                        logger.info(f"Using default league: {table_name}")
+                    else:
+                        logger.warning("No config found, using fallback")
+                        return {str(p.id): 0 for p in valid_players}
+                except Exception as e:
+                    logger.warning(f"Failed to get config: {e}")
+                    return {str(p.id): 0 for p in valid_players}
+            
+            # BATCH QUERY: Folosește IN clause pentru toți jucătorii dintr-o dată
+            player_ids = [str(p.id) for p in valid_players]
+            
+            try:
+                # Un singur query cu IN clause în loc de 4 queries separate
+                batch_response = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: Config.supabase()
+                    .table(table_name)
+                    .select("discord_id,points")
+                    .in_("discord_id", player_ids)
+                    .execute()
+                )
+                
+                # Construiește dicționarul rezultat din batch response
+                stats_dict = {}
+                found_players = set()
+                
+                if batch_response.data:
+                    for player_data in batch_response.data:
+                        discord_id = player_data.get("discord_id")
+                        points = player_data.get("points", 0)
+                        stats_dict[discord_id] = points
+                        found_players.add(discord_id)
+                
+                # Adaugă 0 points pentru jucătorii care nu sunt găsiți
+                for player_id in player_ids:
+                    if player_id not in found_players:
+                        stats_dict[player_id] = 0
+                
+                logger.info(f"Batch loaded stats for {len(stats_dict)} players with single IN query")
+                return stats_dict
+                
+            except Exception as e:
+                logger.error(f"Batch query failed: {e}")
+                # Fallback to individual queries if batch fails
+                return await self._fallback_individual_stats(valid_players, table_name)
+            
+        except Exception as e:
+            logger.error(f"Error in batch get player stats: {e}")
+            return {}
+
+    async def _fallback_individual_stats(self, players: List, table_name: str) -> Dict[str, int]:
+        """Fallback pentru individual queries dacă batch eșuează"""
+        try:
+            from models.stats import Stats
+            
+            stats_tasks = []
+            for player in players:
+                task = Stats.get_user_stats(player.id, table_name)
+                stats_tasks.append((player, task))
+            
+            results = await asyncio.gather(*[task for _, task in stats_tasks], return_exceptions=True)
+            
+            stats_dict = {}
+            for i, (player, _) in enumerate(stats_tasks):
+                result = results[i]
+                if not isinstance(result, Exception) and result:
+                    if result.get("success"):
+                        stats_data = result.get("stats", {})
+                        points = stats_data.get("points", 0)
+                        stats_dict[str(player.id)] = points
+                    else:
+                        stats_dict[str(player.id)] = 0
+                else:
+                    stats_dict[str(player.id)] = 0
+            
+            logger.info(f"Fallback loaded stats for {len(stats_dict)} players")
+            return stats_dict
+            
+        except Exception as e:
+            logger.error(f"Fallback stats failed: {e}")
+            return {str(p.id): 0 for p in players}
+
+    async def _get_single_player_stats(self, player_id: str, league_table=None) -> int:
+        """Obține statisticile pentru un singur jucător (async wrapper)"""
+        try:
+            from models.stats import Stats
+            
+            # Stats.get_user_stats este deja async, nu trebuie run_in_executor
+            stats_result = await Stats.get_user_stats(player_id, league_table)
+            
+            if stats_result and stats_result.get("success"):
+                stats_data = stats_result.get("stats", {})
+                return stats_data.get("points", 0)
+            else:
+                return 0
+                
+        except Exception as e:
+            logger.warning(f"Failed to get stats for player {player_id}: {e}")
+            return 0
+    
+    async def _batch_process_avatars(self, players: List[Union[str, object]], size: int = 217) -> Dict[str, Image.Image]:
+        """Procesează toate avatar-urile în paralel pentru performanță maximă"""
+        try:
+            # Filtrează doar jucătorii cu avatar valid
+            valid_players = [(p, self._get_avatar(p)) for p in players if hasattr(p, 'id')]
+            valid_players = [(p, avatar) for p, avatar in valid_players if avatar is not None]
+            
+            if not valid_players:
+                return {}
+            
+            # Procesează avatar-urile în paralel
+            tasks = []
+            for player, avatar_obj in valid_players:
+                task = self._process_single_avatar(player, avatar_obj, size)
+                tasks.append(task)
+            
+            # Așteaptă ca toate să se termine
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Construiește dicționarul rezultat
+            avatar_dict = {}
+            for i, (player, _) in enumerate(valid_players):
+                result = results[i]
+                if not isinstance(result, Exception) and result is not None:
+                    avatar_dict[str(player.id)] = result
+                    
+            logger.info(f"Batch processed {len(avatar_dict)} avatars")
+            return avatar_dict
+            
+        except Exception as e:
+            logger.error(f"Error in batch process avatars: {e}")
+            return {}
+    
+    async def _process_single_avatar(self, player, avatar_obj, size: int) -> Optional[Image.Image]:
+        """Procesează un singur avatar (pentru folosire în batch)"""
+        try:
+            user_id = str(player.id)
+            current_time = time.time()
+            
+            # Verifică cache-ul mai întâi
+            if user_id in self._avatar_cache:
+                cached_avatar, timestamp = self._avatar_cache[user_id]
+                if current_time - timestamp < self.avatar_cache_duration:
+                    # Returnează avatarul redimensionat din cache
+                    return cached_avatar.resize((size, size), Image.Resampling.LANCZOS)
+            
+            # Descarcă și procesează avatarul
+            avatar_bytes = await avatar_obj.read()
+            avatar_image = Image.open(io.BytesIO(avatar_bytes))
+            
+            if avatar_image.mode != 'RGB':
+                avatar_image = avatar_image.convert('RGB')
+            
+            # Cache-uiește avatarul original
+            self._avatar_cache[user_id] = (avatar_image, current_time)
+            
+            # Returnează avatarul redimensionat
+            return avatar_image.resize((size, size), Image.Resampling.LANCZOS)
+            
+        except Exception as e:
+            logger.warning(f"Failed to process avatar for {player}: {e}")
+            return None
+
     async def generate_final_match_image(
         self,
         match_id: str,
@@ -27,10 +357,11 @@ class FinalMatchTemplateGenerator:
         team1_captain: Union[str, object],
         team2_captain: Union[str, object],
         map_name: str,
-        output_path: str
+        output_path: str,
+        league_table=None
     ) -> bool:
         """
-        Generează imaginea pentru meciul final folosind Pillow
+        Generează imaginea pentru meciul final folosind Pillow cu optimizări async
         
         Args:
             match_id: ID-ul meciului (ex: "Match #123")
@@ -40,110 +371,294 @@ class FinalMatchTemplateGenerator:
             team2_captain: Căpitanul echipei 2 (Discord Member sau string)
             map_name: Numele hărții selectate
             output_path: Calea unde să salveze imaginea generată
+            league_table: Tabelul ligii pentru statistici
             
         Returns:
             bool: True dacă generarea a reușit, False altfel
         """
         try:
+            start_time = time.time()
+            
             # Get the project root directory (din assets/template_generators/ urcăm 2 niveluri)
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
             
-            # Încarcă imaginea de fundal
-            background_path = os.path.join(project_root, self.background_image_path)
-            if not os.path.exists(background_path):
-                logger.error(f"Background image not found: {background_path}")
+            # Încarcă templateul de fundal (cu cache)
+            background = await self._get_cached_template()
+            if background is None:
+                logger.error("Failed to load background template")
                 return False
-                
-            background = Image.open(background_path)
+            
+            # Creează o copie pentru editare
+            background = background.copy()
             draw = ImageDraw.Draw(background)
             
-            # Încarcă fontul cu mărimea 130
-            font_size = 130
-            try:
-                font_path = os.path.join(project_root, self.default_font_path)
-                font = ImageFont.truetype(font_path, font_size)
-                logger.info(f"Loaded custom font: {font_path} with size {font_size}")
-            except (OSError, IOError) as e:
-                logger.warning(f"Custom font not found ({e}), using default")
+            # Încarcă fontul cu cache
+            font = await self._get_cached_font(130)
+            if font is None:
+                logger.warning("Failed to load cached font, using default")
                 font = ImageFont.load_default()
+            
+            # Procesează toate avatar-urile în paralel
+            all_players = team1_players + team2_players
+            avatar_dict = await self._batch_process_avatars(all_players, 217)
+            
+            # Obține statisticile în batch PRIMUL
+            stats_dict = await self._batch_get_player_stats(all_players, league_table)
+            
+            # Încarcă toate level icon-urile în paralel FOLOSIND stats_dict
+            level_icons_dict = await self._batch_load_level_icons(all_players, stats_dict)
             
             # Culoare text
             white = (255, 255, 255)
             
-            # Map name la (274, 197)
+            # Map name la (274, 213)
             draw.text((274, 213), map_name, fill=white, font=font, anchor="lm")
             
-            # Match ID la (2071, 192) cu anchor lm (left-middle)
+            # Match ID la (2090, 213) cu anchor rm (right-middle)
             draw.text((2090, 213), match_id, fill=white, font=font, anchor="rm")
             
-            # Team 1 Captain Name la (568, 727) cu anchor rm (right-middle)
+            # Team 1 Captain Name la (550, 717)
             captain1_name = f"Team {self._get_display_name(team1_captain)}"
             draw.text((550, 717), captain1_name, fill=white, font=font, anchor="lm")
             
             # Team 1 players cu coordonate Y specifice
             team1_y_positions = [1138, 1383, 1623, 1866, 2105]
             team1_avatar_y_positions = [1028, 1271, 1518, 1762, 2007]
+            
             for i, player in enumerate(team1_players):
-                if i < len(team1_y_positions):  # Verifică că nu depășim numărul de poziții disponibile
+                if i < len(team1_y_positions):
                     y_pos = team1_y_positions[i]
                     player_name = self._get_display_name(player)
+                    player_id = str(getattr(player, 'id', ''))
                     
-                    # Adaugă avatar dacă este disponibil
-                    avatar = self._get_avatar(player)
-                    if avatar and i < len(team1_avatar_y_positions):
-                        # Avatar pentru Team 1 cu coordonate Y fixe
+                    # Desenează avatar din cache
+                    if player_id in avatar_dict:
                         avatar_x = 419 - 334
                         avatar_y = team1_avatar_y_positions[i]
-                        await self._draw_avatar_async(background, avatar, avatar_x, avatar_y, 217)
+                        await self._draw_avatar_from_cache(background, avatar_dict[player_id], avatar_x, avatar_y)
                     
-                    # Adaugă level icon în stânga numelui
-                    level_icon_path = await self._get_player_level_icon_path(player)
-                    if level_icon_path:
-                        # Level icon pentru Team 1 în stânga numelui
-                        level_x = 515 - 120  # În stânga numelui cu un offset mai mare
-                        level_y = y_pos - 51  # Centrat pe linia textului
-                        self._draw_level_icon(background, level_icon_path, level_x, level_y, 100)
+                    # Desenează level icon din cache
+                    if player_id in level_icons_dict:
+                        level_x = 515 - 120
+                        level_y = y_pos - 51
+                        self._draw_level_icon_from_cache(background, level_icons_dict[player_id], level_x, level_y, 100)
                     
                     draw.text((515, y_pos), player_name, fill=white, font=font, anchor="lm")
             
-            # Team 2 Captain Name la (1830, 717) cu anchor lm (left-middle)
+            # Team 2 Captain Name la (1860, 717)
             captain2_name = f"Team {self._get_display_name(team2_captain)}"
             draw.text((1860, 717), captain2_name, fill=white, font=font, anchor="rm")
             
             # Team 2 players cu coordonate Y specifice
             team2_y_positions = [1138, 1383, 1623, 1866, 2105]
             team2_avatar_y_positions = [1028, 1271, 1517, 1762, 2006]
+            
             for i, player in enumerate(team2_players):
-                if i < len(team2_y_positions):  # Verifică că nu depășim numărul de poziții disponibile
+                if i < len(team2_y_positions):
                     y_pos = team2_y_positions[i]
                     player_name = self._get_display_name(player)
+                    player_id = str(getattr(player, 'id', ''))
                     
-                    # Adaugă avatar dacă este disponibil
-                    avatar = self._get_avatar(player)
-                    if avatar and i < len(team2_avatar_y_positions):
-                        # Avatar pentru Team 2 cu coordonate Y fixe
+                    # Desenează avatar din cache
+                    if player_id in avatar_dict:
                         avatar_x = 1945 + 115
                         avatar_y = team2_avatar_y_positions[i]
-                        await self._draw_avatar_async(background, avatar, avatar_x, avatar_y, 217)
+                        await self._draw_avatar_from_cache(background, avatar_dict[player_id], avatar_x, avatar_y)
                     
-                    # Adaugă level icon în dreapta numelui
-                    level_icon_path = await self._get_player_level_icon_path(player)
-                    if level_icon_path:
-                        # Level icon pentru Team 2 în dreapta numelui
-                        level_x = 1849 + 28  # În dreapta numelui cu un offset mai mare
-                        level_y = y_pos - 49  # Centrat pe linia textului
-                        self._draw_level_icon(background, level_icon_path, level_x, level_y, 100)
+                    # Desenează level icon din cache
+                    if player_id in level_icons_dict:
+                        level_x = 1849 + 28
+                        level_y = y_pos - 49
+                        self._draw_level_icon_from_cache(background, level_icons_dict[player_id], level_x, level_y, 100)
                     
                     draw.text((1849, y_pos), player_name, fill=white, font=font, anchor="rm")
             
-            # Salvează imaginea
-            background.save(output_path, "PNG")
-            logger.info(f"Final match image generated successfully: {output_path}")
+            # Salvează imaginea în format WebP pentru compresie optimă
+            background.save(output_path, "WebP", quality=85, method=6)
+            
+            generation_time = time.time() - start_time
+            logger.info(f"Final match image generated successfully in {generation_time:.2f}s: {output_path}")
             return True
             
         except Exception as e:
             logger.error(f"Error generating final match image: {e}")
             return False
+
+    async def _get_cached_template(self) -> Optional[Image.Image]:
+        """Încarcă template-ul de fundal cu cache"""
+        current_time = time.time()
+        
+        if self._template_cache and (current_time - self._template_cache_time) < self.template_cache_duration:
+            return self._template_cache.copy()
+        
+        try:
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            background_path = os.path.join(project_root, self.background_image_path)
+            
+            if not os.path.exists(background_path):
+                logger.error(f"Background image not found: {background_path}")
+                return None
+            
+            self._template_cache = Image.open(background_path)
+            self._template_cache_time = current_time
+            logger.info("Template cached successfully")
+            
+            return self._template_cache.copy()
+            
+        except Exception as e:
+            logger.error(f"Error loading template: {e}")
+            return None
+
+    async def _get_cached_font(self, size: int) -> Optional[ImageFont.FreeTypeFont]:
+        """Încarcă fontul cu cache"""
+        current_time = time.time()
+        
+        # Verifică cache-ul
+        if size in self._font_cache:
+            cached_font, timestamp = self._font_cache[size]
+            if current_time - timestamp < self.font_cache_duration:
+                return cached_font
+        
+        try:
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            font_path = os.path.join(project_root, self.default_font_path)
+            
+            font = ImageFont.truetype(font_path, size)
+            self._font_cache[size] = (font, current_time)
+            logger.info(f"Font cached for size {size}")
+            
+            return font
+            
+        except (OSError, IOError) as e:
+            logger.warning(f"Custom font not found ({e}), using default")
+            return ImageFont.load_default()
+
+    async def _batch_load_level_icons(self, players: List[Union[str, object]], stats_dict: Dict[str, int] = None) -> Dict[str, Image.Image]:
+        """Încarcă toate level icon-urile în paralel folosind stats pre-calculate"""
+        try:
+            level_icons_dict = {}
+            valid_players = [p for p in players if hasattr(p, 'id')]
+            
+            if not valid_players:
+                return level_icons_dict
+            
+            # Dacă nu avem stats, obține-le
+            if stats_dict is None:
+                stats_dict = await self._batch_get_player_stats(valid_players)
+            
+            # Generează task-uri pentru încărcarea icon-urilor
+            tasks = []
+            for player in valid_players:
+                player_id = str(player.id)
+                points = stats_dict.get(player_id, 0)
+                
+                # Obține calea direct din LevelsCog fără database calls
+                from cogs.levels import LevelsCog
+                level_icon_path = LevelsCog.get_level_icon_path(points)
+                
+                if level_icon_path:
+                    project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                    full_path = os.path.join(project_root, level_icon_path)
+                    task = self._get_cached_level_icon(full_path)
+                    tasks.append((player_id, task))
+            
+            # Execută toate task-urile în paralel
+            if tasks:
+                results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
+                
+                for i, (player_id, _) in enumerate(tasks):
+                    result = results[i]
+                    if not isinstance(result, Exception) and result is not None:
+                        level_icons_dict[player_id] = result
+            
+            logger.info(f"Batch loaded {len(level_icons_dict)} level icons")
+            return level_icons_dict
+            
+        except Exception as e:
+            logger.error(f"Error in batch load level icons: {e}")
+            return {}
+
+    async def _get_cached_level_icon(self, icon_path: str) -> Optional[Image.Image]:
+        """Încarcă level icon cu cache"""
+        current_time = time.time()
+        
+        # Verifică cache-ul
+        if icon_path in self._level_icon_cache:
+            cached_icon, timestamp = self._level_icon_cache[icon_path]
+            if current_time - timestamp < self.level_icon_cache_duration:
+                return cached_icon
+        
+        try:
+            if os.path.exists(icon_path):
+                icon_image = Image.open(icon_path)
+                self._level_icon_cache[icon_path] = (icon_image, current_time)
+                return icon_image
+            else:
+                logger.warning(f"Level icon not found: {icon_path}")
+                return None
+                
+        except Exception as e:
+            logger.warning(f"Error loading level icon {icon_path}: {e}")
+            return None
+
+    async def _draw_avatar_from_cache(self, background: Image.Image, avatar: Image.Image, x: int, y: int):
+        """Desenează avatar din cache cu mască circulară optimizată"""
+        try:
+            # Aplică masca circulară pre-calculată
+            circular_avatar = await self._apply_circular_mask_async(avatar)
+            if circular_avatar:
+                background.paste(circular_avatar, (x, y), circular_avatar)
+        except Exception as e:
+            logger.warning(f"Error drawing avatar from cache: {e}")
+
+    def _draw_level_icon_from_cache(self, background: Image.Image, level_icon: Image.Image, x: int, y: int, size: int):
+        """Desenează level icon din cache păstrând aspect ratio-ul"""
+        try:
+            # Păstrează aspect ratio-ul original pentru level icons
+            original_width, original_height = level_icon.size
+            
+            # Calculează new size păstrând aspect ratio
+            if original_width > original_height:
+                new_width = size
+                new_height = int((original_height * size) / original_width)
+            else:
+                new_height = size
+                new_width = int((original_width * size) / original_height)
+            
+            # Resize cu aspect ratio păstrat
+            resized_icon = level_icon.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            
+            # Calculează poziția pentru centrare
+            center_x = x + (size - new_width) // 2
+            center_y = y + (size - new_height) // 2
+            
+            # Paste icon centrat
+            if resized_icon.mode == 'RGBA':
+                background.paste(resized_icon, (center_x, center_y), resized_icon)
+            else:
+                background.paste(resized_icon, (center_x, center_y))
+        except Exception as e:
+            logger.warning(f"Error drawing level icon from cache: {e}")
+
+    async def _apply_circular_mask_async(self, image: Image.Image) -> Optional[Image.Image]:
+        """Aplică masca circulară într-un mod async optimizat"""
+        try:
+            size = image.size
+            # Creează masca circulară
+            mask = Image.new('L', size, 0)
+            draw = ImageDraw.Draw(mask)
+            draw.ellipse((0, 0) + size, fill=255)
+            
+            # Aplică masca
+            result = Image.new('RGBA', size, (0, 0, 0, 0))
+            result.paste(image, (0, 0))
+            result.putalpha(mask)
+            
+            return result
+            
+        except Exception as e:
+            logger.warning(f"Error applying circular mask: {e}")
+            return None
     
     def _get_display_name(self, player):
         """Returnează numele de afișaj al jucătorului"""
@@ -186,7 +701,7 @@ class FinalMatchTemplateGenerator:
             level_icon_path = LevelsCog.get_level_icon_path(points)
             logger.info(f"LevelsCog returned path: {level_icon_path}")
             
-            # LevelsCog returnează "assets/level_icons/level1.png" 
+            # LevelsCog returnează "assets/level_icons/level1.webp" (actualizat la WebP)
             # Trebuie să construim calea completă față de project_root
             if level_icon_path:
                 # Din assets/template_generators/, project_root este ../../ (urcăm 2 niveluri)
@@ -201,9 +716,9 @@ class FinalMatchTemplateGenerator:
                 else:
                     logger.warning(f"Level icon not found at: {full_level_icon_path}")
             
-            # Fallback la level 1 dacă fișierul nu există
+            # Fallback la level 1 dacă fișierul nu există (WebP format)
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            fallback_path = os.path.join(project_root, "assets", "level_icons", "level1.png")
+            fallback_path = os.path.join(project_root, "assets", "level_icons", "level1.webp")
             if os.path.exists(fallback_path):
                 logger.info(f"Using fallback level icon for {getattr(player, 'display_name', player)}: {fallback_path}")
                 return fallback_path
@@ -311,3 +826,53 @@ class FinalMatchTemplateGenerator:
             return (740, 711)  # Dimensiuni default
         except Exception:
             return (740, 711)  # Dimensiuni default
+
+    def cleanup_caches(self):
+        """Curăță cache-urile manual pentru economisirea memoriei"""
+        try:
+            current_time = time.time()
+            
+            # Curăță avatar cache
+            expired_avatars = [
+                uid for uid, (_, timestamp) in self._avatar_cache.items()
+                if current_time - timestamp > self.avatar_cache_duration
+            ]
+            for uid in expired_avatars:
+                del self._avatar_cache[uid]
+            
+            # Curăță font cache
+            expired_fonts = [
+                size for size, (_, timestamp) in self._font_cache.items()
+                if current_time - timestamp > self.font_cache_duration
+            ]
+            for size in expired_fonts:
+                del self._font_cache[size]
+            
+            # Curăță level icon cache
+            expired_icons = [
+                path for path, (_, timestamp) in self._level_icon_cache.items()
+                if current_time - timestamp > self.level_icon_cache_duration
+            ]
+            for path in expired_icons:
+                del self._level_icon_cache[path]
+            
+            # Curăță template cache dacă este expirat
+            if (self._template_cache and 
+                current_time - self._template_cache_time > self.template_cache_duration):
+                self._template_cache = None
+                self._template_cache_time = 0
+            
+            logger.info(f"Cache cleanup: removed {len(expired_avatars)} avatars, "
+                       f"{len(expired_fonts)} fonts, {len(expired_icons)} icons")
+                       
+        except Exception as e:
+            logger.warning(f"Error during cache cleanup: {e}")
+
+    def get_cache_stats(self) -> Dict[str, int]:
+        """Returnează statistici despre cache-uri pentru monitoring"""
+        return {
+            "avatar_cache_size": len(self._avatar_cache),
+            "font_cache_size": len(self._font_cache),
+            "level_icon_cache_size": len(self._level_icon_cache),
+            "template_cached": 1 if self._template_cache else 0
+        }

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from config import Config
@@ -15,24 +16,45 @@ class TimeoutManager:
 
     @staticmethod
     def _parse_timestamp(timestamp_str: str) -> datetime:
-    
+       
         # Parse timestamp from database handling different PostgreSQL timestampz formats
-      
+       
         try:
-            # Handle PostgreSQL timestampz format: 2025-07-25 12:14:07.194335+00
+            # Convertește spațiul în T pentru format ISO
+            if ' ' in timestamp_str and 'T' not in timestamp_str:
+                timestamp_str = timestamp_str.replace(' ', 'T', 1)
+            
+            # Corectează timezone-ul PostgreSQL: +00 -> +00:00
             if timestamp_str.endswith('+00'):
                 timestamp_str = timestamp_str.replace('+00', '+00:00')
             elif timestamp_str.endswith('Z'):
                 timestamp_str = timestamp_str.replace('Z', '+00:00')
             
+            # Asigură-te că microsecundele au exact 6 cifre
+            microsecond_pattern = r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d+)(\+\d{2}:\d{2})'
+            match = re.match(microsecond_pattern, timestamp_str)
+            if match:
+                date_time_part, microseconds, timezone_part = match.groups()
+                # Completează sau trunchiază microsecundele la exact 6 cifre
+                microseconds = microseconds.ljust(6, '0')[:6]
+                timestamp_str = f"{date_time_part}.{microseconds}{timezone_part}"
+            
             parsed_datetime = datetime.fromisoformat(timestamp_str)
-            return parsed_datetime.replace(tzinfo=None)  # Remove timezone info for consistency
-        except ValueError:
-            # Fallback: try to parse as ISO format
-            parsed_datetime = datetime.fromisoformat(
-                timestamp_str.replace("Z", "+00:00")
-            )
-            return parsed_datetime.replace(tzinfo=None)
+            return parsed_datetime.replace(tzinfo=None)  # Elimină timezone info pentru consistență
+            
+        except ValueError as e:
+            logger.error(f"Eroare la parsarea timestamp-ului '{timestamp_str}': {e}")
+            # Fallback: încearcă să parseze ca format ISO standard
+            try:
+                cleaned_str = timestamp_str.replace("Z", "+00:00")
+                if ' ' in cleaned_str:
+                    cleaned_str = cleaned_str.replace(' ', 'T', 1)
+                parsed_datetime = datetime.fromisoformat(cleaned_str)
+                return parsed_datetime.replace(tzinfo=None)
+            except ValueError as fallback_error:
+                logger.error(f"Fallback parsing a eșuat pentru '{timestamp_str}': {fallback_error}")
+                # Returnează timpul curent ca ultimă soluție
+                return datetime.utcnow()
 
     async def add_timeout(
         self,

@@ -12,6 +12,7 @@ from cogs.levels import LevelsCog
 import random
 import asyncio
 import logging
+import time
 from collections import defaultdict
 from typing import List
 
@@ -523,79 +524,6 @@ class Matchmaking(commands.Cog):
                     logger.warning(
                         f"Veto timeout failed, possibly due to race condition: {e}"
                     )
-
-    # --- GET ID BUTTON UI ---
-    class GetIdView(discord.ui.View):
-        def __init__(self, lobby, cog):
-            super().__init__(timeout=3600)  # 1 hour timeout
-            self.lobby = lobby
-            self.cog = cog
-            # Store team data at creation time to prevent data loss after lobby reset
-            self.team1 = lobby["team1"].copy()
-            self.team2 = lobby["team2"].copy()
-            # Randomly select the host when the view is created
-            all_players = self.team1 + self.team2
-            self.host_player = random.choice(all_players) if all_players else None
-            self.host_data = None  # Will be populated when first accessed
-
-        @discord.ui.button(label="Get Host ID", style=discord.ButtonStyle.primary)
-        async def get_id_button(
-            self, interaction: discord.Interaction, button: discord.ui.Button
-        ):
-            await interaction.response.defer(ephemeral=True)
-
-            try:
-                # Check if the user who clicked is in one of the teams
-                all_players = self.team1 + self.team2
-
-                if interaction.user not in all_players:
-                    await interaction.followup.send(
-                        f"{Config.ICONS['unsuccess']} You are not part of this match! Only match participants can view the host ID.",
-                        ephemeral=True,
-                    )
-                    return
-
-                # Check if we have a host selected
-                if not self.host_player:
-                    await interaction.followup.send(
-                        f"{Config.ICONS['unsuccess']} No host could be selected for this match. Please contact an administrator.",
-                        ephemeral=True,
-                    )
-                    return
-
-                # Fetch the host's data from database (cache it for efficiency)
-                if not self.host_data:
-                    from models.user import User
-
-                    self.host_data = await User.find(self.host_player.id)
-
-                if not self.host_data:
-                    await interaction.followup.send(
-                        f"{Config.ICONS['unsuccess']} The selected host ({self.host_player.display_name}) is not registered in the database.",
-                        ephemeral=True,
-                    )
-                    return
-
-                # Create a simple message with the host's ID (easy to copy)
-                message = (
-                    f"{Config.ICONS['crosshair']} **Lobby Host:** {self.host_player.display_name}\n"
-                    f"**Host's SO2 ID:** `{self.host_data['so2_id']}`\n\n"
-                    f"*Click to copy the ID above*"
-                )
-
-                await interaction.followup.send(message, ephemeral=True)
-
-            except Exception as e:
-                logger.error(f"Failed to get host ID for {interaction.user}: {e}")
-                await interaction.followup.send(
-                    f"{Config.ICONS['unsuccess']} An error occurred while retrieving the host ID. Please try again.",
-                    ephemeral=True,
-                )
-
-        async def on_timeout(self):
-            # Disable the button when timeout occurs
-            for item in self.children:
-                item.disabled = True
 
     async def get_draft_view(self, lobby):
         options_with_stats = await self.create_draft_options_with_stats(
@@ -1320,7 +1248,7 @@ class Matchmaking(commands.Cog):
         # Generate image using Pillow
         generator = FinalMatchTemplateGenerator()
         image_path = os.path.join(
-            tempfile.gettempdir(), f"final_match_{match_result['match_id']}.png"
+            tempfile.gettempdir(), f"final_match_{match_result['match_id']}.webp"
         )
         
         success = await generator.generate_final_match_image(
@@ -1343,28 +1271,118 @@ class Matchmaking(commands.Cog):
             )
             embed.set_footer(text=f"Match Created: {now}")
             
-            get_id_view = self.GetIdView(lobby, self)
-            await lobby["veto_message"].edit(embed=embed, view=get_id_view)
+            logger.info("🟣 Sending fallback embed without view...")
+            await lobby["veto_message"].edit(embed=embed, view=None)
         else:
+            logger.info("🟣 Creating Discord.File object...")
             # Upload image to Discord CDN by sending it as a file
-            file = discord.File(image_path, filename="final_match.png")
+            file = discord.File(image_path, filename="final_match.webp")
+            
+            logger.info("🟣 Creating embed...")
             embed = discord.Embed(
                 title=f"{Config.APP_NAME} | {match_id}", color=Config.EMBED_COLORS["final"]
             )
-            embed.set_image(url=f"attachment://final_match.png")
+            embed.set_image(url=f"attachment://final_match.webp")
             embed.set_footer(text=f"Match Created: {now}")
 
-            # Create the Get ID button view
-            get_id_view = self.GetIdView(lobby, self)
-
+            logger.info("🟣 Sending embed with attachment to Discord...")
             await lobby["veto_message"].edit(
-                embed=embed, view=get_id_view, attachments=[file]
+                embed=embed, view=None, attachments=[file]
             )
-        await self.create_team_voice_channels(lobby)
+        
+        # Mark as finalized immediately after sending embed
         lobby["just_finalized"] = True
-        await self.reset_lobby(lobby, keep_voice_members=False)
-        # Save lobby state after finalization
-        await self.save_lobby_state(lobby["category"].id)
+        
+        # Log timing pentru debugging
+        logger.info("🟣 Embed sent successfully, sending host ID via DM...")
+        
+        # Trimite host ID prin DM în background (non-blocking)
+        asyncio.create_task(self.send_host_id_to_players(lobby))
+        
+        logger.info("🟣 Starting background operations...")
+        
+        # IMPORTANT: Trebuie să facem voice channel operations ÎNAINTE de reset
+        # pentru că reset-ul șterge echipele
+        start_time = time.time()
+        
+        try:
+            # Primul pas: creăm voice channels și mutăm jucătorii
+            await self.create_team_voice_channels(lobby)
+            voice_time = time.time() - start_time
+            logger.info(f"🟣 Voice channels created and players moved in {voice_time:.2f}s")
+            
+            # Al doilea pas: facem reset și save în paralel
+            reset_start = time.time()
+            await asyncio.gather(
+                self.reset_lobby(lobby, keep_voice_members=False),
+                self.save_lobby_state(lobby["category"].id),
+                return_exceptions=True
+            )
+            reset_time = time.time() - reset_start
+            logger.info(f"🟣 Reset and save completed in {reset_time:.2f}s")
+            
+        except Exception as e:
+            logger.error(f"🟣 Error in background operations: {e}")
+            # Fallback: do operations sequentially if parallel fails
+            try:
+                await self.reset_lobby(lobby, keep_voice_members=False)
+                await self.save_lobby_state(lobby["category"].id)
+                logger.info("🟣 Fallback sequential operations completed")
+            except Exception as fallback_error:
+                logger.error(f"🟣 Even fallback operations failed: {fallback_error}")
+        
+        total_time = time.time() - start_time
+        logger.info(f"🟣 All background operations completed in {total_time:.2f}s")
+
+    async def send_host_id_to_players(self, lobby):
+        """Trimite ID-ul host-ului prin DM la toți jucătorii"""
+        try:
+            all_players = lobby["team1"] + lobby["team2"]
+            if not all_players:
+                logger.warning("No players found to send host ID")
+                return
+                
+            # Selectează random un host
+            import random
+            host_player = random.choice(all_players)
+            
+            logger.info(f"🟣 Selected host: {host_player.display_name}")
+            
+            # Obține datele host-ului din baza de date
+            from models.user import User
+            host_data = await User.find(host_player.id)
+            
+            if not host_data:
+                logger.warning(f"Host {host_player.display_name} not found in database")
+                return
+                
+            so2_id = host_data.get('so2_id')
+            if not so2_id:
+                logger.warning(f"Host {host_player.display_name} has no SO2 ID")
+                return
+            
+            logger.info(f"🟣 Sending host ID ({so2_id}) to {len(all_players)} players via DM...")
+            
+            # Trimite DM la toți jucătorii
+            successful_dms = 0
+            for player in all_players:
+                try:
+                    embed = discord.Embed(
+                        title=f"{Config.ICONS['crosshair']} Match Host Information",
+                        description=f"**{Config.ICONS['game']} Lobby Host:** {host_player.display_name}\n**{Config.ICONS["id"]} SO2 ID:** `{so2_id}`\n\nYou can copy the ID above to invite the host\nOn mobile? Tap the ID to copy it",
+                        color=Config.MAIN_COLOR
+                    )
+                    embed.set_footer(text="Good luck in your match!")
+                    
+                    await player.send(embed=embed)
+                    successful_dms += 1
+                except Exception as e:
+                    logger.error(f"Failed to send host ID DM to {player.display_name}: {e}")
+            
+            logger.info(f"🟣 Successfully sent host ID to {successful_dms}/{len(all_players)} players")
+            
+        except Exception as e:
+            logger.error(f"Error in send_host_id_to_players: {e}")
 
     async def add_match_to_supabase(self, lobby, final_map):
         try:
@@ -2539,22 +2557,34 @@ class Matchmaking(commands.Cog):
         # Teams are balanced - handle various scenarios
         logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Teams balanced ({team1_size} vs {team2_size})")
 
-        # Special case: Draft just started after party assignments (Team1 always starts)
+        # Special case: Draft just started after party assignments
         if is_draft_start:
             lobby.pop("draft_start", None)
-            logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Draft start - Team1 captain goes first")
-            return team1_captain
+            # If teams are balanced after party assignments, Team1 starts
+            # If teams are imbalanced, the smaller team should start to balance
+            if team1_size == team2_size:
+                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Draft start with balanced teams - Team1 captain goes first")
+                return team1_captain
+            else:
+                # Teams are imbalanced after party assignments, smaller team picks first
+                if team1_size < team2_size:
+                    logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Draft start with imbalanced teams - Team1 (smaller) captain goes first")
+                    return team1_captain
+                else:
+                    logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Draft start with imbalanced teams - Team2 (smaller) captain goes first")
+                    return team2_captain
 
         # Check if we just finished balancing (teams just became equal)
         if lobby.get("just_balanced"):
-            # Clear the flag and continue with the captain who was picking (they might need more picks)
+            # Clear the flag and switch to the other captain for normal alternation
             lobby.pop("just_balanced", None)
+            # After balancing, switch to the other captain
             if current_pick == team1_captain:
-                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Just balanced - Team1 captain continues")
-                return team1_captain
-            else:
-                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Just balanced - Team2 captain continues")
+                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Just balanced - switching to Team2 captain")
                 return team2_captain
+            else:
+                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Just balanced - switching to Team1 captain")
+                return team1_captain
 
         # Standard case: If no current pick set, Team1 captain starts
         if not current_pick:

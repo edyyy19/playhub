@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class ScoreboardResultsTemplateGenerator:
     """Generator pentru template-ul de rezultate scoreboard folosind Pillow"""
     
-    def __init__(self, background_image_path: str = "template_images/arena_faceit_match_results.png"):
+    def __init__(self, background_image_path: str = "template_images/arena_faceit_match_results.webp"):
         self.background_image_path = background_image_path
         self.default_font_path = "fonts/font-black.ttf"
 
@@ -239,9 +239,9 @@ class ScoreboardResultsTemplateGenerator:
             # Save the image to a temporary file
             temp_path = os.path.join(
                 tempfile.gettempdir(),
-                f"scoreboard_results_{match_data['match_id']}_{int(datetime.now().timestamp())}.png",
+                f"scoreboard_results_{match_data['match_id']}_{int(datetime.now().timestamp())}.webp",
             )
-            image.save(temp_path, "PNG")
+            image.save(temp_path, "WebP", quality=85)
             
             logger.info(f"Scoreboard results image generated successfully: {temp_path}")
             return temp_path
@@ -272,9 +272,9 @@ class ScoreboardResultsTemplateGenerator:
                 
             temp_path = os.path.join(
                 tempfile.gettempdir(), 
-                f"scoreboard_error_{match_id}_{int(datetime.now().timestamp())}.png"
+                f"scoreboard_error_{match_id}_{int(datetime.now().timestamp())}.webp"
             )
-            fallback_image.save(temp_path, "PNG")
+            fallback_image.save(temp_path, "WebP", quality=85)
             
             logger.info(f"Created fallback scoreboard results image: {temp_path}")
             return temp_path

@@ -222,7 +222,7 @@ class Leagues(commands.Cog):
             processing_embed.set_field_at(
                 0,
                 name="Progress",
-                value=f"{Config.ICONS['stats']} Adding league to database...",
+                value=f"{Config.ICONS['stats_yellow']} Adding league to database...",
                 inline=False,
             )
             await message.edit(embed=processing_embed)
@@ -760,7 +760,7 @@ class Leagues(commands.Cog):
                     f"{Config.ICONS['sql']} League table `{sanitized_name}` (with {table_stats['player_count']} player records)"
                 )
             components_to_delete.append(
-                f"{Config.ICONS['stats']} League entry from database"
+                f"{Config.ICONS['stats_yellow']} League entry from database"
             )
             if discord_role:
                 components_to_delete.append(
@@ -873,7 +873,7 @@ class Leagues(commands.Cog):
             processing_embed.set_field_at(
                 0,
                 name="Progress",
-                value=f"{Config.ICONS['stats']} Removing from database...",
+                value=f"{Config.ICONS['stats_yellow']} Removing from database...",
                 inline=False,
             )
             await safe_edit_response(processing_embed)
@@ -1797,6 +1797,320 @@ class Leagues(commands.Cog):
         except Exception as e:
             logger.warning(f"Failed to parse timestamp {timestamp_str}: {e}")
             return "Unknown"
+
+    @app_commands.command(
+        name="league_promote_bulk",
+        description="Promote multiple users to a league using a text file with user IDs",
+    )
+    @app_commands.describe(
+        league_name="The league to promote users to",
+        user_list_file="Text file containing user IDs (one per line)",
+    )
+    @app_commands.autocomplete(league_name=league_name_autocomplete)
+    @app_commands.default_permissions(administrator=True)
+    async def league_promote_bulk(
+        self,
+        interaction: discord.Interaction,
+        league_name: str,
+        user_list_file: discord.Attachment,
+    ):
+        """
+        Promote multiple users to a specific league by uploading a text file with user IDs
+        """
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # Validate file type and size
+            if not user_list_file.filename.endswith('.txt'):
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Invalid File Type",
+                    description="Please upload a `.txt` file containing user IDs.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name="Expected Format",
+                    value="• File extension: `.txt`\n• Content: One user ID per line\n• Example: `user_ids.txt`",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Check file size (limit to 8MB)
+            if user_list_file.size > 8 * 1024 * 1024:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} File Too Large",
+                    description="The uploaded file is too large. Please keep it under 8MB.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name="File Size Limit",
+                    value="Maximum: 8MB\nYour file: {:.2f}MB".format(user_list_file.size / (1024 * 1024)),
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Validate league exists
+            league_data = await self.get_league_by_name(league_name)
+            if not league_data:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} League Not Found",
+                    description=f"The league **'{league_name}'** does not exist.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name=f"{Config.ICONS['info']} Available Options",
+                    value="• Use the autocomplete to select from available leagues\n• Use `/list_leagues` to see all leagues",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Find the Discord role
+            league_role = await self.find_discord_role_for_league(
+                interaction.guild, league_data["league_name"]
+            )
+            if not league_role:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Discord Role Not Found",
+                    description=f"The Discord role for league **'{league_name}'** could not be found.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Download and parse the file
+            try:
+                file_content = await user_list_file.read()
+                file_text = file_content.decode('utf-8')
+            except UnicodeDecodeError:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} File Encoding Error",
+                    description="Could not read the file. Please ensure it's a UTF-8 encoded text file.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Parse user IDs from file
+            user_ids = []
+            line_number = 0
+            for line in file_text.split('\n'):
+                line_number += 1
+                line = line.strip()
+                
+                # Skip empty lines and comments
+                if not line or line.startswith('#'):
+                    continue
+                
+                # Extract user ID from various formats
+                user_id = self._extract_user_id(line)
+                if user_id:
+                    user_ids.append(user_id)
+                else:
+                    logger.warning(f"Invalid user ID format on line {line_number}: {line}")
+
+            if not user_ids:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} No Valid User IDs Found",
+                    description="The file doesn't contain any valid user IDs.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                embed.add_field(
+                    name="Expected Format",
+                    value="```\n123456789012345678\n987654321098765432\n# Comments are allowed\n456789012345678901\n```",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Remove duplicates while preserving order
+            unique_user_ids = list(dict.fromkeys(user_ids))
+            
+            # Create initial progress embed
+            progress_embed = discord.Embed(
+                title=f"{Config.ICONS['updating']} Bulk League Promotion",
+                description=f"Processing {len(unique_user_ids)} user(s) for league **{league_role.name}**...",
+                color=Config.EMBED_COLORS["yellow"],
+            )
+            progress_embed.add_field(
+                name="Progress",
+                value=f"{Config.ICONS['updating']} Validating users and preparing...",
+                inline=False,
+            )
+            message = await interaction.followup.send(embed=progress_embed, ephemeral=True)
+
+            # Process users in batches
+            batch_size = 10
+            total_users = len(unique_user_ids)
+            successful_promotions = []
+            failed_promotions = []
+            already_promoted = []
+            invalid_users = []
+
+            for i in range(0, total_users, batch_size):
+                batch = unique_user_ids[i:i + batch_size]
+                batch_number = (i // batch_size) + 1
+                total_batches = (total_users + batch_size - 1) // batch_size
+                
+                # Update progress
+                progress_embed.set_field_at(
+                    0,
+                    name="Progress",
+                    value=f"{Config.ICONS['updating']} Processing batch {batch_number}/{total_batches} ({i + 1}-{min(i + batch_size, total_users)} of {total_users})",
+                    inline=False,
+                )
+                await message.edit(embed=progress_embed)
+
+                # Process batch
+                for user_id in batch:
+                    try:
+                        # Get member from guild
+                        member = interaction.guild.get_member(user_id)
+                        if not member:
+                            invalid_users.append(user_id)
+                            continue
+
+                        # Check if already has role
+                        if league_role in member.roles:
+                            already_promoted.append(member)
+                            continue
+
+                        # Add role
+                        await member.add_roles(
+                            league_role,
+                            reason=f"Bulk promotion to {league_role.name} by {interaction.user}"
+                        )
+
+                        # Add to database if not already there
+                        if not await self.check_user_in_league_table(league_name, user_id):
+                            await self.add_user_to_league_table(league_name, user_id)
+
+                        successful_promotions.append(member)
+
+                    except discord.Forbidden:
+                        failed_promotions.append((user_id, "Permission denied"))
+                    except discord.HTTPException as e:
+                        failed_promotions.append((user_id, f"Discord API error: {str(e)}"))
+                    except Exception as e:
+                        failed_promotions.append((user_id, f"Unexpected error: {str(e)}"))
+                        logger.error(f"Error promoting user {user_id}: {e}")
+
+                # Small delay to avoid rate limiting
+                await asyncio.sleep(1)
+
+            # Create final results embed
+            results_embed = discord.Embed(
+                title=f"{Config.ICONS['success']} Bulk Promotion Completed",
+                description=f"Finished processing {total_users} user(s) for league **{league_role.name}**",
+                color=Config.EMBED_COLORS["light_green"],
+            )
+
+            # Add statistics
+            results_embed.add_field(
+                name=f"{Config.ICONS['stats_lightgreen']} Summary",
+                value=f"**Total processed:** {total_users}\n**Successfully promoted:** {len(successful_promotions)}\n**Already had role:** {len(already_promoted)}\n**Invalid users:** {len(invalid_users)}\n**Failed:** {len(failed_promotions)}",
+                inline=False,
+            )
+
+            # Add details for successful promotions (limit to prevent embed overflow)
+            if successful_promotions:
+                success_list = [f"• {member.display_name}" for member in successful_promotions[:10]]
+                if len(successful_promotions) > 10:
+                    success_list.append(f"• ... and {len(successful_promotions) - 10} more")
+                
+                results_embed.add_field(
+                    name=f"{Config.ICONS['success']} Successfully Promoted ({len(successful_promotions)})",
+                    value="\n".join(success_list),
+                    inline=False,
+                )
+
+            # Add details for failures
+            if failed_promotions or invalid_users:
+                failure_details = []
+                
+                # Add invalid users
+                for user_id in invalid_users[:5]:
+                    failure_details.append(f"• {user_id} (User not found)")
+                
+                # Add other failures
+                for user_id, reason in failed_promotions[:5]:
+                    failure_details.append(f"• {user_id} ({reason})")
+                
+                total_failures = len(invalid_users) + len(failed_promotions)
+                if total_failures > 5:
+                    failure_details.append(f"• ... and {total_failures - 5} more failures")
+                
+                results_embed.add_field(
+                    name=f"{Config.ICONS['unsuccess']} Failed ({total_failures})",
+                    value="\n".join(failure_details) if failure_details else "None",
+                    inline=False,
+                )
+
+            # Add already promoted users
+            if already_promoted:
+                already_list = [f"• {member.display_name}" for member in already_promoted[:5]]
+                if len(already_promoted) > 5:
+                    already_list.append(f"• ... and {len(already_promoted) - 5} more")
+                
+                results_embed.add_field(
+                    name=f"{Config.ICONS['info']} Already Promoted ({len(already_promoted)})",
+                    value="\n".join(already_list),
+                    inline=False,
+                )
+
+            results_embed.set_footer(
+                text=f"Processed by {interaction.user.display_name} • League ID: #{league_data['league_id']}"
+            )
+
+            await message.edit(embed=results_embed)
+            logger.info(
+                f"Bulk promotion completed: {len(successful_promotions)} successful, {len(failed_promotions)} failed, {len(already_promoted)} already promoted"
+            )
+
+        except Exception as e:
+            logger.error(f"Unexpected error in bulk promotion: {e}")
+            error_embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Bulk Promotion Failed",
+                description="An unexpected error occurred during bulk promotion.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            error_embed.add_field(
+                name="Error Details",
+                value=f"```{str(e)}```",
+                inline=False,
+            )
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
+
+    def _extract_user_id(self, line: str) -> int:
+        """
+        Extract user ID from various formats:
+        - Direct ID: 123456789012345678
+        - Mention: <@123456789012345678>
+        - Username mention: <@!123456789012345678>
+        """
+        line = line.strip()
+        
+        # Direct ID format
+        if line.isdigit() and len(line) >= 17:  # Discord user IDs are at least 17 digits
+            return int(line)
+        
+        # Mention formats: <@123456789012345678> or <@!123456789012345678>
+        if line.startswith('<@') and line.endswith('>'):
+            # Remove <@ and >
+            id_part = line[2:-1]
+            # Remove ! if present (<@!...>)
+            if id_part.startswith('!'):
+                id_part = id_part[1:]
+            
+            if id_part.isdigit():
+                return int(id_part)
+        
+        return None
 
 
 class DeleteLeagueConfirmationView(discord.ui.View):

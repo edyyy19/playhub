@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class ProfileTemplateGenerator:
     """Generator pentru template-ul de profil folosind Pillow"""
     
-    def __init__(self, background_image_path: str = "template_images/arena_faceit_profile_image.png"):
+    def __init__(self, background_image_path: str = "template_images/arena_faceit_profile_image.webp"):
         self.background_image_path = background_image_path
         self.default_font_path = "fonts/font-black.ttf"
         
@@ -102,8 +102,8 @@ class ProfileTemplateGenerator:
             draw.text((1719, 1200), f"{kd_ratio}", font=font, fill=text_color, anchor="mm")
             
             # Save the image to a temporary file
-            temp_path = os.path.join(tempfile.gettempdir(), f"profile_{target_user.id}.png")
-            image.save(temp_path, "PNG")
+            temp_path = os.path.join(tempfile.gettempdir(), f"profile_{target_user.id}.webp")
+            image.save(temp_path, "WebP", quality=85)
             
             logger.info(f"Profile image generated successfully: {temp_path}")
             return temp_path
@@ -132,8 +132,8 @@ class ProfileTemplateGenerator:
                 # If even default font fails, just create red image
                 pass
                 
-            temp_path = os.path.join(tempfile.gettempdir(), f"profile_error_{user_id}.png")
-            fallback_image.save(temp_path, "PNG")
+            temp_path = os.path.join(tempfile.gettempdir(), f"profile_error_{user_id}.webp")
+            fallback_image.save(temp_path, "WebP", quality=85)
             
             logger.info(f"Created fallback profile image: {temp_path}")
             return temp_path

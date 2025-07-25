@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class LeaderboardTemplateGenerator:
     """Generator pentru template-ul de leaderboard folosind Pillow"""
     
-    def __init__(self, background_image_path: str = "template_images/arena_faceit_leaderboard.png"):
+    def __init__(self, background_image_path: str = "template_images/arena_faceit_leaderboard.webp"):
         self.background_image_path = background_image_path
         self.default_font_path = "fonts/font-black.ttf"
 
@@ -198,9 +198,9 @@ class LeaderboardTemplateGenerator:
             # Save the image to a temporary file
             temp_path = os.path.join(
                 tempfile.gettempdir(),
-                f"leaderboard_{league_table_name}_{int(datetime.now().timestamp())}.png",
+                f"leaderboard_{league_table_name}_{int(datetime.now().timestamp())}.webp",
             )
-            image.save(temp_path, "PNG")
+            image.save(temp_path, "WebP", quality=85)
             
             logger.info(f"Leaderboard image generated successfully: {temp_path}")
             return temp_path
@@ -231,9 +231,9 @@ class LeaderboardTemplateGenerator:
                 
             temp_path = os.path.join(
                 tempfile.gettempdir(), 
-                f"leaderboard_error_{league_table_name}_{int(datetime.now().timestamp())}.png"
+                f"leaderboard_error_{league_table_name}_{int(datetime.now().timestamp())}.webp"
             )
-            fallback_image.save(temp_path, "PNG")
+            fallback_image.save(temp_path, "WebP", quality=85)
             
             logger.info(f"Created fallback leaderboard image: {temp_path}")
             return temp_path

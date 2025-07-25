@@ -159,7 +159,7 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
 
             except Exception as e:
                 logger.error(
-                    f"Error validating default league during registration: {e}"
+                    f"🟡 Error validating default league during registration: {e}"
                 )
                 embed = discord.Embed(
                     title=f"{Config.ICONS['unsuccess']} Registration Error",
@@ -175,28 +175,54 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                 interaction.user.id, self.nickname.value, self.so2_id.value
             )
 
+            # Get or create the Registered role with error handling
             role = discord.utils.get(
                 interaction.guild.roles, name=Config.REGISTERED_ROLE
             )
             if not role:
-                role = await interaction.guild.create_role(
-                    name=Config.REGISTERED_ROLE,
-                    color=EMBED_COLOR,
-                    reason="Auto-created for registered players",
-                )
+                try:
+                    role = await interaction.guild.create_role(
+                        name=Config.REGISTERED_ROLE,
+                        color=EMBED_COLOR,
+                        reason="Auto-created for registered players",
+                    )
+                    logger.info(f"🟡 Created Registered role: {role.name}")
+                except discord.Forbidden:
+                    logger.error("🟡 No permission to create Registered role")
+                    raise Exception("Bot lacks permission to create roles")
+                except Exception as e:
+                    logger.error(f"🟡 Failed to create Registered role: {e}")
+                    raise Exception(f"Role creation failed: {e}")
 
-            await interaction.user.add_roles(role)
+            # Add Registered role with error handling
+            registered_role_assigned = False
+            try:
+                await interaction.user.add_roles(role, reason="User registration")
+                registered_role_assigned = True
+                logger.info(f"🟡 Assigned Registered role to {interaction.user}")
+            except discord.Forbidden:
+                logger.error(f"🟡 No permission to assign Registered role to {interaction.user.id}")
+                registered_role_assigned = False
+            except Exception as e:
+                logger.error(f"🟡 Error assigning Registered role to {interaction.user.id}: {e}")
+                registered_role_assigned = False
 
             # Assign Level 1 role to new users (they start with 200 points = Level 1)
+            level_role_assigned = False
             try:
-                from cogs.levels import LevelsCog
-
-                levels_cog = LevelsCog(None)
-                await levels_cog.update_player_roles(
-                    interaction.guild, interaction.user.id, 200
-                )
+                # Fix: Use correct cog name "LevelsCog" instead of "Levels"
+                levels_cog = interaction.client.get_cog("LevelsCog")
+                if levels_cog:
+                    await levels_cog.update_player_roles(
+                        interaction.guild, interaction.user.id, 200
+                    )
+                    level_role_assigned = True
+                    logger.info(f"🟡 Assigned level role to {interaction.user}")
+                else:
+                    logger.warning("🟡 LevelsCog not found - skipping level role assignment")
             except Exception as e:
-                logger.error(f"Error assigning level role during registration: {e}")
+                logger.error(f"🟡 Error assigning level role during registration: {e}")
+                level_role_assigned = False
 
             # Add user to default league and assign league role
             league_added = False
@@ -223,37 +249,59 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                         if league_result:
                             league_added = True
 
-                            # Try to assign the league role
+                            # Try to assign the league role with error handling
                             league_role = discord.utils.get(
                                 interaction.guild.roles, name=default_league_display
                             )
 
                             if league_role:
-                                await interaction.user.add_roles(league_role)
-                                league_role_assigned = True
+                                try:
+                                    await interaction.user.add_roles(league_role, reason="Default league assignment")
+                                    league_role_assigned = True
+                                    logger.info(f"🟡 Assigned league role '{default_league_display}' to {interaction.user}")
+                                except discord.Forbidden:
+                                    logger.error(f"🟡 No permission to assign league role to {interaction.user.id}")
+                                    league_role_assigned = False
+                                except Exception as e:
+                                    logger.error(f"🟡 Error assigning league role to {interaction.user.id}: {e}")
+                                    league_role_assigned = False
                             else:
                                 logger.warning(
-                                    f"League role '{default_league_display}' not found for user {interaction.user.id}"
+                                    f"🟡 League role '{default_league_display}' not found for user {interaction.user.id}"
                                 )
                         else:
                             logger.error(
-                                f"Failed to add user {interaction.user.id} to league {default_league}"
+                                f"🟡 Failed to add user {interaction.user.id} to league {default_league}"
                             )
                     else:
-                        logger.warning("No default league configured")
+                        logger.warning("🟡 No default league configured")
                 else:
-                    logger.error("Registration cog not found")
+                    logger.error("🟡 Registration cog not found")
 
             except Exception as e:
-                logger.error(f"Error adding user to default league: {e}")
+                logger.error(f"🟡 Error adding user to default league: {e}")
 
-            # Create success embed
+            # Create success embed with detailed role status
             embed = discord.Embed(
                 title=f"{Config.ICONS['success']} Registration Successful",
                 color=Config.EMBED_COLORS["light_green"],
             )
             embed.add_field(name="Nickname", value=self.nickname.value, inline=True)
             embed.add_field(name="Player ID", value=self.so2_id.value, inline=True)
+
+            # Add role assignment status
+            role_status = ""
+            if registered_role_assigned:
+                role_status += f"{Config.ICONS['success']} Registered role assigned\n"
+            else:
+                role_status += f"{Config.ICONS['unsuccess']} Registered role failed\n"
+            
+            if level_role_assigned:
+                role_status += f"{Config.ICONS['success']} Level role assigned\n"
+            else:
+                role_status += f"{Config.ICONS['info']} Level role skipped\n"
+
+            embed.add_field(name="Roles", value=role_status.strip(), inline=False)
 
             # Add league information
             if league_added:
@@ -263,9 +311,9 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                 if league_role_assigned:
                     league_status += f"\n{Config.ICONS['success']} {default_league_display} role assigned"
                 else:
-                    league_status += f"\n{Config.ICONS['info']} {default_league_display} role not found"
+                    league_status += f"\n{Config.ICONS['unsuccess']} {default_league_display} role failed"
             else:
-                league_status = f"{Config.ICONS['info']} League assignment failed"
+                league_status = f"{Config.ICONS['unsuccess']} League assignment failed"
 
             embed.add_field(name="League", value=league_status, inline=False)
 
@@ -287,7 +335,7 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
         except Exception as e:
-            logger.error(f"Registration error: {e}")
+            logger.error(f"🟡 Registration error: {e}")
             embed = discord.Embed(
                 title=f"{Config.ICONS['unsuccess']} Registration Failed",
                 description="An error occurred during registration. Please contact an admin.",
@@ -342,7 +390,7 @@ class Registration(commands.Cog):
                 response = Config.supabase().table("config").select("*").execute()
                 return response.data[0] if response.data else None
             except Exception as e:
-                logger.error(f"Failed to get config: {e}")
+                logger.error(f"🟡 Failed to get config: {e}")
                 return None
 
         return await loop.run_in_executor(None, db_select)
@@ -376,7 +424,7 @@ class Registration(commands.Cog):
 
                 return result.data[0] if result.data else None
             except Exception as e:
-                logger.error(f"Failed to update config: {e}")
+                logger.error(f"🟡 Failed to update config: {e}")
                 return None
 
         return await loop.run_in_executor(None, db_upsert)
@@ -389,7 +437,7 @@ class Registration(commands.Cog):
         if result and result.get("success"):
             return {"discord_id": str(discord_id)}
         else:
-            logger.error(f"Failed to add user {discord_id} to league {league_table}")
+            logger.error(f"🟡 Failed to add user {discord_id} to league {league_table}")
             return None
 
     @app_commands.command(
@@ -475,7 +523,7 @@ class Registration(commands.Cog):
                     mentionable=True,  # Allow mention
                     reason="Auto-created for registered players during setup",
                 )
-                logger.info(f"Created 'Registered' role with ID: {registered_role.id}")
+                logger.info(f"🟡 Created 'Registered' role with ID: {registered_role.id}")
             else:
                 # Update existing role to ensure it has the correct permissions
                 await registered_role.edit(
@@ -483,7 +531,7 @@ class Registration(commands.Cog):
                     mentionable=True,  # Allow mention
                     reason="Updated role permissions during setup",
                 )
-                logger.info(f"Updated existing 'Registered' role permissions")
+                logger.info(f"🟡 Updated existing 'Registered' role permissions")
 
             channel = discord.utils.get(
                 interaction.guild.text_channels, name=Config.REGISTRATION_CHANNEL
@@ -513,7 +561,7 @@ class Registration(commands.Cog):
                 channel = await interaction.guild.create_text_channel(
                     Config.REGISTRATION_CHANNEL, overwrites=overwrites, position=0
                 )
-                logger.info(f"Created registration channel with proper permissions")
+                logger.info(f"🟡 Created registration channel with proper permissions")
             else:
                 # Update existing channel permissions to ensure registered users can't view it
                 await channel.set_permissions(
@@ -522,7 +570,7 @@ class Registration(commands.Cog):
                     send_messages=False,
                     reason="Updated during setup to hide from registered users",
                 )
-                logger.info(f"Updated permissions for existing registration channel")
+                logger.info(f"🟡 Updated permissions for existing registration channel")
 
             embed = discord.Embed(
                 title=f"{Config.APP_NAME} Registration",
@@ -573,7 +621,7 @@ class Registration(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
         except Exception as e:
-            logger.error(f"Setup error: {e}")
+            logger.error(f"🟡 Setup error: {e}")
             await interaction.response.send_message(
                 f"{Config.ICONS['unsuccess']} Setup failed: {e}", ephemeral=True
             )
@@ -651,7 +699,7 @@ class Registration(commands.Cog):
             await interaction.followup.send(embed=embed)
 
         except Exception as e:
-            logger.error(f"Error in restore_user command: {e}")
+            logger.error(f"🟡 Error in restore_user command: {e}")
             embed = discord.Embed(
                 title=f"{Config.ICONS['unsuccess']} Restoration Failed",
                 description=f"An error occurred: {e}",
@@ -718,7 +766,7 @@ class Registration(commands.Cog):
 
                 except Exception as e:
                     logger.error(
-                        f"Error restoring user {member} (ID: {member.id}): {e}"
+                        f"🟡 Error restoring user {member} (ID: {member.id}): {e}"
                     )
                     failed_count += 1
 
@@ -745,7 +793,7 @@ class Registration(commands.Cog):
             await progress_message.edit(embed=embed)
 
         except Exception as e:
-            logger.error(f"Error in restore_all_users command: {e}")
+            logger.error(f"🟡 Error in restore_all_users command: {e}")
             embed = discord.Embed(
                 title=f"{Config.ICONS['unsuccess']} Restoration Failed",
                 description=f"An error occurred during bulk restoration: {e}",
@@ -764,32 +812,50 @@ class Registration(commands.Cog):
             # Get or create the registered role
             role = discord.utils.get(member.guild.roles, name=Config.REGISTERED_ROLE)
             if not role:
-                role = await member.guild.create_role(
-                    name=Config.REGISTERED_ROLE,
-                    color=EMBED_COLOR,
-                    hoist=True,
-                    mentionable=True,
-                    reason="Auto-created for registered players",
-                )
+                try:
+                    role = await member.guild.create_role(
+                        name=Config.REGISTERED_ROLE,
+                        color=EMBED_COLOR,
+                        hoist=True,
+                        mentionable=True,
+                        reason="Auto-created for registered players",
+                    )
+                except discord.Forbidden:
+                    logger.error(f"🟡 No permission to create Registered role during restore for {member}")
+                    return False
+                except Exception as e:
+                    logger.error(f"🟡 Failed to create Registered role during restore: {e}")
+                    return False
 
             # Add the registered role if they don't have it
             if role not in member.roles:
-                await member.add_roles(
-                    role, reason="Bulk restoration by admin"
-                )  # Assign the appropriate level role based on default starting points
+                try:
+                    await member.add_roles(
+                        role, reason="Bulk restoration by admin"
+                    )
+                except discord.Forbidden:
+                    logger.error(f"🟡 No permission to assign Registered role to {member} during restore")
+                    return False
+                except Exception as e:
+                    logger.error(f"🟡 Error assigning Registered role to {member} during restore: {e}")
+                    return False
+                
+            # Assign the appropriate level role based on default starting points
             # Note: User stats are now tracked in league tables, not the users table
             try:
-                from cogs.levels import LevelsCog
-
-                levels_cog = LevelsCog(None)
-                # Use default starting points since stats are now in league tables
-                default_points = 200
-                await levels_cog.update_player_roles(
-                    member.guild, member.id, default_points
-                )
+                # Fix: Use correct cog name "LevelsCog" instead of "Levels"
+                levels_cog = self.bot.get_cog("LevelsCog")
+                if levels_cog:
+                    # Use default starting points since stats are now in league tables
+                    default_points = 200
+                    await levels_cog.update_player_roles(
+                        member.guild, member.id, default_points
+                    )
+                else:
+                    logger.warning("🟡 LevelsCog not found during bulk restore")
             except Exception as e:
                 logger.error(
-                    f"Error assigning level role during bulk restore for {member}: {e}"
+                    f"🟡 Error assigning level role during bulk restore for {member}: {e}"
                 )
 
             # League restoration logic (similar to restore_user)
@@ -809,7 +875,7 @@ class Registration(commands.Cog):
                             )
                             return response.data
                         except Exception as e:
-                            logger.error(f"Failed to fetch leagues: {e}")
+                            logger.error(f"🟡 Failed to fetch leagues: {e}")
                             return []
 
                     leagues = await loop.run_in_executor(None, get_all_leagues)
@@ -831,7 +897,7 @@ class Registration(commands.Cog):
                                 return response.data[0] if response.data else None
                             except Exception as e:
                                 logger.error(
-                                    f"Failed to check league {league_table}: {e}"
+                                    f"🟡 Failed to check league {league_table}: {e}"
                                 )
                                 return None
 
@@ -850,7 +916,7 @@ class Registration(commands.Cog):
                                 }
                             )
 
-                    # Restore league roles
+                    # Restore league roles with error handling
                     for league_info in user_leagues:
                         original_name = league_info["original_name"]
                         league_role = discord.utils.get(
@@ -858,9 +924,15 @@ class Registration(commands.Cog):
                         )
 
                         if league_role and league_role not in member.roles:
-                            await member.add_roles(
-                                league_role, reason="Bulk restoration by admin"
-                            )
+                            try:
+                                await member.add_roles(
+                                    league_role, reason="Bulk restoration by admin"
+                                )
+                                logger.info(f"🟡 Assigned league role '{original_name}' to {member} during restore")
+                            except discord.Forbidden:
+                                logger.error(f"🟡 No permission to assign league role '{original_name}' to {member}")
+                            except Exception as e:
+                                logger.error(f"🟡 Error assigning league role '{original_name}' to {member}: {e}")
 
                     # Handle default league assignment (same logic as restore_user)
                     config = await self.get_config()
@@ -879,18 +951,24 @@ class Registration(commands.Cog):
                             )
 
                             if league_result:
-                                # Assign default league role
+                                # Assign default league role with error handling
                                 league_role = discord.utils.get(
                                     member.guild.roles, name=default_league_display
                                 )
                                 if league_role and league_role not in member.roles:
-                                    await member.add_roles(
-                                        league_role,
-                                        reason="Added to default league during bulk restore",
-                                    )
+                                    try:
+                                        await member.add_roles(
+                                            league_role,
+                                            reason="Added to default league during bulk restore",
+                                        )
+                                        logger.info(f"🟡 Assigned default league role '{default_league_display}' to {member}")
+                                    except discord.Forbidden:
+                                        logger.error(f"🟡 No permission to assign default league role to {member}")
+                                    except Exception as e:
+                                        logger.error(f"🟡 Error assigning default league role to {member}: {e}")
 
                 except Exception as e:
-                    logger.error(f"Error with league restoration for {member}: {e}")
+                    logger.error(f"🟡 Error with league restoration for {member}: {e}")
 
             # Update their nickname if it doesn't match
             if member.nick != user_data["nickname"]:
@@ -904,7 +982,7 @@ class Registration(commands.Cog):
             return True
 
         except Exception as e:
-            logger.error(f"Error in _restore_user_logic for {member}: {e}")
+            logger.error(f"🟡 Error in _restore_user_logic for {member}: {e}")
             return False
 
     @commands.Cog.listener()
@@ -917,14 +995,14 @@ class Registration(commands.Cog):
             if user_data:
                 # User is already registered, restore their data
                 logger.info(
-                    f"Restoring registered user: {member} (Discord ID: {member.id})"
+                    f"🟡 Restoring registered user: {member} (Discord ID: {member.id})"
                 )
 
                 # Use the same robust restoration logic as restore_all_users and restore_user
                 success = await self._restore_user_logic(member, user_data)
 
                 if success:
-                    logger.info(f"Successfully restored user {member} on member join")
+                    logger.info(f"🟡 Successfully restored user {member} on member join")
 
                     # Send a welcome back message to the user via DM
                     try:
@@ -947,18 +1025,18 @@ class Registration(commands.Cog):
                         embed.set_footer(text="Ready to play competitive matches!")
 
                         await member.send(embed=embed)
-                        logger.info(f"Sent welcome back message to {member}")
+                        logger.info(f"🟡 Sent welcome back message to {member}")
                     except discord.Forbidden:
-                        logger.info(f"Could not send DM to {member} (DMs disabled)")
+                        logger.info(f"🟡 Could not send DM to {member} (DMs disabled)")
                     except Exception as e:
                         logger.error(
-                            f"Failed to send welcome back message to {member}: {e}"
+                            f"🟡 Failed to send welcome back message to {member}: {e}"
                         )
                 else:
-                    logger.error(f"Failed to restore user {member} on member join")
+                    logger.error(f"🟡 Failed to restore user {member} on member join")
 
         except Exception as e:
-            logger.error(f"Error in on_member_join for {member}: {e}")
+            logger.error(f"🟡 Error in on_member_join for {member}: {e}")
 
 
 async def setup(bot):

@@ -30,13 +30,13 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
         if screenshot_message:
             try:
                 await screenshot_message.delete()
-                logger.info("Deleted screenshot message for failed submission")
+                logger.info("🟢 Deleted screenshot message for failed submission")
             except discord.NotFound:
                 pass  # Message already deleted
             except discord.Forbidden:
-                logger.warning("No permission to delete screenshot message")
+                logger.warning("🟢 No permission to delete screenshot message")
             except Exception as e:
-                logger.error(f"Error deleting screenshot message: {e}")
+                logger.error(f"🟢 Error deleting screenshot message: {e}")
 
     match_id = discord.ui.TextInput(
         label="Match ID",
@@ -111,10 +111,10 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
             try:
                 await Match.release_submission_lock(match_id_int)
                 logger.info(
-                    f"Released submission lock for match {match_id_int} - user {user_discord_id} not authorized"
+                    f"🟢 Released submission lock for match {match_id_int} - user {user_discord_id} not authorized"
                 )
             except Exception as lock_error:
-                logger.error(f"Failed to release submission lock: {lock_error}")
+                logger.error(f"🟢 Failed to release submission lock: {lock_error}")
 
             await interaction.followup.send(
                 "You are not authorized to submit results for this match.",
@@ -192,10 +192,10 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
             try:
                 await Match.release_submission_lock(match_data["match_id"])
                 logger.info(
-                    f"Released submission lock for match {match_data['match_id']} due to timeout"
+                    f"🟢 Released submission lock for match {match_data['match_id']} due to timeout"
                 )
             except Exception as lock_error:
-                logger.error(f"Failed to release submission lock: {lock_error}")
+                logger.error(f"🟢 Failed to release submission lock: {lock_error}")
 
             await interaction.followup.send(
                 "Timeout: No screenshot uploaded within 60 seconds.", ephemeral=True
@@ -320,7 +320,7 @@ IMPORTANT RULES:
             # Log token usage
             usage = response.usage
             logger.info(
-                f"OpenAI Token Usage — Prompt: {usage.prompt_tokens}, "
+                f"🟢 OpenAI Token Usage — Prompt: {usage.prompt_tokens}, "
                 f"Completion: {usage.completion_tokens}, "
                 f"Total: {usage.total_tokens}"
             )
@@ -343,17 +343,17 @@ IMPORTANT RULES:
                     json_content = content
 
                 extracted_data = json.loads(json_content)
-                logger.info(f"GPT extracted data: {json.dumps(extracted_data, indent=2)}")
+                logger.info(f"🟢 GPT extracted data: {json.dumps(extracted_data, indent=2)}")
                 
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse OpenAI JSON response: {e}")
-                logger.error(f"Raw response: {content}")
+                logger.error(f"🟢 Failed to parse OpenAI JSON response: {e}")
+                logger.error(f"🟢 Raw response: {content}")
                 
                 # Release the submission lock since parsing failed
                 try:
                     await Match.release_submission_lock(match_data["match_id"])
                 except Exception as lock_error:
-                    logger.error(f"Failed to release submission lock: {lock_error}")
+                    logger.error(f"🟢 Failed to release submission lock: {lock_error}")
 
                 await self._delete_screenshot_safely(screenshot_message)
                 await interaction.followup.send(
@@ -372,16 +372,16 @@ IMPORTANT RULES:
             )
 
         except Exception as e:
-            logger.error(f"Error processing scoreboard with GPT: {e}")
+            logger.error(f"🟢 Error processing scoreboard with GPT: {e}")
 
             # Release the submission lock since an error occurred
             try:
                 await Match.release_submission_lock(match_data["match_id"])
                 logger.info(
-                    f"Released submission lock for match {match_data['match_id']} due to processing error"
+                    f"🟢 Released submission lock for match {match_data['match_id']} due to processing error"
                 )
             except Exception as lock_error:
-                logger.error(f"Failed to release submission lock: {lock_error}")
+                logger.error(f"🟢 Failed to release submission lock: {lock_error}")
 
             # Delete the screenshot since submission failed
             await self._delete_screenshot_safely(screenshot_message)
@@ -414,10 +414,10 @@ IMPORTANT RULES:
                 try:
                     await Match.release_submission_lock(match_data["match_id"])
                     logger.info(
-                        f"Released submission lock for match {match_data['match_id']} due to game detection failure"
+                        f"🟢 Released submission lock for match {match_data['match_id']} due to game detection failure"
                     )
                 except Exception as lock_error:
-                    logger.error(f"Failed to release submission lock: {lock_error}")
+                    logger.error(f"🟢 Failed to release submission lock: {lock_error}")
 
                 # Delete the screenshot since submission failed
                 await self._delete_screenshot_safely(screenshot_message)
@@ -446,7 +446,7 @@ IMPORTANT RULES:
                 try:
                     await Match.release_submission_lock(match_data["match_id"])
                 except Exception as lock_error:
-                    logger.error(f"Failed to release submission lock: {lock_error}")
+                    logger.error(f"🟢 Failed to release submission lock: {lock_error}")
 
                 await self._delete_screenshot_safely(screenshot_message)
                 await interaction.followup.send(
@@ -461,7 +461,7 @@ IMPORTANT RULES:
                 try:
                     await Match.release_submission_lock(match_data["match_id"])
                 except Exception as lock_error:
-                    logger.error(f"Failed to release submission lock: {lock_error}")
+                    logger.error(f"🟢 Failed to release submission lock: {lock_error}")
 
                 await self._delete_screenshot_safely(screenshot_message)
                 await interaction.followup.send(
@@ -658,7 +658,7 @@ IMPORTANT RULES:
                 color=Config.EMBED_COLORS["light_green"],
             )
             success_embed.add_field(
-                name=f"{Config.ICONS['stats']} Match Results",
+                name=f"{Config.ICONS['stats_lightgreen']} Match Results",
                 value=f"**Matched:** {matched_count}/{total_players} players\n"
                 f"**Team 1:** {len(updated_team1)} players\n"
                 f"**Team 2:** {len(updated_team2)} players",
@@ -683,16 +683,16 @@ IMPORTANT RULES:
                 await interaction.followup.send(embed=success_embed, ephemeral=True)
 
         except Exception as e:
-            logger.error(f"Error processing GPT results: {e}")
+            logger.error(f"🟢 Error processing GPT results: {e}")
 
             # Release the submission lock since an error occurred
             try:
                 await Match.release_submission_lock(match_data["match_id"])
                 logger.info(
-                    f"Released submission lock for match {match_data['match_id']} due to processing error"
+                    f"🟢 Released submission lock for match {match_data['match_id']} due to processing error"
                 )
             except Exception as lock_error:
-                logger.error(f"Failed to release submission lock: {lock_error}")
+                logger.error(f"🟢 Failed to release submission lock: {lock_error}")
 
             # Delete the screenshot since submission failed
             await self._delete_screenshot_safely(screenshot_message)
@@ -705,13 +705,13 @@ IMPORTANT RULES:
         """Update user statistics in database and manage level roles"""
         # Extract league from match data
         league_name = match_data.get("league")
-        logger.info(f"Updating stats for match in league: {league_name}")
+        logger.info(f"🟢 Updating stats for match in league: {league_name}")
         
         # Get the default league from config table to determine if level roles should be updated
         default_league = await self.get_default_league_from_config()
         is_default_league = league_name == default_league
         logger.info(
-            f"Default league: {default_league}, Current league: {league_name}, Is default: {is_default_league}"
+            f"🟢 Default league: {default_league}, Current league: {league_name}, Is default: {is_default_league}"
         )
 
         for player in all_players:
@@ -749,7 +749,7 @@ IMPORTANT RULES:
                     return response.data[0].get("default_league")
                 return None
             except Exception as e:
-                logger.error(f"Failed to get default league from config: {e}")
+                logger.error(f"🟢 Failed to get default league from config: {e}")
                 return None
 
         return await loop.run_in_executor(None, db_get)
@@ -768,7 +768,7 @@ IMPORTANT RULES:
         try:
             target_channel = interaction.guild.get_channel(target_channel_id)
             if not target_channel:
-                logger.error(f"Target channel {target_channel_id} not found")
+                logger.error(f"🟢 Target channel {target_channel_id} not found")
                 return
 
             # Ensure all players have assists field (for backward compatibility)
@@ -812,7 +812,7 @@ IMPORTANT RULES:
                 pass
 
         except Exception as e:
-            logger.error(f"Error sending final results image: {e}")
+            logger.error(f"🟢 Error sending final results image: {e}")
             # Fallback to text message if image generation fails
             teams_data = match_data.get("teams", {})
             if isinstance(teams_data, str):
@@ -841,7 +841,7 @@ IMPORTANT RULES:
             return 0
         except Exception as e:
             logger.error(
-                f"Error getting points for {discord_id} in league {league_name}: {e}"
+                f"🟢 Error getting points for {discord_id} in league {league_name}: {e}"
             )
             return 0
 
@@ -863,7 +863,7 @@ IMPORTANT RULES:
                 return LevelsCog.LEVEL_CONFIG[level]["leaving_ss_points"]
         except Exception as e:
             logger.error(
-                f"Error calculating leaving penalty for {discord_id} in league {league_name}: {e}"
+                f"🟢 Error calculating leaving penalty for {discord_id} in league {league_name}: {e}"
             )
             # Fallback penalty
             return -30
@@ -886,7 +886,7 @@ IMPORTANT RULES:
                 return LevelsCog.get_point_delta(current_points, is_win)
         except Exception as e:
             logger.error(
-                f"Error calculating level-based points for {discord_id} in league {league_name}: {e}"
+                f"🟢 Error calculating level-based points for {discord_id} in league {league_name}: {e}"
             )
             # Fallback to old system
             return 20 if is_win else -10
@@ -899,7 +899,7 @@ IMPORTANT RULES:
             levels_cog = LevelsCog(None)
             return await levels_cog.is_challenger_eligible(discord_id, current_points)
         except Exception as e:
-            logger.error(f"Error checking challenger status for {discord_id}: {e}")
+            logger.error(f"🟢 Error checking challenger status for {discord_id}: {e}")
             return False
 
 
@@ -950,7 +950,7 @@ class Scoreboard(commands.Cog):
         try:
             await self.recreate_persistent_views()
         except Exception as e:
-            logger.warning(f"Failed to recreate scoreboard views on startup, will try again later: {e}")
+            logger.warning(f"🟢 Failed to recreate scoreboard views on startup, will try again later: {e}")
             # Schedule retry after bot is fully loaded
             self.bot.loop.create_task(self._retry_recreate_views())
 
@@ -958,17 +958,17 @@ class Scoreboard(commands.Cog):
         """Retry recreating persistent views after a delay"""
         await asyncio.sleep(30)  # Wait 30 seconds before retry
         try:
-            logger.info("Retrying to recreate scoreboard persistent views...")
+            logger.info("🟢 Retrying to recreate scoreboard persistent views...")
             await self.recreate_persistent_views()
         except Exception as e:
-            logger.error(f"Retry failed for recreating scoreboard views: {e}")
+            logger.error(f"🟢 Retry failed for recreating scoreboard views: {e}")
 
     async def recreate_persistent_views(self):
         """Recreate persistent views from database configurations"""
         try:
             configs = await ScoreboardConfig.get_all_configs()
             if not configs:
-                logger.info("No scoreboard configurations found")
+                logger.info("🟢 No scoreboard configurations found")
                 return
 
             for config in configs:
@@ -981,14 +981,14 @@ class Scoreboard(commands.Cog):
                     guild = self.bot.get_guild(guild_id)
                     if not guild:
                         logger.warning(
-                            f"Guild {guild_id} not found, skipping scoreboard config"
+                            f"🟢 Guild {guild_id} not found, skipping scoreboard config"
                         )
                         continue
 
                     submission_channel = guild.get_channel(submission_channel_id)
                     if not submission_channel:
                         logger.warning(
-                            f"Submission channel {submission_channel_id} not found, skipping"
+                            f"🟢 Submission channel {submission_channel_id} not found, skipping"
                         )
                         continue
 
@@ -1002,16 +1002,16 @@ class Scoreboard(commands.Cog):
                             # Update the view on the existing message
                             await message.edit(view=view)
                             logger.info(
-                                f"Recreated persistent scoreboard view for guild {guild_id} on existing message {message_id}"
+                                f"🟢 Recreated persistent scoreboard view for guild {guild_id} on existing message {message_id}"
                             )
                             continue
                         except discord.NotFound:
                             logger.warning(
-                                f"Scoreboard message {message_id} not found, will create new one"
+                                f"🟢 Scoreboard message {message_id} not found, will create new one"
                             )
                         except Exception as e:
                             logger.error(
-                                f"Error fetching scoreboard message {message_id}: {e}"
+                                f"🟢 Error fetching scoreboard message {message_id}: {e}"
                             )
 
                     # Create new message with embed and view
@@ -1046,20 +1046,20 @@ class Scoreboard(commands.Cog):
                         )
 
                         logger.info(
-                            f"Created new persistent scoreboard view for guild {guild_id} with message {new_message.id}"
+                            f"🟢 Created new persistent scoreboard view for guild {guild_id} with message {new_message.id}"
                         )
 
                     except Exception as e:
                         logger.error(
-                            f"Error creating scoreboard message for guild {guild_id}: {e}"
+                            f"🟢 Error creating scoreboard message for guild {guild_id}: {e}"
                         )
 
                 except Exception as config_error:
-                    logger.error(f"Error processing scoreboard config: {config_error}")
+                    logger.error(f"🟢 Error processing scoreboard config: {config_error}")
                     continue  # Continue with next config
 
         except Exception as e:
-            logger.error(f"Error recreating persistent scoreboard views (will retry later): {e}")
+            logger.error(f"🟢 Error recreating persistent scoreboard views (will retry later): {e}")
             # Don't let database connection errors prevent the bot from starting
             # The views can be recreated manually later with the set_scoreboard_channel command
 
@@ -1098,7 +1098,7 @@ class Scoreboard(commands.Cog):
             )
             embed.add_field(
                 name="How to submit:",
-                value="1. Click the button below\n2. Enter your match ID\n3. Upload the scoreboard screenshot\n4. Wait for processing",
+                value="1. Click the button below (Submit Results)\n2. Enter your match ID\n3. Upload the scoreboard screenshot (In Game Results)\n4. Wait for processing",
                 inline=False,
             )
             embed.set_footer(text="Only match participants can submit results")
@@ -1128,7 +1128,7 @@ class Scoreboard(commands.Cog):
             await interaction.response.send_message(embed=success_embed, ephemeral=True)
 
         except Exception as e:
-            logger.error(f"Error setting scoreboard channel: {e}")
+            logger.error(f"🟢 Error setting scoreboard channel: {e}")
             embed = discord.Embed(
                 title=f"{Config.ICONS['unsuccess']} Setup Error",
                 description="An error occurred while setting up the scoreboard channel. Please try again.",
