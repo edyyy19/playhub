@@ -41,6 +41,7 @@ class LevelsCog(commands.Cog):
             "win_points": 70,
             "loss_points": -5,
             "emoji": "<:level1:1397901687473180813>",
+            "leaving_ss_points": -15
         },
         2: {
             "min_points": 501,
@@ -49,6 +50,7 @@ class LevelsCog(commands.Cog):
             "win_points": 70,
             "loss_points": -10,
             "emoji": "<:level2:1397901690190958622>",
+            "leaving_ss_points": -22
         },
         3: {
             "min_points": 751,
@@ -57,6 +59,7 @@ class LevelsCog(commands.Cog):
             "win_points": 55,
             "loss_points": -10,
             "emoji": "<:level3:1397901669140004905>",
+            "leaving_ss_points": -28
         },
         4: {
             "min_points": 901,
@@ -65,6 +68,7 @@ class LevelsCog(commands.Cog):
             "win_points": 55,
             "loss_points": -13,
             "emoji": "<:level4:1397901670792298526>",
+            "leaving_ss_points": -30
         },
         5: {
             "min_points": 1051,
@@ -73,6 +77,7 @@ class LevelsCog(commands.Cog):
             "win_points": 55,
             "loss_points": -20,
             "emoji": "<:level5:1397901672608698400>",
+            "leaving_ss_points": -35
         },
         6: {
             "min_points": 1201,
@@ -81,6 +86,7 @@ class LevelsCog(commands.Cog):
             "win_points": 40,
             "loss_points": -24,
             "emoji": "<:level6:1397901674605183066>",
+            "leaving_ss_points": -39
         },
         7: {
             "min_points": 1351,
@@ -89,6 +95,7 @@ class LevelsCog(commands.Cog):
             "win_points": 40,
             "loss_points": -28,
             "emoji": "<:level7:1397901676613996544>",
+            "leaving_ss_points": -42
         },
         8: {
             "min_points": 1531,
@@ -97,6 +104,7 @@ class LevelsCog(commands.Cog):
             "win_points": 40,
             "loss_points": -34,
             "emoji": "<:level8:1397901678480461956>",
+            "leaving_ss_points": -45
         },
         9: {
             "min_points": 1751,
@@ -105,6 +113,7 @@ class LevelsCog(commands.Cog):
             "win_points": 30,
             "loss_points": -40,
             "emoji": "<:level9:1397901680795844719>",
+            "leaving_ss_points": -52
         },
         10: {
             "min_points": 2001,
@@ -113,6 +122,7 @@ class LevelsCog(commands.Cog):
             "win_points": 20,
             "loss_points": -45,
             "emoji": "<:level10:1397901683463422024>",
+            "leaving_ss_points": -58
         },
     }
 
@@ -122,6 +132,7 @@ class LevelsCog(commands.Cog):
         "win_points": 15,
         "loss_points": -48,
         "emoji": "<:challenger:1397901684952268871>",
+        "leaving_ss_points": -60
     }
 
     @staticmethod
@@ -519,6 +530,116 @@ class LevelsCog(commands.Cog):
                 color=Config.EMBED_COLORS["red"],
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="level_info",
+        description="View detailed information about all levels and their requirements"
+    )
+    async def level_info(self, interaction: discord.Interaction):
+        """Display detailed information about all levels in a paginated embed"""
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # Create main embed
+            embed = discord.Embed(
+                title=f"{Config.ICONS['stats']} Level System Information",
+                description="Detailed breakdown of all levels, requirements, and rewards",
+                color=Config.MAIN_COLOR,
+            )
+
+            # Add level information fields
+            all_levels_text = ""
+            
+            # Add regular levels
+            for level, config in self.LEVEL_CONFIG.items():
+                emoji = config["emoji"]
+                min_points = config["min_points"]
+                max_points = config["max_points"] if config["max_points"] != float("inf") else "∞"
+                win_points = config["win_points"]
+                loss_points = config["loss_points"]
+                leaving_penalty = config["leaving_ss_points"]
+                
+                all_levels_text += (
+                    f"{emoji} **Level {level}** • `{min_points} - {max_points}` • Win: `+{win_points}` • Loss: `{loss_points}` • Leaving: `{leaving_penalty}`\n"
+                )
+
+            # Add Challenger information
+            challenger_emoji = self.CHALLENGER_CONFIG["emoji"]
+            challenger_min = self.CHALLENGER_CONFIG["min_points"]
+            challenger_win = self.CHALLENGER_CONFIG["win_points"]
+            challenger_loss = self.CHALLENGER_CONFIG["loss_points"]
+            challenger_leaving = self.CHALLENGER_CONFIG["leaving_ss_points"]
+
+            all_levels_text += (
+                f"{challenger_emoji} **Challenger** • `{challenger_min}+ pts & Top 10` • Win: `+{challenger_win}` • Loss: `{challenger_loss}` • Leaving: `{challenger_leaving}`\n"
+            )
+
+            # Split into chunks that fit Discord's 1024 character limit
+            max_chars = 1024
+            lines = all_levels_text.strip().split('\n')
+            chunks = []
+            current_chunk = ""
+            
+            for line in lines:
+                # Check if adding this line would exceed the limit
+                if len(current_chunk + line + '\n') > max_chars:
+                    if current_chunk:
+                        chunks.append(current_chunk.strip())
+                    current_chunk = line + '\n'
+                else:
+                    current_chunk += line + '\n'
+            
+            # Add the last chunk
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+
+            # Add chunks as separate fields
+            for i, chunk in enumerate(chunks):
+                if i == 0:
+                    field_name = f"{Config.ICONS['stats']} Level Information"
+                else:
+                    field_name = f"{Config.ICONS['stats']} Level Information (continued)"
+                embed.add_field(name=field_name, value=chunk, inline=False)
+
+            # Add explanation footer
+            explanation = (
+                "• Points = Required points range for level\n"
+                "• Win/Loss = Points gained/lost per match\n"
+                "• Leaving = Penalty for abandoning matches\n"
+                "• Challenger requires top 10 ranking"
+            )
+            
+            embed.add_field(name=f"{Config.ICONS['info']} How to Read", value=explanation, inline=False)
+
+            # Add current default league info
+            default_league = await self.get_default_league_from_config()
+            if default_league:
+                # Get the display name for the default league
+                leagues_cog = self.bot.get_cog("Leagues")
+                if leagues_cog:
+                    league_data = await leagues_cog.get_league_by_name(default_league)
+                    default_league_display = (
+                        league_data.get("original_league_name") if league_data else None
+                    ) or default_league.replace("_", " ").title()
+                else:
+                    default_league_display = default_league.replace("_", " ").title()
+                
+                embed.set_footer(
+                    text=f"Level system applies to '{default_league_display}' league"
+                )
+            else:
+                embed.set_footer(text="Use /profile to see your current level")
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        except Exception as e:
+            logger.error(f"Error in level_info command: {e}")
+            error_embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Error",
+                description="An error occurred while retrieving level information.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
 
 
 async def setup(bot):

@@ -69,13 +69,10 @@ class ScoreboardResultsTemplateGenerator:
             SCORE_Y = 66
             
             MAP_X = 240
-            MAP_Y = 1613
+            MAP_Y = 1628
             
             WINNER_X = 2340
             WINNER_Y = 1633
-            
-            # Avatar size
-            AVATAR_SIZE = 80
             
             # Team 1 coordinates (left side)
             TEAM1_AVATAR_X = 125

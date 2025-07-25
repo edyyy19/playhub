@@ -47,6 +47,7 @@ class Config:
         "leave": "<:discord_leave:1397569300868632607>",
         "season": "<:discord_season:1397568107496603758>",
         "stats": "<:discord_stats:1397568109472251954>",
+        "stats_yellow": "<:discord_stats_yellow:1398291689738862723>",
         "user": "<:discord_user:1397568111208562688>",
         "calendar": "<:discord_calendar:1397568115478499458>",
         "camera": "<:discord_camera:1397568144813330452>",

@@ -666,9 +666,9 @@ class Leaderboard(commands.Cog):
         except Exception as e:
             logger.warning(f"Failed to cleanup temporary file {file_path}: {e}")
 
-    @tasks.loop(hours=1)
+    @tasks.loop(minutes=30)
     async def update_leaderboards(self):
-        """Automatically update all active leaderboard messages every 1 hour"""
+        """Automatically update all active leaderboard messages every 30 minutes"""
         if not self.leaderboard_messages:
             return logger.info(
                 f"Updating {len(self.leaderboard_messages)} leaderboard messages"

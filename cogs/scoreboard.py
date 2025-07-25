@@ -166,7 +166,7 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
                 color=Config.EMBED_COLORS["yellow"],
             )
             processing_embed.add_field(
-                name=f"{Config.ICONS['stats']} Analysis Steps",
+                name=f"{Config.ICONS['stats_yellow']} Analysis Steps",
                 value="• Reading player statistics\n• Matching players to database\n• Calculating results\n• Generating final scoreboard",
                 inline=False,
             )
@@ -217,9 +217,9 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
             team1_players = teams_data.get("team1", {}).get("players", [])
             team2_players = teams_data.get("team2", {}).get("players", [])
             
-            # Create the expected players list for GPT
-            team1_names = [p["nickname"] for p in team1_players]
-            team2_names = [p["nickname"] for p in team2_players]
+            # Create the expected players list for GPT with discord_ids
+            team1_players_info = [{"nickname": p["nickname"], "discord_id": p["discord_id"]} for p in team1_players]
+            team2_players_info = [{"nickname": p["nickname"], "discord_id": p["discord_id"]} for p in team2_players]
             
             # Define the advanced OpenAI call function with player matching
             def make_openai_call():
@@ -234,25 +234,29 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
                                     "text": f"""Analyze this Standoff 2 scoreboard screenshot and extract player statistics with smart player matching.
 
 EXPECTED PLAYERS FROM DATABASE:
-Team 1: {', '.join(team1_names)}
-Team 2: {', '.join(team2_names)}
+Team 1: {team1_players_info}
+Team 2: {team2_players_info}
 
 INSTRUCTIONS:
 1. First verify this is a valid Standoff 2 scoreboard with Counter-Terrorists vs Terrorists teams
 2. Extract all visible player names and their stats (kills, assists, deaths)
-3. CRITICAL: When extracting player names, REMOVE clan tags automatically
-   - Clan tags are ALWAYS in format "[TAG] PlayerName" 
-   - Extract ONLY the clean player name without the "[TAG] " prefix
-   - Examples: If screenshot shows "[EXTN] User-1", extract as "User-1"
-   - If screenshot shows "[PRO] Player123", extract as "Player123"
-   - Always remove the entire "[TAG] " part before processing
+   - FIRST STEP: Remove ALL clan tags before any processing
+   - Clan tags are in format "[TAG] PlayerName" - remove "[TAG] " completely
+   - Work ONLY with clean names for all subsequent steps
+3. CRITICAL: Player name extraction process
+   - When you see "[EXTN] User-1" in screenshot → extract as "User-1" 
+   - When you see "[PRO] Player123" in screenshot → extract as "Player123"
+   - NEVER include clan tags in any extracted names
+   - Use ONLY the clean names for matching and processing
 4. Match the clean extracted names directly to database players:
-   - Try exact name matches first
+   - Use ONLY clean names (no clan tags) from step 2
+   - Try exact name matches first between clean extracted names and database
    - Then try substring matching (database name contained in clean extracted name)
    - Handle variations like special characters, numbers
    - Match case-insensitively
 5. Use FIXED team mapping: Team1 = Terrorists, Team2 = Counter-Terrorists
-6. Assign unmatched database players default stats (0 kills, 0 assists, 13 deaths)
+6. For each player in the result, use the EXACT discord_id from the database
+7. Assign unmatched database players default stats (0 kills, 0 assists, 13 deaths)
 
 Return ONLY valid JSON in this exact format:
 {{
@@ -264,11 +268,11 @@ Return ONLY valid JSON in this exact format:
       "players": [
         {{
           "nickname": "exact_database_player_name",
-          "discord_id": "will_be_filled_by_system",
+          "discord_id": "actual_discord_id_from_database",
           "kills": integer,
           "assists": integer, 
           "deaths": integer,
-          "matched_from": "clean_extracted_name_if_matched" or "default_stats"
+          "matched_from": "clean_extracted_name_from_screenshot" or "default_stats"
         }}
       ]
     }},
@@ -277,11 +281,11 @@ Return ONLY valid JSON in this exact format:
       "players": [
         {{
           "nickname": "exact_database_player_name", 
-          "discord_id": "will_be_filled_by_system",
+          "discord_id": "actual_discord_id_from_database",
           "kills": integer,
           "assists": integer,
           "deaths": integer,
-          "matched_from": "clean_extracted_name_if_matched" or "default_stats"
+          "matched_from": "clean_extracted_name_from_screenshot" or "default_stats"
         }}
       ]
     }}
@@ -293,13 +297,14 @@ Return ONLY valid JSON in this exact format:
 
 IMPORTANT RULES:
 - Include ALL database players in the result (either with matched stats or default stats)
-- Use exact database nicknames in the result WITHOUT clan tags (clean names only)
+- Use exact database nicknames and discord_ids in the result
 - Team1 = Terrorists (T side), Team2 = Counter-Terrorists (CT side)
 - If a database player isn't found in screenshot, give them default stats: 0K/0A/13D
 - Confidence should be 0.8+ only for clear Standoff 2 scoreboards
 - Extract exact numbers for kills, assists, deaths as shown in screenshot
-- CRITICAL: When reading player names from screenshot, automatically strip "[TAG] " prefixes
-- Store clean extracted name in "matched_from" (not the original with tag)
+- CRITICAL: Remove "[TAG] " prefixes BEFORE any processing or matching
+- Store clean extracted name (without clan tags) in "matched_from"
+- VERY IMPORTANT: Return the exact discord_id from the database for each player
 - VERY IMPORTANT: Extract players WITHOUT clan tags from the very beginning""",
                                 },
                                 {"type": "image_url", "image_url": {"url": image_url}},
@@ -466,100 +471,130 @@ IMPORTANT RULES:
                 )
                 return
 
-            # Get original teams data to fill in discord_ids
+            # Get original teams data (nu mai e nevoie pentru matching, doar pentru referință)
             original_teams_data = json.loads(match_data.get("teams", "{}"))
-            original_team1_players = original_teams_data.get("team1", {}).get("players", [])
-            original_team2_players = original_teams_data.get("team2", {}).get("players", [])
 
-            # Process team1 players (fill in discord_ids and calculate points)
+            # Process team1 players (GPT already provided discord_id directly)
             updated_team1 = []
             for gpt_player in team1_data.get("players", []):
-                # Find original player by nickname
-                original_player = next((p for p in original_team1_players if p["nickname"] == gpt_player["nickname"]), None)
-                if original_player:
-                    # Calculate points based on win/loss and league type
+                # GPT already provided the discord_id, no need for manual matching
+                discord_id = gpt_player["discord_id"]
+                
+                # Calculate points based on player presence and league type
+                match_league = match_data.get("league")
+                default_league = await self.get_default_league_from_config()
+                was_absent = gpt_player.get("matched_from", "") == "default_stats"
+
+                if was_absent and match_league == default_league:
+                    # Player was absent (left match): apply leaving penalty based on their level
+                    current_points = await self.get_player_current_points(
+                        int(discord_id), match_league
+                    )
+                    is_challenger = await self.check_challenger_status(
+                        int(discord_id), current_points
+                    )
+                    points_received = await self.calculate_leaving_penalty_points(
+                        int(discord_id), match_league, is_challenger
+                    )
+                elif was_absent:
+                    # Player was absent in non-default league: fixed penalty
+                    points_received = -45
+                elif match_league == default_league:
+                    # Player was present: normal win/loss calculation
                     team1_won = team1_score > team2_score
-                    match_league = match_data.get("league")
-                    default_league = await self.get_default_league_from_config()
+                    current_points = await self.get_player_current_points(
+                        int(discord_id), match_league
+                    )
+                    is_challenger = await self.check_challenger_status(
+                        int(discord_id), current_points
+                    )
+                    points_received = await self.calculate_level_based_points(
+                        int(discord_id), team1_won, match_league, is_challenger
+                    )
+                else:
+                    # Player was present in non-default league: normal fixed points
+                    team1_won = team1_score > team2_score
+                    points_received = 25 if team1_won else -25
+                
+                # Calculate rating using bot formula: (KILLS + 0.5 × ASSISTS) / max(1, DEATHS)
+                kills = gpt_player.get("kills", 0)
+                assists = gpt_player.get("assists", 0)
+                deaths = max(1, gpt_player.get("deaths", 13))  # Prevent division by zero
+                rating = round((kills + 0.5 * assists) / deaths, 1)
+                
+                updated_player = {
+                    "nickname": gpt_player["nickname"],
+                    "discord_id": discord_id,  # Direct from GPT, no matching needed
+                    "kills": kills,
+                    "assists": assists,
+                    "deaths": gpt_player.get("deaths", 13),
+                    "rating": rating,
+                    "points": points_received,  # For generator
+                    "points_received": points_received,  # For database
+                    "matched_from": gpt_player.get("matched_from", "default_stats")
+                }
+                updated_team1.append(updated_player)
 
-                    if match_league == default_league:
-                        # Default league: use level-based point calculation
-                        current_points = await self.get_player_current_points(
-                            int(original_player["discord_id"]), match_league
-                        )
-                        is_challenger = await self.check_challenger_status(
-                            int(original_player["discord_id"]), current_points
-                        )
-                        points_received = await self.calculate_level_based_points(
-                            int(original_player["discord_id"]), team1_won, match_league, is_challenger
-                        )
-                    else:
-                        # Non-default league: use fixed points
-                        points_received = 25 if team1_won else -25
-                    
-                    # Calculate rating using bot formula: (KILLS + 0.5 × ASSISTS) / max(1, DEATHS)
-                    kills = gpt_player.get("kills", 0)
-                    assists = gpt_player.get("assists", 0)
-                    deaths = max(1, gpt_player.get("deaths", 13))  # Prevent division by zero
-                    rating = round((kills + 0.5 * assists) / deaths, 1)
-                    
-                    updated_player = {
-                        "nickname": gpt_player["nickname"],
-                        "discord_id": original_player["discord_id"],
-                        "kills": kills,
-                        "assists": assists,
-                        "deaths": gpt_player.get("deaths", 13),
-                        "rating": rating,
-                        "points": points_received,  # For generator
-                        "points_received": points_received,  # For database
-                        "matched_from": gpt_player.get("matched_from", "default_stats")
-                    }
-                    updated_team1.append(updated_player)
-
-            # Process team2 players (fill in discord_ids and calculate points)
+            # Process team2 players (GPT already provided discord_id directly)
             updated_team2 = []
             for gpt_player in team2_data.get("players", []):
-                # Find original player by nickname
-                original_player = next((p for p in original_team2_players if p["nickname"] == gpt_player["nickname"]), None)
-                if original_player:
-                    # Calculate points based on win/loss and league type
-                    team2_won = team2_score > team1_score
-                    match_league = match_data.get("league")
-                    default_league = await self.get_default_league_from_config()
+                # GPT already provided the discord_id, no need for manual matching
+                discord_id = gpt_player["discord_id"]
+                
+                # Calculate points based on player presence and league type
+                match_league = match_data.get("league")
+                default_league = await self.get_default_league_from_config()
+                was_absent = gpt_player.get("matched_from", "") == "default_stats"
 
-                    if match_league == default_league:
-                        # Default league: use level-based point calculation
-                        current_points = await self.get_player_current_points(
-                            int(original_player["discord_id"]), match_league
-                        )
-                        is_challenger = await self.check_challenger_status(
-                            int(original_player["discord_id"]), current_points
-                        )
-                        points_received = await self.calculate_level_based_points(
-                            int(original_player["discord_id"]), team2_won, match_league, is_challenger
-                        )
-                    else:
-                        # Non-default league: use fixed points
-                        points_received = 25 if team2_won else -25
-                    
-                    # Calculate rating using bot formula: (KILLS + 0.5 × ASSISTS) / max(1, DEATHS)
-                    kills = gpt_player.get("kills", 0)
-                    assists = gpt_player.get("assists", 0)
-                    deaths = max(1, gpt_player.get("deaths", 13))  # Prevent division by zero
-                    rating = round((kills + 0.5 * assists) / deaths, 1)
-                    
-                    updated_player = {
-                        "nickname": gpt_player["nickname"],
-                        "discord_id": original_player["discord_id"],
-                        "kills": kills,
-                        "assists": assists,
-                        "deaths": gpt_player.get("deaths", 13),
-                        "rating": rating,
-                        "points": points_received,  # For generator
-                        "points_received": points_received,  # For database
-                        "matched_from": gpt_player.get("matched_from", "default_stats")
-                    }
-                    updated_team2.append(updated_player)
+                if was_absent and match_league == default_league:
+                    # Player was absent (left match): apply leaving penalty based on their level
+                    current_points = await self.get_player_current_points(
+                        int(discord_id), match_league
+                    )
+                    is_challenger = await self.check_challenger_status(
+                        int(discord_id), current_points
+                    )
+                    points_received = await self.calculate_leaving_penalty_points(
+                        int(discord_id), match_league, is_challenger
+                    )
+                elif was_absent:
+                    # Player was absent in non-default league: fixed penalty
+                    points_received = -45
+                elif match_league == default_league:
+                    # Player was present: normal win/loss calculation
+                    team2_won = team2_score > team1_score
+                    current_points = await self.get_player_current_points(
+                        int(discord_id), match_league
+                    )
+                    is_challenger = await self.check_challenger_status(
+                        int(discord_id), current_points
+                    )
+                    points_received = await self.calculate_level_based_points(
+                        int(discord_id), team2_won, match_league, is_challenger
+                    )
+                else:
+                    # Player was present in non-default league: normal fixed points
+                    team2_won = team2_score > team1_score
+                    points_received = 25 if team2_won else -25
+                
+                # Calculate rating using bot formula: (KILLS + 0.5 × ASSISTS) / max(1, DEATHS)
+                kills = gpt_player.get("kills", 0)
+                assists = gpt_player.get("assists", 0)
+                deaths = max(1, gpt_player.get("deaths", 13))  # Prevent division by zero
+                rating = round((kills + 0.5 * assists) / deaths, 1)
+                
+                updated_player = {
+                    "nickname": gpt_player["nickname"],
+                    "discord_id": discord_id,  # Direct from GPT, no matching needed
+                    "kills": kills,
+                    "assists": assists,
+                    "deaths": gpt_player.get("deaths", 13),
+                    "rating": rating,
+                    "points": points_received,  # For generator
+                    "points_received": points_received,  # For database
+                    "matched_from": gpt_player.get("matched_from", "default_stats")
+                }
+                updated_team2.append(updated_player)
 
             # Update database - create copies without extra fields for database storage
             team1_for_db = []
@@ -810,6 +845,29 @@ IMPORTANT RULES:
             )
             return 0
 
+    async def calculate_leaving_penalty_points(
+        self, discord_id, league_name, is_challenger=False
+    ):
+        """Calculate leaving penalty points based on player's current level"""
+        try:
+            # Import here to avoid circular imports
+            from cogs.levels import LevelsCog
+
+            if is_challenger:
+                return LevelsCog.CHALLENGER_CONFIG["leaving_ss_points"]
+            else:
+                current_points = await self.get_player_current_points(
+                    discord_id, league_name
+                )
+                level = LevelsCog.get_level_from_points(current_points)
+                return LevelsCog.LEVEL_CONFIG[level]["leaving_ss_points"]
+        except Exception as e:
+            logger.error(
+                f"Error calculating leaving penalty for {discord_id} in league {league_name}: {e}"
+            )
+            # Fallback penalty
+            return -30
+
     async def calculate_level_based_points(
         self, discord_id, is_win, league_name, is_challenger=False
     ):
@@ -971,7 +1029,7 @@ class Scoreboard(commands.Cog):
                     )
                     embed.add_field(
                         name="How to submit:",
-                        value="1. Click the button below\n2. Enter your match ID\n3. Upload the scoreboard screenshot\n4. Wait for processing",
+                        value="1. Click the button below (Submit Results)\n2. Enter your match ID\n3. Upload the scoreboard screenshot (In Game Results)\n4. Wait for processing",
                         inline=False,
                     )
                     embed.set_footer(text="Only match participants can submit results")

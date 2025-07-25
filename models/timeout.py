@@ -13,6 +13,27 @@ class TimeoutManager:
     def __init__(self):
         self._active_timeouts = {}  # In-memory cache for quick lookup
 
+    @staticmethod
+    def _parse_timestamp(timestamp_str: str) -> datetime:
+    
+        # Parse timestamp from database handling different PostgreSQL timestampz formats
+      
+        try:
+            # Handle PostgreSQL timestampz format: 2025-07-25 12:14:07.194335+00
+            if timestamp_str.endswith('+00'):
+                timestamp_str = timestamp_str.replace('+00', '+00:00')
+            elif timestamp_str.endswith('Z'):
+                timestamp_str = timestamp_str.replace('Z', '+00:00')
+            
+            parsed_datetime = datetime.fromisoformat(timestamp_str)
+            return parsed_datetime.replace(tzinfo=None)  # Remove timezone info for consistency
+        except ValueError:
+            # Fallback: try to parse as ISO format
+            parsed_datetime = datetime.fromisoformat(
+                timestamp_str.replace("Z", "+00:00")
+            )
+            return parsed_datetime.replace(tzinfo=None)
+
     async def add_timeout(
         self,
         user_id: int,
@@ -148,14 +169,12 @@ class TimeoutManager:
                 )
                 if result.data:
                     timeout_data = result.data[0]
-                    timeout_until = datetime.fromisoformat(
-                        timeout_data["timeout_until"].replace("Z", "+00:00")
-                    )
+                    timeout_until = self._parse_timestamp(timeout_data["timeout_until"])
 
-                    if datetime.utcnow() < timeout_until.replace(tzinfo=None):
+                    if datetime.utcnow() < timeout_until:
                         return (
                             True,
-                            timeout_until.replace(tzinfo=None),
+                            timeout_until,
                             timeout_data["reason"],
                         )
                     else:
@@ -214,18 +233,14 @@ class TimeoutManager:
                 current_time = datetime.utcnow()
 
                 for timeout_data in result.data:
-                    timeout_until = datetime.fromisoformat(
-                        timeout_data["timeout_until"].replace("Z", "+00:00")
-                    )
+                    timeout_until = self._parse_timestamp(timeout_data["timeout_until"])
 
-                    if current_time < timeout_until.replace(tzinfo=None):
-                        remaining_seconds = (
-                            timeout_until.replace(tzinfo=None) - current_time
-                        ).total_seconds()
+                    if current_time < timeout_until:
+                        remaining_seconds = (timeout_until - current_time).total_seconds()
                         timeouts.append(
                             {
                                 "user_id": timeout_data["user_id"],
-                                "timeout_until": timeout_until.replace(tzinfo=None),
+                                "timeout_until": timeout_until,
                                 "reason": timeout_data["reason"],
                                 "remaining_minutes": int(remaining_seconds / 60),
                                 "remaining_hours": remaining_seconds / 3600,

@@ -2416,16 +2416,27 @@ class Matchmaking(commands.Cog):
                     "party": party,
                 }
 
-                # Track party leaders
-                if str(player.id) == leader_id:
-                    party_leaders.append(player)
-
                 # Group players by party
                 if party_id not in party_groups:
                     party_groups[party_id] = []
                 party_groups[party_id].append(player)
 
-        return party_info, party_leaders, party_groups
+        # Filter out "parties" that have only 1 member in the lobby
+        # This prevents the issue where a player is in a party but their party members aren't in lobby
+        valid_party_groups = {}
+        valid_party_info = {}
+        
+        for party_id, members in party_groups.items():
+            if len(members) >= 2:  # Only consider parties with 2+ members in lobby
+                valid_party_groups[party_id] = members
+                # Keep party info only for members of valid parties
+                for member in members:
+                    valid_party_info[member.id] = party_info[member.id]
+                    # Track party leaders only from valid parties
+                    if party_info[member.id]["is_leader"]:
+                        party_leaders.append(member)
+
+        return valid_party_info, party_leaders, valid_party_groups
 
     async def select_party_based_captains(self, lobby):
         """Select captains prioritizing party leaders when parties are present"""
@@ -2434,24 +2445,24 @@ class Matchmaking(commands.Cog):
             players
         )
 
-        # If no parties present, use original random selection
+        # If no valid parties present (parties with 2+ members in lobby), use original random selection
         if not party_leaders:
             return random.sample(players, 2), party_info, party_groups
 
-        # If only one party leader, select them and one random player from non-party members
+        # If only one valid party leader, select them and one random player from non-party members
         if len(party_leaders) == 1:
             captain1 = party_leaders[0]
-            # Get all players not in any party
+            # Get all players not in any valid party
             non_party_players = [p for p in players if p.id not in party_info]
             if non_party_players:
                 captain2 = random.choice(non_party_players)
             else:
-                # Fallback to random selection if all players are in parties
+                # Fallback to random selection if all players are in valid parties
                 remaining_players = [p for p in players if p != captain1]
                 captain2 = random.choice(remaining_players)
             return [captain1, captain2], party_info, party_groups
 
-        # If two or more party leaders, select the first two as captains
+        # If two or more valid party leaders, select the first two as captains
         return party_leaders[:2], party_info, party_groups
 
     async def assign_party_members_to_teams(self, lobby, party_info, party_groups):
@@ -2460,6 +2471,7 @@ class Matchmaking(commands.Cog):
         team2_captain = lobby["team2"][0]
 
         # Assign party members to their captain's team
+        # Note: party_groups only contains valid parties (2+ members in lobby)
         for party_id, party_members in party_groups.items():
             # Find which captain is the leader of this party
             party_leader_id = None
