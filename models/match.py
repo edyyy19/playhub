@@ -368,3 +368,28 @@ class Match:
                 return []
 
         return await loop.run_in_executor(None, db_select)
+
+    @classmethod
+    async def revert_match(cls, match_id: int):
+        """
+        Revert a completed match by resetting teams_stats, ended_at, and results_submitted.
+        Used by the revert_game command to undo match completion.
+        """
+        loop = asyncio.get_running_loop()
+
+        def db_revert():
+            return (
+                Config.supabase()
+                .table(cls.TABLE)
+                .update(
+                    {
+                        "teams_stats": None,
+                        "ended_at": None,
+                        "results_submitted": False,
+                    }
+                )
+                .eq("match_id", match_id)
+                .execute()
+            )
+
+        return await loop.run_in_executor(None, db_revert)

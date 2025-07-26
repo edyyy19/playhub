@@ -31,7 +31,7 @@ class Config:
         {"name": "Sakura", "emoji": "<:sakura_emoji:1397905551526203452>"},
     ]
 
-    PLAYERS_REQUIRED = 10
+    PLAYERS_REQUIRED = 4
     MAX_PARTY_MEMBERS = 2
     
     # Authorized user IDs for restricted commands
@@ -67,6 +67,10 @@ class Config:
         "wave": "<:discord_wave:1397568113679274044>",
         "id": "<:discord_id:1398370238017437818>",
         "game": "<:discord_game:1398371217760587776>",
+        "search_yellow": "<:discord_search_yellow:1398622369467207831>",
+        "question_yellow":"<:discord_question_yellow:1398624918207467583>",
+        "bell_red":"<:discord_bell:1398627099811774555>",
+        "bell_lightgreen":"<:discord_bell_lightgreen:1398627732471943239>"
 }
 
 

@@ -13,6 +13,7 @@ import random
 import asyncio
 import logging
 import time
+import json
 from collections import defaultdict
 from typing import List
 
@@ -42,9 +43,9 @@ class Matchmaking(commands.Cog):
         try:
             await self.bot.wait_until_ready()
             await timeout_manager.load_active_timeouts()
-            logger.info("Timeout manager initialized successfully")
+            logger.info("🟣 Timeout manager initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize timeout manager: {e}")
+            logger.error(f"🟣 Failed to initialize timeout manager: {e}")
 
     def get_leagues_cog(self):
         """Get the leagues cog for accessing league methods"""
@@ -113,9 +114,11 @@ class Matchmaking(commands.Cog):
 
                 league_data = await leagues_cog.get_league_by_name(league_name)
                 if not league_data:
+                    # Get original league name for error display
+                    original_league_name = league_name  # fallback
                     embed = discord.Embed(
                         title=f"{Config.ICONS['unsuccess']} League Not Found",
-                        description=f"The league **'{league_name}'** does not exist in the database.",
+                        description=f"The league **'{original_league_name}'** does not exist in the database.",
                         color=Config.EMBED_COLORS["red"],
                     )
                     embed.add_field(
@@ -126,6 +129,9 @@ class Matchmaking(commands.Cog):
                     await interaction.followup.send(embed=embed, ephemeral=True)
                     return
 
+                # Get original league name for display
+                original_league_name = league_data.get("original_league_name", league_name)
+
                 # Find the associated Discord role
                 lobby_role = await leagues_cog.find_discord_role_for_league(
                     guild, league_data["league_name"]
@@ -133,7 +139,7 @@ class Matchmaking(commands.Cog):
                 if not lobby_role:
                     embed = discord.Embed(
                         title=f"{Config.ICONS['unsuccess']} Discord Role Not Found",
-                        description=f"The Discord role for league **'{league_name}'** could not be found.",
+                        description=f"The Discord role for league **'{original_league_name}'** could not be found.",
                         color=Config.EMBED_COLORS["red"],
                     )
                     embed.add_field(
@@ -296,7 +302,7 @@ class Matchmaking(commands.Cog):
 
                 await interaction.followup.send(embed=embed, ephemeral=True)
             except discord.Forbidden:
-                logger.error(f"Forbidden error creating lobby: Missing permissions")
+                logger.error(f"🟣 Forbidden error creating lobby: Missing permissions")
                 embed = discord.Embed(
                     title=f"{Config.ICONS['unsuccess']} Permission Denied",
                     description="I don't have sufficient permissions to create the lobby.",
@@ -314,7 +320,7 @@ class Matchmaking(commands.Cog):
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
             except discord.HTTPException as he:
-                logger.error(f"Discord HTTP error creating lobby: {he}")
+                logger.error(f"🟣 Discord HTTP error creating lobby: {he}")
                 embed = discord.Embed(
                     title=f"{Config.ICONS['unsuccess']} Discord API Error",
                     description="Failed to create lobby due to a Discord API issue.",
@@ -333,7 +339,7 @@ class Matchmaking(commands.Cog):
                 embed.set_footer(text=f"Error Code: {he.status}")
                 await interaction.followup.send(embed=embed, ephemeral=True)
             except ValueError as ve:
-                logger.error(f"Validation error creating lobby: {ve}")
+                logger.error(f"🟣 Validation error creating lobby: {ve}")
                 embed = discord.Embed(
                     title=f"{Config.ICONS['unsuccess']} Configuration Error",
                     description=f"There's an issue with the server or league configuration.",
@@ -351,7 +357,7 @@ class Matchmaking(commands.Cog):
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
             except Exception as e:
-                logger.error(f"Unexpected error creating lobby: {e}")
+                logger.error(f"🟣 Unexpected error creating lobby: {e}")
                 embed = discord.Embed(
                     title=f"{Config.ICONS['unsuccess']} Unexpected Error",
                     description="An unexpected error occurred while creating the lobby.",
@@ -459,18 +465,18 @@ class Matchmaking(commands.Cog):
                     self.lobby.get("current_view") == self and
                     self.lobby["category"].id in self.cog.active_lobbies):
                     
-                    logger.info(f"Draft timeout triggered for lobby #{self.lobby.get('lobby_number', 'unknown')}, captain: {self.lobby['next_pick'].display_name}")
+                    logger.info(f"🟣 Draft timeout triggered for lobby #{self.lobby.get('lobby_number', 'unknown')}, captain: {self.lobby['next_pick'].display_name}")
                     
                     # Double-check that this view is still the active one
                     await self.cog.handle_timeout(
                         self.lobby, reason="Draft pick timeout"
                     )
                 else:
-                    logger.debug(f"Draft timeout ignored for lobby #{self.lobby.get('lobby_number', 'unknown')} - no longer active or phase changed")
+                    logger.debug(f"🟣 Draft timeout ignored for lobby #{self.lobby.get('lobby_number', 'unknown')} - no longer active or phase changed")
             except Exception as e:
                 # If handle_timeout fails, it might be because it's already been called
                 logger.warning(
-                    f"Draft timeout failed for lobby #{self.lobby.get('lobby_number', 'unknown')}, possibly due to race condition: {e}"
+                    f"🟣 Draft timeout failed for lobby #{self.lobby.get('lobby_number', 'unknown')}, possibly due to race condition: {e}"
                 )
 
     # --- MAP VETO UI ---
@@ -522,7 +528,7 @@ class Matchmaking(commands.Cog):
                 except Exception as e:
                     # If handle_timeout fails, it might be because it's already been called
                     logger.warning(
-                        f"Veto timeout failed, possibly due to race condition: {e}"
+                        f"🟣 Veto timeout failed, possibly due to race condition: {e}"
                     )
 
     async def get_draft_view(self, lobby):
@@ -580,7 +586,7 @@ class Matchmaking(commands.Cog):
             )
             if is_already_timeouted:
                 logger.warning(
-                    f"Captain {captain_to_timeout.id} is already timeouted, skipping timeout application"
+                    f"🟣 Captain {captain_to_timeout.id} is already timeouted, skipping timeout application"
                 )
                 # Still need to reset lobby even if already timeouted
                 await self._reset_lobby_after_captain_timeout(lobby, captain_to_timeout)
@@ -643,7 +649,7 @@ class Matchmaking(commands.Cog):
 
                 await captain_to_timeout.send(embed=embed)
         except Exception as e:
-            logger.error(f"Failed to send timeout message to {captain_to_timeout}: {e}")
+            logger.error(f"🟣 Failed to send timeout message to {captain_to_timeout}: {e}")
 
         # Reset lobby and handle captain removal
         await self._reset_lobby_after_captain_timeout(lobby, captain_to_timeout)
@@ -658,11 +664,11 @@ class Matchmaking(commands.Cog):
             if captain_to_timeout.voice and captain_to_timeout.voice.channel:
                 await captain_to_timeout.move_to(None)
                 logger.info(
-                    f"Disconnected timeouted captain {captain_to_timeout} from voice channel"
+                    f"🟣 Disconnected timeouted captain {captain_to_timeout} from voice channel"
                 )
         except Exception as e:
             logger.error(
-                f"Failed to disconnect captain {captain_to_timeout} from voice: {e}"
+                f"🟣 Failed to disconnect captain {captain_to_timeout} from voice: {e}"
             )
 
         # Send private DM notifications to remaining players
@@ -686,7 +692,7 @@ class Matchmaking(commands.Cog):
                 )
                 await player.send(embed=notification_embed)
             except Exception as e:
-                logger.error(f"Failed to send timeout notification to {player}: {e}")
+                logger.error(f"🟣 Failed to send timeout notification to {player}: {e}")
 
         # Reset lobby to phase 1 (waiting for players) instead of completely resetting
         # Check if we're resetting from map veto phase and need to clean up veto message
@@ -706,13 +712,13 @@ class Matchmaking(commands.Cog):
         if veto_message_to_delete:
             try:
                 await veto_message_to_delete.delete()
-                logger.info(f"Deleted veto message for lobby #{lobby.get('lobby_number', 'X')} after captain timeout")
+                logger.info(f"🟣 Deleted veto message for lobby #{lobby.get('lobby_number', 'X')} after captain timeout")
             except discord.NotFound:
-                logger.info("Veto message was already deleted")
+                logger.info("🟣 Veto message was already deleted")
             except discord.Forbidden:
-                logger.warning("No permission to delete veto message")
+                logger.warning("🟣 No permission to delete veto message")
             except Exception as e:
-                logger.warning(f"Could not delete veto message after captain timeout: {e}")
+                logger.warning(f"🟣 Could not delete veto message after captain timeout: {e}")
             # Clear the veto message reference
             lobby["veto_message"] = None
 
@@ -736,7 +742,7 @@ class Matchmaking(commands.Cog):
                     try:
                         await channel.delete()
                     except Exception as e:
-                        logger.error(f"Failed to delete channel {channel.name}: {e}")
+                        logger.error(f"🟣 Failed to delete channel {channel.name}: {e}")
                 del self._empty_since[channel_id]
         for lobby in self.active_lobbies.values():
             for team in ["team1_voice", "team2_voice"]:
@@ -794,7 +800,7 @@ class Matchmaking(commands.Cog):
                                 await member.move_to(None)
                             except Exception as e:
                                 logger.error(
-                                    f"Failed to handle timeouted user {member}: {e}"
+                                    f"🟣 Failed to handle timeouted user {member}: {e}"
                                 )
                             continue  # Check if lobbies are locked and user has the required role for this lobby
                         if self.lobbies_locked:
@@ -838,7 +844,7 @@ class Matchmaking(commands.Cog):
                                     await member.move_to(None)
                                 except Exception as e:
                                     logger.error(
-                                        f"Failed to handle locked lobby access for {member}: {e}"
+                                        f"🟣 Failed to handle locked lobby access for {member}: {e}"
                                     )
                                 continue
 
@@ -866,7 +872,7 @@ class Matchmaking(commands.Cog):
                                 await member.move_to(None)
                             except Exception as e:
                                 logger.error(
-                                    f"Failed to notify user about lobby phase: {e}"
+                                    f"🟣 Failed to notify user about lobby phase: {e}"
                                 )
                             continue
 
@@ -898,7 +904,7 @@ class Matchmaking(commands.Cog):
                         )
                         if is_already_timeouted:
                             logger.info(
-                                f"User {member.id} already timeouted, skipping mid-game leave timeout"
+                                f"🟣 User {member.id} already timeouted, skipping mid-game leave timeout"
                             )
                             # Still reset lobby if needed, but don't apply another timeout
                             await self.reset_lobby(lobby, keep_voice_members=True)
@@ -958,7 +964,7 @@ class Matchmaking(commands.Cog):
                                 await member.send(embed=embed)
                         except Exception as e:
                             logger.error(
-                                f"Failed to send mid-game leave message to {member}: {e}"
+                                f"🟣 Failed to send mid-game leave message to {member}: {e}"
                             )
                         await self.reset_lobby(lobby, keep_voice_members=True)
 
@@ -996,7 +1002,7 @@ class Matchmaking(commands.Cog):
                     .send_messages
                 ):
                     logger.warning(
-                        f"Missing permissions or text channel for lobby #{lobby.get('lobby_number', 'unknown')}"
+                        f"🟣 Missing permissions or text channel for lobby #{lobby.get('lobby_number', 'unknown')}"
                     )
                     return
 
@@ -1005,17 +1011,17 @@ class Matchmaking(commands.Cog):
                     lobby["message"] = await lobby["text"].send(embed=embed)
                 except discord.Forbidden:
                     logger.warning(
-                        f"Missing permissions to send message in lobby #{lobby.get('lobby_number', 'unknown')}"
+                        f"🟣 Missing permissions to send message in lobby #{lobby.get('lobby_number', 'unknown')}"
                     )
                 except Exception as e:
-                    logger.error(f"Unexpected error creating initial lobby message: {e}")
+                    logger.error(f"🟣 Unexpected error creating initial lobby message: {e}")
                 
                 # Save lobby state when initially created
                 await self.save_lobby_state(lobby["category"].id)
 
             except Exception as e:
                 logger.error(
-                    f"Error in update_lobby_status for lobby #{lobby.get('lobby_number', 'unknown')}: {e}"
+                    f"🟣 Error in update_lobby_status for lobby #{lobby.get('lobby_number', 'unknown')}: {e}"
                 )
 
     async def format_team_list(self, team_members, league_name=None):
@@ -1059,7 +1065,7 @@ class Matchmaking(commands.Cog):
                         # No emoji if league doesn't have one
                         formatted_players.append(member.mention)
             except Exception as e:
-                logger.error(f"Error getting emoji for {member.display_name}: {e}")
+                logger.error(f"🟣 Error getting emoji for {member.display_name}: {e}")
                 # Fallback - show player mention without emoji
                 formatted_players.append(member.mention)
 
@@ -1139,7 +1145,7 @@ class Matchmaking(commands.Cog):
         try:
             await lobby["message"].edit(embed=embed, view=view)
         except Exception as e:
-            logger.error(f"Failed to update lobby message in start_captain_selection: {e}")
+            logger.error(f"🟣 Failed to update lobby message in start_captain_selection: {e}")
             return
             
         # If no players left to draft, immediately proceed to map veto
@@ -1262,7 +1268,7 @@ class Matchmaking(commands.Cog):
         )
         
         if not success:
-            logger.error("Failed to generate final match image")
+            logger.error("🟣 Failed to generate final match image")
             # Fallback: create a simple text embed without image
             embed = discord.Embed(
                 title=f"{Config.APP_NAME} | {match_id}",
@@ -1339,7 +1345,7 @@ class Matchmaking(commands.Cog):
         try:
             all_players = lobby["team1"] + lobby["team2"]
             if not all_players:
-                logger.warning("No players found to send host ID")
+                logger.warning("🟣 No players found to send host ID")
                 return
                 
             # Selectează random un host
@@ -1353,12 +1359,12 @@ class Matchmaking(commands.Cog):
             host_data = await User.find(host_player.id)
             
             if not host_data:
-                logger.warning(f"Host {host_player.display_name} not found in database")
+                logger.warning(f"🟣 Host {host_player.display_name} not found in database")
                 return
                 
             so2_id = host_data.get('so2_id')
             if not so2_id:
-                logger.warning(f"Host {host_player.display_name} has no SO2 ID")
+                logger.warning(f"🟣 Host {host_player.display_name} has no SO2 ID")
                 return
             
             logger.info(f"🟣 Sending host ID ({so2_id}) to {len(all_players)} players via DM...")
@@ -1377,12 +1383,12 @@ class Matchmaking(commands.Cog):
                     await player.send(embed=embed)
                     successful_dms += 1
                 except Exception as e:
-                    logger.error(f"Failed to send host ID DM to {player.display_name}: {e}")
+                    logger.error(f"🟣 Failed to send host ID DM to {player.display_name}: {e}")
             
             logger.info(f"🟣 Successfully sent host ID to {successful_dms}/{len(all_players)} players")
             
         except Exception as e:
-            logger.error(f"Error in send_host_id_to_players: {e}")
+            logger.error(f"🟣 Error in send_host_id_to_players: {e}")
 
     async def add_match_to_supabase(self, lobby, final_map):
         try:
@@ -1393,7 +1399,7 @@ class Matchmaking(commands.Cog):
             )
             return result.data[0]  # Return the first (and only) inserted record
         except Exception as e:
-            logger.error(f"Failed to insert match into supabase: {e}")
+            logger.error(f"🟣 Failed to insert match into supabase: {e}")
             raise
 
     async def create_team_voice_channels(self, lobby):
@@ -1447,12 +1453,12 @@ class Matchmaking(commands.Cog):
             try:
                 await member.move_to(ct_voice)
             except Exception as e:
-                logger.error(f"Failed to move {member} to Team1 Voice: {e}")
+                logger.error(f"🟣 Failed to move {member} to Team1 Voice: {e}")
         for member in lobby["team2"]:
             try:
                 await member.move_to(t_voice)
             except Exception as e:
-                logger.error(f"Failed to move {member} to Team2 Voice: {e}")
+                logger.error(f"🟣 Failed to move {member} to Team2 Voice: {e}")
         # Start cleanup timer (placeholder)
         # ...
 
@@ -1479,13 +1485,13 @@ class Matchmaking(commands.Cog):
         if veto_message_to_delete and not lobby.get("just_finalized"):
             try:
                 await veto_message_to_delete.delete()
-                logger.info(f"Deleted veto message for lobby #{lobby.get('lobby_number', 'X')} during reset")
+                logger.info(f"🟣 Deleted veto message for lobby #{lobby.get('lobby_number', 'X')} during reset")
             except discord.NotFound:
-                logger.info("Veto message was already deleted")
+                logger.info("🟣 Veto message was already deleted")
             except discord.Forbidden:
-                logger.warning("No permission to delete veto message")
+                logger.warning("🟣 No permission to delete veto message")
             except Exception as e:
-                logger.warning(f"Could not delete veto message during reset: {e}")
+                logger.warning(f"🟣 Could not delete veto message during reset: {e}")
             # Clear the veto message reference
             lobby["veto_message"] = None
         
@@ -1504,11 +1510,11 @@ class Matchmaking(commands.Cog):
                 try:
                     await lobby["message"].delete()
                 except discord.NotFound:
-                    logger.info("Lobby message was already deleted")
+                    logger.info("🟣 Lobby message was already deleted")
                 except discord.Forbidden:
-                    logger.warning("No permission to delete lobby message")
+                    logger.warning("🟣 No permission to delete lobby message")
                 except Exception as e:
-                    logger.warning(f"Could not delete old lobby message: {e}")
+                    logger.warning(f"🟣 Could not delete old lobby message: {e}")
             lobby["message"] = await text.send(embed=embed)
         else:
             # Update existing message with proper waiting phase embed properties
@@ -1530,24 +1536,24 @@ class Matchmaking(commands.Cog):
     async def save_lobby_state(self, category_id: int):
         """Save lobby state to database"""
         try:
-            logger.info(f"Attempting to save lobby state for category {category_id}")
+            logger.info(f"🟣 Attempting to save lobby state for category {category_id}")
             lobby = self.active_lobbies.get(category_id)
             if lobby:
                 logger.info(
-                    f"Found lobby data for category {category_id}, saving to database..."
+                    f"🟣 Found lobby data for category {category_id}, saving to database..."
                 )
                 await LobbyState.save_lobby(
                     lobby["category"].guild.id, category_id, lobby, self.lobbies_locked
                 )
                 logger.info(
-                    f"Successfully saved lobby state for category {category_id}"
+                    f"🟣 Successfully saved lobby state for category {category_id}"
                 )
             else:
                 logger.warning(
-                    f"No lobby found in active_lobbies for category {category_id}"
+                    f"🟣 No lobby found in active_lobbies for category {category_id}"
                 )
         except Exception as e:
-            logger.error(f"Failed to save lobby state for category {category_id}: {e}")
+            logger.error(f"🟣 Failed to save lobby state for category {category_id}: {e}")
             raise  # Re-raise to see the full traceback
 
     async def restore_lobbies(self):
@@ -1566,7 +1572,7 @@ class Matchmaking(commands.Cog):
                         guild.id
                     )
                     logger.info(
-                        f"Loaded lobby lock status for {guild.name}: {'Locked' if self.lobbies_locked else 'Unlocked'}"
+                        f"🟣 Loaded lobby lock status for {guild.name}: {'Locked' if self.lobbies_locked else 'Unlocked'}"
                     )
 
                     for state in lobby_states:
@@ -1574,7 +1580,7 @@ class Matchmaking(commands.Cog):
                             await self.restore_single_lobby(guild, state)
                         except Exception as e:
                             logger.error(
-                                f"Failed to restore lobby {state.get('category_id')}: {e}"
+                                f"🟣 Failed to restore lobby {state.get('category_id')}: {e}"
                             )
                             # Clean up failed lobby from database
                             try:
@@ -1583,11 +1589,11 @@ class Matchmaking(commands.Cog):
                                 pass
 
                     logger.info(
-                        f"Restored {len(lobby_states)} lobbies for guild {guild.name}"
+                        f"🟣 Restored {len(lobby_states)} lobbies for guild {guild.name}"
                     )
 
                 except Exception as e:
-                    logger.error(f"Failed to restore lobbies for guild {guild.id}: {e}")
+                    logger.error(f"🟣 Failed to restore lobbies for guild {guild.id}: {e}")
 
                     # Update lobby counter to avoid conflicts
             if self.active_lobbies:
@@ -1598,14 +1604,14 @@ class Matchmaking(commands.Cog):
                 self.lobby_counter = max_lobby_num + 1
 
             logger.info(
-                f"Lobby restoration complete. Active lobbies: {len(self.active_lobbies)}"
+                f"🟣 Lobby restoration complete. Active lobbies: {len(self.active_lobbies)}"
             )
 
             # Clean up any orphaned team voice channels
             await self.cleanup_orphaned_team_channels()
 
         except Exception as e:
-            logger.error(f"Failed to restore lobbies: {e}")
+            logger.error(f"🟣 Failed to restore lobbies: {e}")
 
     async def restore_single_lobby(self, guild: discord.Guild, state: dict):
         """Restore a single lobby from saved state"""
@@ -1616,7 +1622,7 @@ class Matchmaking(commands.Cog):
             category = guild.get_channel(int(state["category_id"]))
             if not category:
                 logger.warning(
-                    f"Category {state['category_id']} not found, skipping lobby restore"
+                    f"🟣 Category {state['category_id']} not found, skipping lobby restore"
                 )
                 await LobbyState.delete_lobby(int(state["category_id"]))
                 return
@@ -1634,7 +1640,7 @@ class Matchmaking(commands.Cog):
 
             if not voice_channel or not text_channel:
                 logger.warning(
-                    f"Voice or text channel missing for lobby {state['category_id']}, skipping restore"
+                    f"🟣 Voice or text channel missing for lobby {state['category_id']}, skipping restore"
                 )
                 await LobbyState.delete_lobby(int(state["category_id"]))
                 return
@@ -1705,22 +1711,22 @@ class Matchmaking(commands.Cog):
             # Update status message
             await self.update_lobby_status(restored_lobby)
             logger.info(
-                f"Successfully restored lobby {state['category_id']} with {len(current_players)} players"
+                f"🟣 Successfully restored lobby {state['category_id']} with {len(current_players)} players"
             )
 
         except Exception as e:
-            logger.error(f"Failed to restore lobby {state.get('category_id')}: {e}")
+            logger.error(f"🟣 Failed to restore lobby {state.get('category_id')}: {e}")
             raise
 
     async def delete_lobby_state(self, category_id: int):
         """Delete lobby state from database"""
         try:
             await LobbyState.delete_lobby(category_id)
-            logger.info(f"Deleted lobby state for category {category_id}")
+            logger.info(f"🟣 Deleted lobby state for category {category_id}")
         except Exception as e:
             # Log as warning instead of error since this might be normal (lobby already deleted)
             logger.warning(
-                f"Could not delete lobby state for category {category_id}: {e}"
+                f"🟣 Could not delete lobby state for category {category_id}: {e}"
             )
 
     @app_commands.command(
@@ -1745,7 +1751,7 @@ class Matchmaking(commands.Cog):
 
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
-            logger.error(f"Failed to cleanup old lobbies: {e}")
+            logger.error(f"🟣 Failed to cleanup old lobbies: {e}")
 
             # Create error embed
             embed = discord.Embed(
@@ -1825,25 +1831,25 @@ class Matchmaking(commands.Cog):
             for channel in channels_to_delete:
                 try:
                     await channel.delete()
-                    logger.info(f"Deleted channel: {channel.name}")
+                    logger.info(f"🟣 Deleted channel: {channel.name}")
                     await asyncio.sleep(0.5)  # Small delay between deletions
                 except discord.NotFound:
-                    logger.info(f"Channel {channel.name} was already deleted")
+                    logger.info(f"🟣 Channel {channel.name} was already deleted")
                 except discord.Forbidden:
-                    logger.warning(f"No permission to delete channel {channel.name}")
+                    logger.warning(f"🟣 No permission to delete channel {channel.name}")
                 except Exception as e:
                     logger.error(
-                        f"Failed to delete channel {channel.name}: {e}"
+                        f"🟣 Failed to delete channel {channel.name}: {e}"
                     )  # Finally delete the category
             try:
                 await target_lobby["category"].delete()
-                logger.info(f"Deleted category for lobby #{lobby_number}")
+                logger.info(f"🟣 Deleted category for lobby #{lobby_number}")
             except discord.NotFound:
-                logger.info(f"Category for lobby #{lobby_number} was already deleted")
+                logger.info(f"🟣 Category for lobby #{lobby_number} was already deleted")
             except discord.Forbidden:
-                logger.warning(f"No permission to delete category for lobby #{lobby_number}")
+                logger.warning(f"🟣 No permission to delete category for lobby #{lobby_number}")
             except Exception as e:
-                logger.error(f"Failed to delete category for lobby #{lobby_number}: {e}")
+                logger.error(f"🟣 Failed to delete category for lobby #{lobby_number}: {e}")
                 # Don't raise here, continue with cleanup
 
             # Remove from active lobbies first to prevent other operations
@@ -1871,7 +1877,7 @@ class Matchmaking(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
         except Exception as e:
-            logger.error(f"Failed to delete lobby {lobby_number}: {e}")
+            logger.error(f"🟣 Failed to delete lobby {lobby_number}: {e}")
             try:
                 # Create error embed
                 embed = discord.Embed(
@@ -1887,7 +1893,7 @@ class Matchmaking(commands.Cog):
                 await interaction.followup.send(embed=embed, ephemeral=True)
             except Exception:
                 # If followup also fails, just log it
-                logger.error(f"Failed to send error message for lobby {lobby_number}")
+                logger.error(f"🟣 Failed to send error message for lobby {lobby_number}")
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel):
@@ -1895,7 +1901,7 @@ class Matchmaking(commands.Cog):
         # Check if this was a lobby category
         if channel.type == discord.ChannelType.category:
             if channel.id in self.active_lobbies:
-                logger.info(f"Lobby category {channel.id} was deleted externally")
+                logger.info(f"🟣 Lobby category {channel.id} was deleted externally")
                 del self.active_lobbies[channel.id]
                 await self.delete_lobby_state(channel.id)
 
@@ -1944,7 +1950,7 @@ class Matchmaking(commands.Cog):
                                 pass
                             except Exception as e:
                                 logger.error(
-                                    f"Failed to delete orphaned team channel {channel.name}: {e}"
+                                    f"🟣 Failed to delete orphaned team channel {channel.name}: {e}"
                                 )
 
                     if guild_deleted > 0:
@@ -1954,7 +1960,7 @@ class Matchmaking(commands.Cog):
 
                 except Exception as e:
                     logger.error(
-                        f"Failed to cleanup orphaned channels in guild {guild.id}: {e}"
+                        f"🟣 Failed to cleanup orphaned channels in guild {guild.id}: {e}"
                     )
 
             # Create response embed
@@ -1988,7 +1994,7 @@ class Matchmaking(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
         except Exception as e:
-            logger.error(f"Failed to cleanup team channels: {e}")
+            logger.error(f"🟣 Failed to cleanup team channels: {e}")
             embed = discord.Embed(
                 title=f"{Config.ICONS['unsuccess']} Cleanup Failed",
                 description="An error occurred while cleaning up team voice channels.",
@@ -2005,7 +2011,7 @@ class Matchmaking(commands.Cog):
     async def cleanup_orphaned_team_channels(self):
         """Clean up orphaned CT/T voice channels that don't belong to any active lobby"""
         try:
-            logger.info("Starting cleanup of orphaned team voice channels...")
+            logger.info("🟣 Starting cleanup of orphaned team voice channels...")
 
             # Get all currently tracked team voice channel IDs
             tracked_team_channels = set()
@@ -2031,7 +2037,7 @@ class Matchmaking(commands.Cog):
                         if channel.id not in tracked_team_channels:
                             try:
                                 logger.info(
-                                    f"Deleting orphaned team channel: {channel.name} ({channel.id}) in {guild.name}"
+                                    f"🟣 Deleting orphaned team channel: {channel.name} ({channel.id}) in {guild.name}"
                                 )
                                 await channel.delete()
                                 total_deleted += 1
@@ -2042,23 +2048,23 @@ class Matchmaking(commands.Cog):
                                 pass
                             except Exception as e:
                                 logger.error(
-                                    f"Failed to delete orphaned team channel {channel.name}: {e}"
+                                    f"🟣 Failed to delete orphaned team channel {channel.name}: {e}"
                                 )
 
                 except Exception as e:
                     logger.error(
-                        f"Failed to cleanup orphaned channels in guild {guild.id}: {e}"
+                        f"🟣 Failed to cleanup orphaned channels in guild {guild.id}: {e}"
                     )
 
             if total_deleted > 0:
                 logger.info(
-                    f"Cleanup complete: Deleted {total_deleted} orphaned team voice channels"
+                    f"🟣 Cleanup complete: Deleted {total_deleted} orphaned team voice channels"
                 )
             else:
-                logger.info("Cleanup complete: No orphaned team voice channels found")
+                logger.info("🟣 Cleanup complete: No orphaned team voice channels found")
 
         except Exception as e:
-            logger.error(f"Failed to cleanup orphaned team channels: {e}")
+            logger.error(f"🟣 Failed to cleanup orphaned team channels: {e}")
 
     async def get_default_league_from_config(self, max_retries=3):
         """Get the default league from the config table with retry logic"""
@@ -2080,10 +2086,10 @@ class Matchmaking(commands.Cog):
                         # Wait before retry with exponential backoff
                         import time
                         wait_time = (2 ** attempt) * 0.5  # 0.5s, 1s, 2s
-                        logger.warning(f"Database connection failed (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
+                        logger.warning(f"🟣 Database connection failed (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
                         time.sleep(wait_time)
                     else:
-                        logger.error(f"Failed to get default league from config after {max_retries} attempts: {e}")
+                        logger.error(f"🟣 Failed to get default league from config after {max_retries} attempts: {e}")
                         return None
             return None
 
@@ -2168,7 +2174,7 @@ class Matchmaking(commands.Cog):
                 )
             except Exception as e:
                 # Fallback in case of error
-                logger.error(f"Error fetching stats for {member.display_name}: {e}")
+                logger.error(f"🟣 Error fetching stats for {member.display_name}: {e}")
 
                 # Determine fallback emoji
                 if is_default_league:
@@ -2232,7 +2238,7 @@ class Matchmaking(commands.Cog):
 
                     if not lobby_role:
                         logger.warning(
-                            f"Could not find required role for lobby {lobby.get('lobby_number')}"
+                            f"🟣 Could not find required role for lobby {lobby.get('lobby_number')}"
                         )
                         continue
 
@@ -2258,7 +2264,7 @@ class Matchmaking(commands.Cog):
                         )
                         lobbies_updated += 1
                 except Exception as e:
-                    logger.error(f"Failed to update permissions for lobby: {e}")
+                    logger.error(f"🟣 Failed to update permissions for lobby: {e}")
 
             # Create success embed
             embed = discord.Embed(
@@ -2282,11 +2288,11 @@ class Matchmaking(commands.Cog):
 
             await interaction.followup.send(embed=embed, ephemeral=True)
             logger.info(
-                f"Lobbies locked by {interaction.user} - {lobbies_updated} lobbies updated"
+                f"🟣 Lobbies locked by {interaction.user} - {lobbies_updated} lobbies updated"
             )
 
         except Exception as e:
-            logger.error(f"Failed to lock lobbies: {e}")
+            logger.error(f"🟣 Failed to lock lobbies: {e}")
             embed = discord.Embed(
                 title=f"{Config.ICONS['unsuccess']} Failed to Lock Lobbies",
                 description="An error occurred while locking lobbies.",
@@ -2299,6 +2305,344 @@ class Matchmaking(commands.Cog):
             )
             embed.set_footer(text="Please try again or contact an administrator.")
             await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="revert_game",
+        description="Admin command to revert a completed match and its statistics.",
+    )
+    @app_commands.describe(game_id="The match ID to revert")
+    @app_commands.default_permissions(administrator=True)
+    async def revert_game(self, interaction: discord.Interaction, game_id: int):
+        """Revert a completed match, reversing all player statistics and resetting match status"""
+        # Verifică autorizația utilizatorului
+        if not await Config.check_authorization(interaction):
+            return
+            
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # Get match data
+            match_data = await Match.find(game_id)
+            if not match_data:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Match Not Found",
+                    description=f"No match found with ID: {game_id}",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Check if match has been submitted (has teams_stats)
+            teams_stats = match_data.get("teams_stats")
+            if not teams_stats or teams_stats == "null":
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['info']} Match Not Completed",
+                    description=f"Match ID {game_id} has no results to revert.",
+                    color=Config.EMBED_COLORS["yellow"],
+                )
+                embed.add_field(
+                    name="Status", 
+                    value="Match results have not been submitted yet",
+                    inline=False
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Parse teams_stats
+            try:
+                if isinstance(teams_stats, str):
+                    teams_stats_data = json.loads(teams_stats)
+                else:
+                    teams_stats_data = teams_stats
+            except (json.JSONDecodeError, TypeError):
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Invalid Match Data",
+                    description=f"Match ID {game_id} has corrupted statistics data.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Get league information
+            league_name = match_data.get("league")
+            if not league_name:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Missing League Information",
+                    description=f"Match ID {game_id} is missing league information.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Get original league name for display
+            original_league_name = league_name  # fallback
+            leagues_cog = self.get_leagues_cog()
+            if leagues_cog:
+                league_data = await leagues_cog.get_league_by_name(league_name)
+                if league_data and league_data.get("original_league_name"):
+                    original_league_name = league_data["original_league_name"]
+
+            # Extract all players from both teams
+            all_players = []
+            team1_players = teams_stats_data.get("team1", {}).get("players", [])
+            team2_players = teams_stats_data.get("team2", {}).get("players", [])
+            
+            for player in team1_players + team2_players:
+                all_players.append({
+                    "discord_id": player.get("discord_id"),
+                    "nickname": player.get("nickname"),
+                    "kills": player.get("kills", 0),
+                    "deaths": player.get("deaths", 0),
+                    "points_received": player.get("points_received", 0)
+                })
+
+            if not all_players:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} No Player Data",
+                    description=f"Match ID {game_id} has no player statistics to revert.",
+                    color=Config.EMBED_COLORS["red"],
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Create confirmation embed with detailed information
+            confirmation_embed = discord.Embed(
+                title=f"{Config.ICONS['info']} Revert Match Confirmation",
+                description=f"You are about to **revert** the match:\n**Match ID: {game_id}**",
+                color=Config.EMBED_COLORS["yellow"],
+            )
+
+            # Add match information
+            confirmation_embed.add_field(
+                name="Match Information",
+                value=f"**League:** {original_league_name}\n**Players Affected:** {len(all_players)}\n**Teams:** {len(team1_players)} vs {len(team2_players)}",
+                inline=False,
+            )
+
+            # Show what will be reverted
+            revert_details = []
+            for player in all_players[:5]:  # Show first 5 players as example
+                nickname = player.get("nickname", "Unknown")
+                points = player.get("points_received", 0)
+                kills = player.get("kills", 0)
+                deaths = player.get("deaths", 0)
+                points_sign = "+" if points >= 0 else ""
+                revert_details.append(f"• **{nickname}**: {points_sign}{points} pts, {kills}K/{deaths}D")
+            
+            if len(all_players) > 5:
+                revert_details.append(f"• ... and {len(all_players) - 5} more players")
+
+            confirmation_embed.add_field(
+                name="Statistics to Revert",
+                value="\n".join(revert_details),
+                inline=False,
+            )
+
+            confirmation_embed.add_field(
+                name=f"{Config.ICONS['info']} WARNING",
+                value="**This action will reverse all player statistics from this match!**\nPoints, kills, deaths, wins/losses will be reverted to their pre-match state.",
+                inline=False,
+            )
+
+            confirmation_embed.set_footer(
+                text="Click 'Confirm Revert' to proceed or 'Cancel' to abort."
+            )
+
+            # Create confirmation view with buttons
+            view = RevertGameConfirmationView(
+                match_data=match_data,
+                game_id=game_id,
+                original_league_name=original_league_name,
+                teams_stats_data=teams_stats_data,
+                all_players=all_players,
+                cog_instance=self,
+            )
+
+            await interaction.followup.send(
+                embed=confirmation_embed, view=view, ephemeral=True
+            )
+
+        except Exception as e:
+            logger.error(f"🟣 Failed to revert match {game_id}: {e}")
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Failed to Revert Match",
+                description="An error occurred while reverting the match.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            embed.add_field(
+                name="Error",
+                value=str(e),
+                inline=False,
+            )
+            embed.set_footer(text="Please try again or contact an administrator.")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def perform_match_revert(self, interaction: discord.Interaction, match_data: dict, 
+                                   game_id: int, original_league_name: str, teams_stats_data: dict, all_players: list):
+        """Perform the actual match revert process"""
+        try:
+            league_name = match_data.get("league")
+            
+            # Start reverting statistics
+            reverted_count = 0
+            failed_count = 0
+            
+            for player in all_players:
+                discord_id = player["discord_id"]
+                if not discord_id:
+                    failed_count += 1
+                    continue
+                    
+                try:
+                    # Revert statistics by reversing the original changes
+                    # If player received +30 points, we subtract 30
+                    # If player received -25 points, we add back 25
+                    kills_to_revert = -player["kills"]  # Always subtract kills
+                    deaths_to_revert = -player["deaths"]  # Always subtract deaths
+                    points_to_revert = -player["points_received"]  # Reverse the points change
+                    
+                    # Determine if it was a win/loss to revert
+                    won = player["points_received"] > 0
+                    
+                    # Revert the win/loss by subtracting what was previously added
+                    if won:
+                        # Player won, so subtract 1 win
+                        wins_change = -1
+                        losses_change = 0
+                    else:
+                        # Player lost, so subtract 1 loss
+                        wins_change = 0
+                        losses_change = -1
+
+                    # Use our custom revert function
+                    await self._revert_player_stats(
+                        int(discord_id),
+                        kills_to_revert,
+                        deaths_to_revert, 
+                        points_to_revert,
+                        wins_change,
+                        losses_change,
+                        league_name
+                    )
+                    
+                    reverted_count += 1
+                    logger.info(f"🟣 Reverted stats for player {discord_id}: K{kills_to_revert} D{deaths_to_revert} P{points_to_revert} in league {league_name}")
+                    
+                except Exception as e:
+                    logger.error(f"🟣 Failed to revert stats for player {discord_id}: {e}")
+                    failed_count += 1
+
+            # Reset match status in database
+            try:
+                await Match.revert_match(game_id)
+                logger.info(f"🟣 Reset match {game_id} status - teams_stats=null, ended_at=null, results_submitted=false")
+            except Exception as e:
+                logger.error(f"🟣 Failed to reset match {game_id} status: {e}")
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Partial Revert",
+                    description=f"Player statistics were reverted but failed to reset match status.",
+                    color=Config.EMBED_COLORS["yellow"],
+                )
+                embed.add_field(name="Error", value=str(e), inline=False)
+                await interaction.edit_original_response(embed=embed, view=None)
+                return
+
+            # Create success embed
+            embed = discord.Embed(
+                title=f"{Config.ICONS['success']} Match Reverted Successfully",
+                description=f"Match ID {game_id} has been completely reverted.",
+                color=Config.EMBED_COLORS["light_green"],
+            )
+            embed.add_field(
+                name="Players Processed",
+                value=f"{Config.ICONS['success']} Reverted: {reverted_count}\n{Config.ICONS['unsuccess']} Failed: {failed_count}",
+                inline=True,
+            )
+            embed.add_field(
+                name="League",
+                value=original_league_name,
+                inline=True,
+            )
+            embed.set_footer(text="All player statistics have been reversed to their pre-match state.")
+
+            await interaction.edit_original_response(embed=embed, view=None)
+            logger.info(f"🟣 Successfully reverted match {game_id} - {reverted_count} players processed in league {original_league_name}")
+
+        except Exception as e:
+            logger.error(f"🟣 Failed to revert match {game_id}: {e}")
+            embed = discord.Embed(
+                title=f"{Config.ICONS['unsuccess']} Failed to Revert Match",
+                description="An error occurred while reverting the match.",
+                color=Config.EMBED_COLORS["red"],
+            )
+            embed.add_field(
+                name="Error",
+                value=str(e),
+                inline=False,
+            )
+            embed.set_footer(text="Please try again or contact an administrator.")
+            await interaction.edit_original_response(embed=embed, view=None)
+
+    async def _revert_player_stats(self, discord_id: int, kills_change: int, deaths_change: int, 
+                                   points_change: int, wins_change: int, losses_change: int, league_name: str):
+        """Helper method to revert player statistics directly in database"""
+        loop = asyncio.get_running_loop()
+        
+        def db_revert():
+            try:
+                # Get current user stats
+                current_user = (
+                    Config.supabase()
+                    .table(league_name)
+                    .select("*")
+                    .eq("discord_id", str(discord_id))
+                    .execute()
+                )
+                
+                if not current_user.data:
+                    logger.error(f"🟣 User {discord_id} not found in league table {league_name}")
+                    return None
+                
+                user_data = current_user.data[0]
+                
+                # Calculate new values by applying the changes
+                new_kills = max(0, user_data.get("kills", 0) + kills_change)
+                new_deaths = max(0, user_data.get("deaths", 0) + deaths_change)
+                new_points = user_data.get("points", 200) + points_change
+                new_wins = max(0, user_data.get("wins", 0) + wins_change)
+                new_losses = max(0, user_data.get("loses", 0) + losses_change)
+                
+                # Update user stats in the league table
+                result = (
+                    Config.supabase()
+                    .table(league_name)
+                    .update(
+                        {
+                            "kills": new_kills,
+                            "deaths": new_deaths,
+                            "points": new_points,
+                            "wins": new_wins,
+                            "loses": new_losses,
+                        }
+                    )
+                    .eq("discord_id", str(discord_id))
+                    .execute()
+                )
+                
+                return {
+                    "success": True,
+                    "new_kills": new_kills,
+                    "new_deaths": new_deaths,
+                    "new_points": new_points,
+                    "new_wins": new_wins,
+                    "new_losses": new_losses,
+                }
+                
+            except Exception as e:
+                logger.error(f"🟣 Error reverting stats for {discord_id} in league {league_name}: {e}")
+                return None
+                
+        return await loop.run_in_executor(None, db_revert)
 
     @app_commands.command(
         name="unlock_lobbies",
@@ -2344,7 +2688,7 @@ class Matchmaking(commands.Cog):
 
                     if not lobby_role:
                         logger.warning(
-                            f"Could not find required role for lobby {lobby.get('lobby_number')}"
+                            f"🟣 Could not find required role for lobby {lobby.get('lobby_number')}"
                         )
                         continue
 
@@ -2370,7 +2714,7 @@ class Matchmaking(commands.Cog):
                         )
                         lobbies_updated += 1
                 except Exception as e:
-                    logger.error(f"Failed to update permissions for lobby: {e}")
+                    logger.error(f"🟣 Failed to update permissions for lobby: {e}")
 
             # Create success embed
             embed = discord.Embed(
@@ -2394,11 +2738,11 @@ class Matchmaking(commands.Cog):
 
             await interaction.followup.send(embed=embed, ephemeral=True)
             logger.info(
-                f"Lobbies unlocked by {interaction.user} - {lobbies_updated} lobbies updated"
+                f"🟣 Lobbies unlocked by {interaction.user} - {lobbies_updated} lobbies updated"
             )
 
         except Exception as e:
-            logger.error(f"Failed to unlock lobbies: {e}")
+            logger.error(f"🟣 Failed to unlock lobbies: {e}")
             embed = discord.Embed(
                 title=f"{Config.ICONS['unsuccess']} Failed to Unlock Lobbies",
                 description="An error occurred while unlocking lobbies.",
@@ -2548,14 +2892,14 @@ class Matchmaking(commands.Cog):
             lobby.pop("draft_start", None)
             # Return the captain of the smaller team
             if team1_size < team2_size:
-                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Team1 ({team1_size}) < Team2 ({team2_size}), Team1 captain picks to balance")
+                logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Team1 ({team1_size}) < Team2 ({team2_size}), Team1 captain picks to balance")
                 return team1_captain
             else:
-                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Team2 ({team2_size}) < Team1 ({team1_size}), Team2 captain picks to balance")
+                logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Team2 ({team2_size}) < Team1 ({team1_size}), Team2 captain picks to balance")
                 return team2_captain
 
         # Teams are balanced - handle various scenarios
-        logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Teams balanced ({team1_size} vs {team2_size})")
+        logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Teams balanced ({team1_size} vs {team2_size})")
 
         # Special case: Draft just started after party assignments
         if is_draft_start:
@@ -2563,15 +2907,15 @@ class Matchmaking(commands.Cog):
             # If teams are balanced after party assignments, Team1 starts
             # If teams are imbalanced, the smaller team should start to balance
             if team1_size == team2_size:
-                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Draft start with balanced teams - Team1 captain goes first")
+                logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Draft start with balanced teams - Team1 captain goes first")
                 return team1_captain
             else:
                 # Teams are imbalanced after party assignments, smaller team picks first
                 if team1_size < team2_size:
-                    logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Draft start with imbalanced teams - Team1 (smaller) captain goes first")
+                    logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Draft start with imbalanced teams - Team1 (smaller) captain goes first")
                     return team1_captain
                 else:
-                    logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Draft start with imbalanced teams - Team2 (smaller) captain goes first")
+                    logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Draft start with imbalanced teams - Team2 (smaller) captain goes first")
                     return team2_captain
 
         # Check if we just finished balancing (teams just became equal)
@@ -2580,23 +2924,23 @@ class Matchmaking(commands.Cog):
             lobby.pop("just_balanced", None)
             # After balancing, switch to the other captain
             if current_pick == team1_captain:
-                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Just balanced - switching to Team2 captain")
+                logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Just balanced - switching to Team2 captain")
                 return team2_captain
             else:
-                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Just balanced - switching to Team1 captain")
+                logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Just balanced - switching to Team1 captain")
                 return team1_captain
 
         # Standard case: If no current pick set, Team1 captain starts
         if not current_pick:
-            logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: No current pick - Team1 captain starts")
+            logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: No current pick - Team1 captain starts")
             return team1_captain
 
         # Standard alternating: switch to the other captain
         if current_pick == team1_captain:
-            logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Alternating from Team1 to Team2 captain")
+            logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Alternating from Team1 to Team2 captain")
             return team2_captain
         else:
-            logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Alternating from Team2 to Team1 captain")
+            logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Alternating from Team2 to Team1 captain")
             return team1_captain
 
     async def calculate_picks_needed(self, lobby):
@@ -2626,11 +2970,11 @@ class Matchmaking(commands.Cog):
         if team_diff > 0:
             # Pick enough players to balance the teams, but don't exceed available players
             picks_needed = min(team_diff, available_count)
-            logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Captain needs {picks_needed} picks to balance teams (diff: {team_diff}, available: {available_count})")
+            logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Captain needs {picks_needed} picks to balance teams (diff: {team_diff}, available: {available_count})")
         else:
             # Standard draft: pick 1 player (teams are equal or current team is larger)
             picks_needed = min(1, available_count)
-            logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Standard 1 pick (teams balanced or current team larger)")
+            logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Standard 1 pick (teams balanced or current team larger)")
 
         # Don't pick more players than available
         picks_needed = min(picks_needed, len(lobby["available_players"]))
@@ -2646,27 +2990,27 @@ class Matchmaking(commands.Cog):
         async with self.lobby_locks[lobby["category"].guild.id]:
             # Critical validation: Ensure lobby is still in correct phase
             if lobby["phase"] != 2:
-                logger.warning(f"Draft picks attempted on lobby #{lobby.get('lobby_number', 'unknown')} in phase {lobby['phase']}")
+                logger.warning(f"🟣 Draft picks attempted on lobby #{lobby.get('lobby_number', 'unknown')} in phase {lobby['phase']}")
                 return
 
             # Validate lobby still exists
             if lobby["category"].id not in self.active_lobbies:
-                logger.warning(f"Draft picks attempted on non-existent lobby #{lobby.get('lobby_number', 'unknown')}")
+                logger.warning(f"🟣 Draft picks attempted on non-existent lobby #{lobby.get('lobby_number', 'unknown')}")
                 return
 
             # Validate current captain still exists and is correct
             current_captain = lobby.get("next_pick")
             if not current_captain:
-                logger.warning(f"Draft picks attempted with no current captain in lobby #{lobby.get('lobby_number', 'unknown')}")
+                logger.warning(f"🟣 Draft picks attempted with no current captain in lobby #{lobby.get('lobby_number', 'unknown')}")
                 return
 
             # Validate all picked members are still available
             for picked_member in picked_members:
                 if picked_member not in lobby["available_players"]:
-                    logger.warning(f"Attempted to pick unavailable player: {picked_member} in lobby #{lobby.get('lobby_number', 'unknown')}")
+                    logger.warning(f"🟣 Attempted to pick unavailable player: {picked_member} in lobby #{lobby.get('lobby_number', 'unknown')}")
                     return
 
-            logger.info(f"Processing draft picks in lobby #{lobby.get('lobby_number', 'unknown')}: {[p.display_name for p in picked_members]} by captain {current_captain.display_name}")
+            logger.info(f"🟣 Processing draft picks in lobby #{lobby.get('lobby_number', 'unknown')}: {[p.display_name for p in picked_members]} by captain {current_captain.display_name}")
 
             # Check if teams were imbalanced before this pick
             team1_size_before = len(lobby["team1"])
@@ -2684,7 +3028,7 @@ class Matchmaking(commands.Cog):
                 try:
                     lobby["available_players"].remove(picked_member)
                 except ValueError:
-                    logger.warning(f"Player {picked_member} was not in available_players list")
+                    logger.warning(f"🟣 Player {picked_member} was not in available_players list")
 
             # Check if teams are now balanced after the pick
             team1_size_after = len(lobby["team1"])
@@ -2694,7 +3038,7 @@ class Matchmaking(commands.Cog):
             # If we just transitioned from imbalanced to balanced, set flag
             if was_imbalanced and is_now_balanced:
                 lobby["just_balanced"] = True
-                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Teams just became balanced ({team1_size_after} vs {team2_size_after})")
+                logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Teams just became balanced ({team1_size_after} vs {team2_size_after})")
 
             # Handle automatic assignment of last player if only one remains
             if len(lobby["available_players"]) == 1:
@@ -2705,16 +3049,16 @@ class Matchmaking(commands.Cog):
                 # Assign to the smaller team
                 if team1_size <= team2_size:
                     lobby["team1"].append(last_player)
-                    logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Auto-assigned last player {last_player.display_name} to Team1")
+                    logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Auto-assigned last player {last_player.display_name} to Team1")
                 else:
                     lobby["team2"].append(last_player)
-                    logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Auto-assigned last player {last_player.display_name} to Team2")
+                    logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Auto-assigned last player {last_player.display_name} to Team2")
                 lobby["available_players"].remove(last_player)
 
             # Update next pick based on balanced team logic
             if lobby["available_players"]:
                 lobby["next_pick"] = await self.determine_next_pick_balanced(lobby)
-                logger.info(f"Lobby #{lobby.get('lobby_number', 'unknown')}: Next pick determined: {lobby['next_pick'].display_name}")
+                logger.info(f"🟣 Lobby #{lobby.get('lobby_number', 'unknown')}: Next pick determined: {lobby['next_pick'].display_name}")
 
             # --- New Draft UI ---
             team1_lines = await self.format_team_list(
@@ -2755,20 +3099,20 @@ class Matchmaking(commands.Cog):
             try:
                 await lobby["message"].edit(embed=embed, view=view)
             except discord.NotFound:
-                logger.error(f"Lobby message not found during draft update for lobby #{lobby.get('lobby_number', 'unknown')}")
+                logger.error(f"🟣 Lobby message not found during draft update for lobby #{lobby.get('lobby_number', 'unknown')}")
                 return
             except discord.Forbidden:
-                logger.error(f"Missing permissions to edit lobby message for lobby #{lobby.get('lobby_number', 'unknown')}")
+                logger.error(f"🟣 Missing permissions to edit lobby message for lobby #{lobby.get('lobby_number', 'unknown')}")
                 return
             except Exception as e:
-                logger.error(f"Unexpected error updating draft message: {e}")
+                logger.error(f"🟣 Unexpected error updating draft message: {e}")
                 return
 
             if not lobby["available_players"]:
                 try:
                     await self.start_map_veto(lobby)
                 except Exception as e:
-                    logger.error(f"Failed to start map veto after draft completion: {e}")
+                    logger.error(f"🟣 Failed to start map veto after draft completion: {e}")
                     # Reset lobby to prevent stuck state
                     await self.reset_lobby(lobby)
 
@@ -2779,6 +3123,59 @@ class Matchmaking(commands.Cog):
             if map_info["name"] == map_name:
                 return map_info["emoji"]
         return None
+
+
+class RevertGameConfirmationView(discord.ui.View):
+    def __init__(
+        self,
+        match_data: dict,
+        game_id: int,
+        original_league_name: str,
+        teams_stats_data: dict,
+        all_players: list,
+        cog_instance,
+    ):
+        super().__init__(timeout=60.0)
+        self.match_data = match_data
+        self.game_id = game_id
+        self.original_league_name = original_league_name
+        self.teams_stats_data = teams_stats_data
+        self.all_players = all_players
+        self.cog_instance = cog_instance
+
+    @discord.ui.button(label="Confirm Revert", style=discord.ButtonStyle.danger)
+    async def confirm_revert(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        # Acknowledge the button interaction first
+        await interaction.response.defer()
+
+        # Perform the revert
+        await self.cog_instance.perform_match_revert(
+            interaction, self.match_data, self.game_id, self.original_league_name, 
+            self.teams_stats_data, self.all_players
+        )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_revert(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        cancel_embed = discord.Embed(
+            title=f"{Config.ICONS['success']} Revert Cancelled",
+            description=f"Match ID {self.game_id} was not reverted.",
+            color=Config.EMBED_COLORS["light_green"],
+        )
+        cancel_embed.add_field(
+            name="Match Safe",
+            value="No changes were made to the match statistics or player data.",
+            inline=False,
+        )
+        await interaction.response.edit_message(embed=cancel_embed, view=None)
+
+    async def on_timeout(self):
+        # Disable all buttons when timeout occurs
+        for item in self.children:
+            item.disabled = True
 
 
 async def setup(bot):
