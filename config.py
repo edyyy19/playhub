@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 from threading import Lock
 import discord
+import redis
 
 load_dotenv()
 
@@ -20,15 +21,21 @@ class Config:
     REGISTERED_ROLE = "Registered"
     REGISTRATION_CHANNEL = "registration"
 
+    # Redis configuration
+    REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+    REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
+    REDIS_DB = int(os.getenv("REDIS_DB", 0))
+
     # Map pool with names and emojis
     MAP_POOL = [
         {"name": "Sandstone", "emoji": "<:sandstone_emoji:1397905555057807382>"},
         {"name": "Rust", "emoji": "<:rust_emoji:1397905569825951774>"},
-        {"name": "Province", "emoji": "<:province_emoji:1397905564520022037>"},
-        {"name": "Breeze", "emoji": "<:breeze_emoji:1397905561407979570>"},
-        {"name": "Dune", "emoji": "<:dune_emoji:1397905722372521997>"},
-        {"name": "Zone7", "emoji": "<:zone7_emoji:1397905558006136963>"},
-        {"name": "Sakura", "emoji": "<:sakura_emoji:1397905551526203452>"},
+        # {"name": "Province", "emoji": "<:province_emoji:1397905564520022037>"},
+        # {"name": "Breeze", "emoji": "<:breeze_emoji:1397905561407979570>"},
+        # {"name": "Dune", "emoji": "<:dune_emoji:1397905722372521997>"},
+        # {"name": "Zone7", "emoji": "<:zone7_emoji:1397905558006136963>"},
+        # {"name": "Sakura", "emoji": "<:sakura_emoji:1397905551526203452>"},
     ]
 
     PLAYERS_REQUIRED = 4
@@ -91,6 +98,10 @@ class Config:
     _supabase_client = None
     _supabase_lock = Lock()
 
+    # Redis client singleton
+    _redis_client = None
+    _redis_lock = Lock()
+
     @classmethod
     def supabase(cls) -> Client:
         """Initialize and return a singleton Supabase client"""
@@ -101,6 +112,24 @@ class Config:
                         cls.SUPABASE_URL, cls.SUPABASE_KEY
                     )
         return cls._supabase_client
+
+    @classmethod
+    def redis(cls) -> redis.Redis:
+        """Initialize and return a singleton Redis client"""
+        if cls._redis_client is None:
+            with cls._redis_lock:
+                if cls._redis_client is None:
+                    cls._redis_client = redis.Redis(
+                        host=cls.REDIS_HOST,
+                        port=cls.REDIS_PORT,
+                        password=cls.REDIS_PASSWORD,
+                        db=cls.REDIS_DB,
+                        decode_responses=True,  # Automatic string decoding
+                        socket_connect_timeout=5,
+                        socket_timeout=5,
+                        retry_on_timeout=True
+                    )
+        return cls._redis_client
 
     @classmethod
     def is_authorized_user(cls, user_id: int) -> bool:

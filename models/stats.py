@@ -197,6 +197,74 @@ class Stats:
         return await loop.run_in_executor(None, db_select)
 
     @classmethod
+    async def get_multiple_user_stats(cls, discord_ids: list, league_name: str = None, max_retries: int = 3):
+        """Get multiple users' statistics in a single batch query"""
+        if not discord_ids:
+            return {}
+            
+        loop = asyncio.get_running_loop()
+
+        def db_batch_select():
+            table_name = league_name
+            
+            for attempt in range(max_retries):
+                try:
+                    # If no league is specified, get the default league from config
+                    if not table_name:
+                        config_response = (
+                            Config.supabase().table("config").select("default_league").execute()
+                        )
+                        if not config_response.data:
+                            logger.error("No config found in database")
+                            return {}
+
+                        config_data = config_response.data[0]
+                        table_name = config_data.get("default_league")
+
+                        if not table_name:
+                            logger.error("No default league configured")
+                            return {}
+
+                    # Convert discord IDs to strings for query
+                    str_discord_ids = [str(discord_id) for discord_id in discord_ids]
+                    
+                    # Get all user stats in a single batch query
+                    response = (
+                        Config.supabase()
+                        .table(table_name)
+                        .select("discord_id, points, kills, deaths, wins, loses")
+                        .in_("discord_id", str_discord_ids)
+                        .execute()
+                    )
+
+                    # Convert to dict keyed by discord_id for easy lookup
+                    result = {}
+                    if response.data:
+                        for user_data in response.data:
+                            discord_id = int(user_data["discord_id"])
+                            result[discord_id] = {
+                                "success": True,
+                                "stats": user_data,
+                                "league": table_name,
+                            }
+                    
+                    return result
+
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        # Wait before retry with exponential backoff
+                        import time
+                        wait_time = (2 ** attempt) * 0.5  # 0.5s, 1s, 2s
+                        logger.warning(f"Database connection failed getting batch stats (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
+                        time.sleep(wait_time)
+                    else:
+                        logger.error(f"Error getting batch stats from league table {table_name} after {max_retries} attempts: {e}")
+                        return {}
+            return {}
+
+        return await loop.run_in_executor(None, db_batch_select)
+
+    @classmethod
     async def create_user_stats(
         cls, discord_id: int, league_name: str, initial_points: int = 200
     ):

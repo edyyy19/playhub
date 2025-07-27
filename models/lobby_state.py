@@ -21,7 +21,7 @@ class LobbyState:
         """Save lobby state to database"""
         loop = asyncio.get_running_loop()
 
-        # Serialize lobby data for storage
+        # Serialize lobby data for storage (metadata only - players stored in Redis)
         serialized_data = {
             "guild_id": str(guild_id),
             "category_id": str(category_id),
@@ -33,23 +33,17 @@ class LobbyState:
             if lobby_data.get("text")
             else None,
             "phase": lobby_data.get("phase", 1),
-            "player_ids": json.dumps(
-                [str(p.id) for p in lobby_data.get("players", set())]
-            ),
-            "ct_team_ids": json.dumps(
-                [str(p.id) for p in lobby_data.get("ct_team", [])]
-            ),
-            "t_team_ids": json.dumps([str(p.id) for p in lobby_data.get("t_team", [])]),
+            # Player data now handled by Redis - only metadata stored in PostgreSQL
             "map_pool": json.dumps(lobby_data.get("map_pool", [])),
             "match_id": lobby_data.get("match_id"),
             "message_id": str(lobby_data["message"].id)
             if lobby_data.get("message")
             else None,
-            "ct_voice_id": str(lobby_data["ct_voice"].id)
-            if lobby_data.get("ct_voice")
+            "ct_voice_id": str(lobby_data["team1_voice"].id)
+            if lobby_data.get("team1_voice")
             else None,
-            "t_voice_id": str(lobby_data["t_voice"].id)
-            if lobby_data.get("t_voice")
+            "t_voice_id": str(lobby_data["team2_voice"].id)
+            if lobby_data.get("team2_voice")
             else None,
             "required_role_id": str(lobby_data.get("required_role_id"))
             if lobby_data.get("required_role_id")
@@ -99,8 +93,16 @@ class LobbyState:
 
     @classmethod
     async def delete_lobby(cls, category_id: int):
-        """Delete lobby state from database"""
+        """Delete lobby state from both Redis and database"""
         loop = asyncio.get_running_loop()
+        
+        # First delete from Redis
+        try:
+            from .lobby_redis import LobbyRedis
+            await LobbyRedis.delete_lobby(category_id)
+            logger.info(f"🔴 Deleted Redis data for lobby {category_id}")
+        except Exception as e:
+            logger.warning(f"🔴 Failed to delete Redis data for lobby {category_id}: {e}")
 
         def db_delete():
             try:

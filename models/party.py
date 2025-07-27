@@ -56,6 +56,36 @@ class Party:
         return await loop.run_in_executor(None, db_select)
 
     @classmethod
+    async def find_users_parties_batch(cls, discord_ids: list):
+        """Find parties for multiple users in a single query - optimized batch version"""
+        if not discord_ids:
+            return {}
+        
+        loop = asyncio.get_running_loop()
+
+        def db_select():
+            # Single query to get all parties
+            response = Config.supabase().table(cls.TABLE).select("*").execute()
+            
+            # Build lookup dict for all requested users
+            user_parties = {}
+            str_discord_ids = [str(discord_id) for discord_id in discord_ids]
+            
+            # Check each party's members to see if any of our users are in it
+            for party in response.data:
+                members = json.loads(party["members"])
+                party["members"] = members  # Parse the JSON members
+                
+                # Check if any of our target users are in this party
+                for member in members:
+                    if member["discord_id"] in str_discord_ids:
+                        user_parties[int(member["discord_id"])] = party
+                        
+            return user_parties
+
+        return await loop.run_in_executor(None, db_select)
+
+    @classmethod
     async def get_party(cls, party_id: int):
         """Get a party by ID"""
         loop = asyncio.get_running_loop()

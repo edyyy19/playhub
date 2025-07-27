@@ -47,6 +47,32 @@ class User:
         return await loop.run_in_executor(None, db_select)
 
     @classmethod
+    async def find_multiple(cls, discord_ids: list):
+        """Batch find multiple users by discord IDs"""
+        if not discord_ids:
+            return {}
+            
+        loop = asyncio.get_running_loop()
+
+        def db_select():
+            # Convert all IDs to strings for consistency
+            str_ids = [str(discord_id) for discord_id in discord_ids]
+            response = (
+                Config.supabase()
+                .table(cls.TABLE)
+                .select("*")
+                .in_("discord_id", str_ids)
+                .execute()
+            )
+            # Create a dictionary mapping discord_id -> user data
+            result = {}
+            for user in response.data:
+                result[int(user["discord_id"])] = user
+            return result
+
+        return await loop.run_in_executor(None, db_select)
+
+    @classmethod
     async def update_profile(cls, discord_id: int, nickname: str, so2_id: str):
         """Update user's nickname and Standoff 2 ID"""
         loop = asyncio.get_running_loop()

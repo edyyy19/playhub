@@ -15,10 +15,15 @@ class Match:
     async def create(
         cls, team1: list, team2: list, team1_captain, team2_captain, map_name: str, league: str = None
     ):
-        # Get player data for Team 1
+        # Batch fetch user data for all players
+        all_players = team1 + team2
+        all_player_ids = [member.id for member in all_players]
+        users_batch = await User.find_multiple(all_player_ids)
+
+        # Process Team 1 players using batch data
         team1_players = []
         for member in team1:
-            user_data = await User.find(member.id)
+            user_data = users_batch.get(member.id)
             if user_data:
                 team1_players.append(
                     {
@@ -35,10 +40,10 @@ class Match:
                     }
                 )
 
-        # Get player data for Team 2
+        # Process Team 2 players using batch data
         team2_players = []
         for member in team2:
-            user_data = await User.find(member.id)
+            user_data = users_batch.get(member.id)
             if user_data:
                 team2_players.append(
                     {

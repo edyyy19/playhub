@@ -492,46 +492,36 @@ IMPORTANT RULES:
 
             # Continuă cu procesarea normală pentru meciuri cu scor normal (13-X)
 
-            # Process team1 players (GPT already provided discord_id directly)
-            updated_team1 = []
+            # 🚀 OPTIMIZARE BATCH: Obține stats pentru toți jucătorii deodată
+            all_player_ids = []
+            all_gpt_players = []
+            
+            # Colectează toți ID-urile de jucători
             for gpt_player in team1_data.get("players", []):
-                # GPT already provided the discord_id, no need for manual matching
-                discord_id = gpt_player["discord_id"]
+                all_player_ids.append(int(gpt_player["discord_id"]))
+                all_gpt_players.append((gpt_player, 1, team1_score > team2_score))  # team, won
                 
-                # Calculate points using helper method
-                was_absent = gpt_player.get("matched_from", "") == "default_stats"
-                team1_won = team1_score > team2_score
-                points_received = await self._calculate_player_points(discord_id, match_data.get("league"), was_absent, team1_won)
-                
-                # Calculate rating using bot formula: (KILLS + 0.5 × ASSISTS) / max(1, DEATHS)
-                kills = gpt_player.get("kills", 0)
-                assists = gpt_player.get("assists", 0)
-                deaths = max(1, gpt_player.get("deaths", 13))  # Prevent division by zero
-                rating = round((kills + 0.5 * assists) / deaths, 1)
-                
-                updated_player = {
-                    "nickname": gpt_player["nickname"],
-                    "discord_id": discord_id,  # Direct from GPT, no matching needed
-                    "kills": kills,
-                    "assists": assists,
-                    "deaths": gpt_player.get("deaths", 13),
-                    "rating": rating,
-                    "points": points_received,  # For generator
-                    "points_received": points_received,  # For database
-                    "matched_from": gpt_player.get("matched_from", "default_stats")
-                }
-                updated_team1.append(updated_player)
-
-            # Process team2 players (GPT already provided discord_id directly)
-            updated_team2 = []
             for gpt_player in team2_data.get("players", []):
-                # GPT already provided the discord_id, no need for manual matching
+                all_player_ids.append(int(gpt_player["discord_id"]))
+                all_gpt_players.append((gpt_player, 2, team2_score > team1_score))  # team, won
+            
+            # Fetch stats în batch pentru toți jucătorii deodată
+            league_name = match_data.get("league")
+            stats_batch = await Stats.get_multiple_user_stats(all_player_ids, league_name)
+            logger.info(f"🟢 Fetched stats in batch for {len(all_player_ids)} players in league {league_name}")
+            
+            # Process all players cu datele din batch
+            updated_team1 = []
+            updated_team2 = []
+            
+            for gpt_player, team_num, team_won in all_gpt_players:
                 discord_id = gpt_player["discord_id"]
                 
-                # Calculate points using helper method
+                # Calculate points using batch stats data
                 was_absent = gpt_player.get("matched_from", "") == "default_stats"
-                team2_won = team2_score > team1_score
-                points_received = await self._calculate_player_points(discord_id, match_data.get("league"), was_absent, team2_won)
+                points_received = await self._calculate_player_points_batch(
+                    discord_id, league_name, was_absent, team_won, stats_batch
+                )
                 
                 # Calculate rating using bot formula: (KILLS + 0.5 × ASSISTS) / max(1, DEATHS)
                 kills = gpt_player.get("kills", 0)
@@ -541,7 +531,7 @@ IMPORTANT RULES:
                 
                 updated_player = {
                     "nickname": gpt_player["nickname"],
-                    "discord_id": discord_id,  # Direct from GPT, no matching needed
+                    "discord_id": discord_id,
                     "kills": kills,
                     "assists": assists,
                     "deaths": gpt_player.get("deaths", 13),
@@ -550,7 +540,11 @@ IMPORTANT RULES:
                     "points_received": points_received,  # For database
                     "matched_from": gpt_player.get("matched_from", "default_stats")
                 }
-                updated_team2.append(updated_player)
+                
+                if team_num == 1:
+                    updated_team1.append(updated_player)
+                else:
+                    updated_team2.append(updated_player)
 
             # Update database - create copies without extra fields for database storage
             team1_for_db = []
@@ -846,6 +840,36 @@ IMPORTANT RULES:
             # Fallback to old system
             return 20 if is_win else -10
 
+    async def _calculate_player_points_batch(self, discord_id, match_league, was_absent, team_won, stats_batch):
+        """Optimized helper method to calculate points using batch stats data"""
+        default_league = await self.get_default_league_from_config()
+        discord_id_int = int(discord_id)
+        
+        if was_absent and match_league == default_league:
+            # Player was absent (left match): apply leaving penalty based on their level
+            current_points = self._get_points_from_batch(discord_id_int, stats_batch)
+            is_challenger = await self.check_challenger_status(discord_id_int, current_points)
+            return await self.calculate_leaving_penalty_points(discord_id_int, match_league, is_challenger)
+        elif was_absent:
+            # Player was absent in non-default league: fixed penalty
+            return -45
+        elif match_league == default_league:
+            # Player was present: normal win/loss calculation
+            current_points = self._get_points_from_batch(discord_id_int, stats_batch)
+            is_challenger = await self.check_challenger_status(discord_id_int, current_points)
+            return await self.calculate_level_based_points(discord_id_int, team_won, match_league, is_challenger)
+        else:
+            # Player was present in non-default league: normal fixed points
+            return 25 if team_won else -25
+
+    def _get_points_from_batch(self, discord_id, stats_batch):
+        """Helper to extract points from batch stats result"""
+        stats_result = stats_batch.get(discord_id)
+        if stats_result and stats_result.get("success"):
+            stats_data = stats_result.get("stats", {})
+            return stats_data.get("points", 0)
+        return 0
+
     async def _calculate_player_points(self, discord_id, match_league, was_absent, team_won):
         """Helper method to calculate points for a player based on league and participation"""
         default_league = await self.get_default_league_from_config()
@@ -879,17 +903,38 @@ IMPORTANT RULES:
             return False
 
     async def _process_teams_data(self, team1_data, team2_data, match_data, team1_score, team2_score):
-        """Process team data and calculate points - helper method for verification"""
+        """Process team data and calculate points - optimized helper method for verification"""
+        
+        # 🚀 OPTIMIZARE BATCH: Colectează toți jucătorii pentru batch query
+        all_player_ids = []
+        all_gpt_players = []
+        
+        # Colectează jucătorii din team1
+        for gpt_player in team1_data.get("players", []):
+            all_player_ids.append(int(gpt_player["discord_id"]))
+            all_gpt_players.append((gpt_player, 1, team1_score > team2_score))  # team, won
+            
+        # Colectează jucătorii din team2  
+        for gpt_player in team2_data.get("players", []):
+            all_player_ids.append(int(gpt_player["discord_id"]))
+            all_gpt_players.append((gpt_player, 2, team2_score > team1_score))  # team, won
+        
+        # Fetch stats în batch pentru toți jucătorii
+        league_name = match_data.get("league")
+        stats_batch = await Stats.get_multiple_user_stats(all_player_ids, league_name)
+        logger.info(f"🟢 [VERIFICATION] Fetched stats in batch for {len(all_player_ids)} players in league {league_name}")
+        
         all_players = []
         
-        # Process team1 players
-        for gpt_player in team1_data.get("players", []):
+        # Process all players cu datele din batch
+        for gpt_player, team_num, team_won in all_gpt_players:
             discord_id = gpt_player["discord_id"]
             
-            # Calculate points using helper method
+            # Calculate points using batch data
             was_absent = gpt_player.get("matched_from", "") == "default_stats"
-            team1_won = team1_score > team2_score
-            points_received = await self._calculate_player_points(discord_id, match_data.get("league"), was_absent, team1_won)
+            points_received = await self._calculate_player_points_batch(
+                discord_id, league_name, was_absent, team_won, stats_batch
+            )
             
             kills = gpt_player.get("kills", 0)
             assists = gpt_player.get("assists", 0)
@@ -906,35 +951,7 @@ IMPORTANT RULES:
                 "points": points_received,
                 "points_received": points_received,
                 "matched_from": gpt_player.get("matched_from", "default_stats"),
-                "team": 1
-            }
-            all_players.append(updated_player)
-
-        # Process team2 players
-        for gpt_player in team2_data.get("players", []):
-            discord_id = gpt_player["discord_id"]
-            
-            # Calculate points using helper method
-            was_absent = gpt_player.get("matched_from", "") == "default_stats"
-            team2_won = team2_score > team1_score
-            points_received = await self._calculate_player_points(discord_id, match_data.get("league"), was_absent, team2_won)
-            
-            kills = gpt_player.get("kills", 0)
-            assists = gpt_player.get("assists", 0)
-            deaths = max(1, gpt_player.get("deaths", 13))
-            rating = round((kills + 0.5 * assists) / deaths, 1)
-            
-            updated_player = {
-                "nickname": gpt_player["nickname"],
-                "discord_id": discord_id,
-                "kills": kills,
-                "assists": assists,
-                "deaths": gpt_player.get("deaths", 13),
-                "rating": rating,
-                "points": points_received,
-                "points_received": points_received,
-                "matched_from": gpt_player.get("matched_from", "default_stats"),
-                "team": 2
+                "team": team_num
             }
             all_players.append(updated_player)
         

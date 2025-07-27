@@ -4,6 +4,7 @@ from discord import app_commands
 from config import Config
 from models.match import Match
 from models.lobby_state import LobbyState
+from models.lobby_redis import LobbyRedis
 from models.timeout import timeout_manager
 from models.user import User
 from models.stats import Stats
@@ -33,10 +34,18 @@ class Matchmaking(commands.Cog):
         self.lobbies_locked = False  # Track if lobbies are locked globally
         self.cleanup_voice_channels.start()
         self.lobby_locks = defaultdict(asyncio.Lock)  # Prevent race conditions
+        
+        # Cache for default league to avoid repeated database calls
+        self._default_league_cache = None
+        self._default_league_cache_time = 0
+        self._default_league_cache_ttl = 300  # 5 minutes TTL
+        
         # Restore lobbies on startup
         asyncio.create_task(self.restore_lobbies())
         # Initialize timeout manager
         asyncio.create_task(self.initialize_timeout_manager())
+        # Initialize Redis connection
+        asyncio.create_task(self.initialize_redis())
 
     async def initialize_timeout_manager(self):
         """Initialize timeout manager and load active timeouts"""
@@ -46,6 +55,22 @@ class Matchmaking(commands.Cog):
             logger.info("🟣 Timeout manager initialized successfully")
         except Exception as e:
             logger.error(f"🟣 Failed to initialize timeout manager: {e}")
+
+    async def initialize_redis(self):
+        """Initialize Redis connection and test connectivity"""
+        try:
+            await self.bot.wait_until_ready()
+            
+            # Test Redis connection
+            is_connected = await LobbyRedis.ping()
+            if is_connected:
+                logger.info("🔴 Redis connection successful - Lobby caching enabled")
+            else:
+                logger.warning("🔴 Redis connection failed - Using PostgreSQL only mode")
+                
+        except Exception as e:
+            logger.error(f"🔴 Failed to initialize Redis: {e}")
+            logger.warning("🔴 Continuing without Redis - Using PostgreSQL only mode")
 
     def get_leagues_cog(self):
         """Get the leagues cog for accessing league methods"""
@@ -274,6 +299,14 @@ class Matchmaking(commands.Cog):
                     "required_role_name": lobby_role_name,
                     "league_table": league_data["league_name"],  # Add league table name
                 }
+                
+                # Initialize Redis structure for this lobby
+                try:
+                    await LobbyRedis.create_lobby(category.id, ttl_hours=24)
+                    logger.info(f"🔴 Created Redis structure for lobby #{lobby_number}")
+                except Exception as e:
+                    logger.warning(f"🔴 Failed to create Redis structure for lobby #{lobby_number}: {e}")
+                
                 # Save lobby state to database
                 await self.save_lobby_state(category.id)
                 # Create success embed
@@ -876,7 +909,15 @@ class Matchmaking(commands.Cog):
                                 )
                             continue
 
+                        # Add to memory
                         lobby["players"].add(member)
+                        
+                        # Add to Redis (non-blocking, best effort)
+                        try:
+                            await LobbyRedis.add_player(lobby["category"].id, member.id)
+                        except Exception as e:
+                            logger.warning(f"🔴 Failed to add player {member.id} to Redis for lobby {lobby['category'].id}: {e}")
+                    
                     # No longer calling update_lobby_status here to prevent frequent embed updates
                     # The embed is now static and only created once when the lobby is initialized
                     
@@ -893,7 +934,15 @@ class Matchmaking(commands.Cog):
                     and (not after.channel or after.channel.id != lobby["voice"].id)
                 ):
                     if member in lobby["players"]:
+                        # Remove from memory
                         lobby["players"].remove(member)
+                        
+                        # Remove from Redis (non-blocking, best effort)
+                        try:
+                            await LobbyRedis.remove_player(lobby["category"].id, member.id)
+                        except Exception as e:
+                            logger.warning(f"🔴 Failed to remove player {member.id} from Redis for lobby {lobby['category'].id}: {e}")
+                    
                     # No longer calling update_lobby_status here to prevent frequent embed updates
                     # Players leaving in phase 1 don't need to trigger embed updates
                     
@@ -1042,12 +1091,18 @@ class Matchmaking(commands.Cog):
                 if league_data:
                     league_emoji = league_data.get("league_emoji")
 
+        # Batch fetch stats for all team members if it's default league
+        stats_batch = {}
+        if is_default_league and team_members:
+            member_ids = [member.id for member in team_members]
+            stats_batch = await Stats.get_multiple_user_stats(member_ids, league_name)
+
         formatted_players = []
         for member in team_members:
             try:
                 if is_default_league:
-                    # Get user stats to determine points for level emoji
-                    stats_result = await Stats.get_user_stats(member.id, league_name)
+                    # Use batch stats result
+                    stats_result = stats_batch.get(member.id)
                     if stats_result and stats_result.get("success"):
                         stats_data = stats_result.get("stats", {})
                         points = stats_data.get("points", 0)
@@ -1085,6 +1140,17 @@ class Matchmaking(commands.Cog):
         lobby["team1"] = [team1_captain]
         lobby["team2"] = [team2_captain]
         lobby["available_players"] = [p for p in players if p not in captains]
+
+        # Sync teams to Redis
+        try:
+            category_id = lobby["category"].id
+            await LobbyRedis.add_to_team(category_id, 1, team1_captain.id)
+            await LobbyRedis.add_to_team(category_id, 2, team2_captain.id)
+            await LobbyRedis.set_available_players(category_id, [p.id for p in lobby["available_players"]])
+            await LobbyRedis.set_info(category_id, phase=2, next_pick=lobby.get("next_pick", {}).id if lobby.get("next_pick") else "")
+            logger.info(f"🔴 Synced captain selection to Redis for lobby #{lobby.get('lobby_number', 'unknown')}")
+        except Exception as e:
+            logger.warning(f"🔴 Failed to sync captain selection to Redis: {e}")
 
         # Auto-assign party members to their leader's teams
         await self.assign_party_members_to_teams(lobby, party_info, party_groups)
@@ -1157,6 +1223,20 @@ class Matchmaking(commands.Cog):
         lobby["veto_turn"] = lobby["team1"][0]  # Team1 starts
         lobby["remaining_maps"] = [map_info["name"] for map_info in Config.MAP_POOL]
         lobby["last_ban"] = None  # Track previous ban
+        
+        # Sync veto phase to Redis
+        try:
+            category_id = lobby["category"].id
+            await LobbyRedis.set_info(
+                category_id, 
+                phase=3, 
+                veto_turn=lobby["veto_turn"].id,
+                remaining_maps=json.dumps(lobby["remaining_maps"])
+            )
+            logger.info(f"🔴 Synced map veto phase to Redis for lobby #{lobby.get('lobby_number', 'unknown')}")
+        except Exception as e:
+            logger.warning(f"🔴 Failed to sync map veto to Redis: {e}")
+        
         text = lobby["text"]
         # --- New Map Veto UI ---
 
@@ -1466,6 +1546,25 @@ class Matchmaking(commands.Cog):
         # Stop any active view to prevent timeout issues
         self.stop_current_view(lobby)
         
+        # Reset Redis state
+        try:
+            category_id = lobby["category"].id
+            await LobbyRedis.clear_teams(category_id)
+            if keep_voice_members:
+                # Keep current players in Redis
+                voice_member_ids = [m.id for m in lobby["voice"].members]
+                for member_id in voice_member_ids:
+                    await LobbyRedis.add_player(category_id, member_id)
+            else:
+                # Clear all players from Redis
+                await LobbyRedis.delete_lobby(category_id)
+                await LobbyRedis.create_lobby(category_id, ttl_hours=24)
+            
+            await LobbyRedis.set_info(category_id, phase=1)
+            logger.info(f"🔴 Reset Redis state for lobby #{lobby.get('lobby_number', 'X')}")
+        except Exception as e:
+            logger.warning(f"🔴 Failed to reset Redis state for lobby: {e}")
+        
         # Check if we're resetting from map veto phase and need to clean up veto message
         was_in_veto_phase = lobby["phase"] == 3
         veto_message_to_delete = lobby.get("veto_message") if was_in_veto_phase else None
@@ -1665,7 +1764,19 @@ class Matchmaking(commands.Cog):
             # Get player objects (only for players currently in voice)
             current_players = (
                 set(voice_channel.members) if voice_channel else set()
-            )  # Restore lobby data
+            )
+            
+            # Try to restore advanced state from Redis
+            category_id = int(state["category_id"])
+            redis_data = None
+            try:
+                redis_data = await LobbyRedis.get_all_lobby_data(category_id)
+                if redis_data and redis_data.get("info"):
+                    logger.info(f"🔴 Found Redis backup data for lobby {category_id}")
+            except Exception as e:
+                logger.warning(f"🔴 Could not retrieve Redis backup for lobby {category_id}: {e}")
+            
+            # Restore lobby data
             restored_lobby = {
                 "category": category,
                 "voice": voice_channel,
@@ -1687,6 +1798,15 @@ class Matchmaking(commands.Cog):
                 ),
                 "league_table": state.get("league"),  # Restore league table name
             }
+            
+            # Recreate Redis structure and sync current voice members
+            try:
+                await LobbyRedis.create_lobby(category_id, ttl_hours=24)
+                for member in current_players:
+                    await LobbyRedis.add_player(category_id, member.id)
+                logger.info(f"🔴 Recreated Redis structure for restored lobby {category_id}")
+            except Exception as e:
+                logger.warning(f"🔴 Failed to recreate Redis structure for lobby {category_id}: {e}")
 
             # Clean up team voice channels if they exist
             if state.get("ct_voice_id"):
@@ -2067,9 +2187,16 @@ class Matchmaking(commands.Cog):
             logger.error(f"🟣 Failed to cleanup orphaned team channels: {e}")
 
     async def get_default_league_from_config(self, max_retries=3):
-        """Get the default league from the config table with retry logic"""
+        """Get the default league from the config table with caching and retry logic"""
+        import time
+        
+        # Check cache first
+        current_time = time.time()
+        if (self._default_league_cache is not None and 
+            current_time - self._default_league_cache_time < self._default_league_cache_ttl):
+            return self._default_league_cache
+        
         import asyncio
-
         loop = asyncio.get_running_loop()
 
         def db_get():
@@ -2093,7 +2220,14 @@ class Matchmaking(commands.Cog):
                         return None
             return None
 
-        return await loop.run_in_executor(None, db_get)
+        result = await loop.run_in_executor(None, db_get)
+        
+        # Update cache
+        if result is not None:
+            self._default_league_cache = result
+            self._default_league_cache_time = current_time
+            
+        return result
 
     async def create_draft_options_with_stats(
         self, available_players, league_name=None
@@ -2114,10 +2248,14 @@ class Matchmaking(commands.Cog):
                 if league_data:
                     league_emoji = league_data.get("league_emoji")
 
+        # Batch fetch stats for all available players
+        player_ids = [member.id for member in available_players]
+        stats_batch = await Stats.get_multiple_user_stats(player_ids, league_name)
+
         for member in available_players:
             try:
-                # Get user stats from the specific league table
-                stats_result = await Stats.get_user_stats(member.id, league_name)
+                # Use batch stats result
+                stats_result = stats_batch.get(member.id)
                 if stats_result and stats_result.get("success"):
                     stats_data = stats_result.get("stats", {})
                     points = stats_data.get("points", 0)
@@ -2764,8 +2902,12 @@ class Matchmaking(commands.Cog):
         party_leaders = []
         party_groups = {}
 
+        # Batch fetch party information for all players
+        player_ids = [player.id for player in players]
+        parties_batch = await Party.find_users_parties_batch(player_ids)
+
         for player in players:
-            party = await Party.find_user_party(str(player.id))
+            party = parties_batch.get(player.id)
             if party:
                 party_id = party["party_id"]
                 leader_id = party["leader_id"]
@@ -3018,17 +3160,32 @@ class Matchmaking(commands.Cog):
             was_imbalanced = team1_size_before != team2_size_before
 
             # Add all picked players to the correct team
+            category_id = lobby["category"].id
             for picked_member in picked_members:
                 if current_captain == lobby["team1"][0]:
                     lobby["team1"].append(picked_member)
+                    # Sync to Redis
+                    try:
+                        await LobbyRedis.add_to_team(category_id, 1, picked_member.id)
+                    except Exception as e:
+                        logger.warning(f"🔴 Failed to add player {picked_member.id} to team1 in Redis: {e}")
                 else:
                     lobby["team2"].append(picked_member)
+                    # Sync to Redis
+                    try:
+                        await LobbyRedis.add_to_team(category_id, 2, picked_member.id)
+                    except Exception as e:
+                        logger.warning(f"🔴 Failed to add player {picked_member.id} to team2 in Redis: {e}")
                 
                 # Safe removal with error handling
                 try:
                     lobby["available_players"].remove(picked_member)
+                    # Remove from Redis available list
+                    await LobbyRedis.remove_from_available(category_id, picked_member.id)
                 except ValueError:
                     logger.warning(f"🟣 Player {picked_member} was not in available_players list")
+                except Exception as e:
+                    logger.warning(f"🔴 Failed to remove player {picked_member.id} from Redis available: {e}")
 
             # Check if teams are now balanced after the pick
             team1_size_after = len(lobby["team1"])
