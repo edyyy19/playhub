@@ -606,7 +606,6 @@ class Leaderboard(commands.Cog):
             # Create simple embed to accompany the image
             embed = discord.Embed(
                 title=f"{Config.ICONS['league']} {display_name} Leaderboard",
-                description="Top players ranked by points",
                 color=EMBED_COLOR,
             )
             embed.set_image(url="attachment://leaderboard.png")

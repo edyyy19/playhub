@@ -3,11 +3,16 @@ from discord.ext import commands
 from config import Config
 import logging
 import asyncio
+from api.server import FastAPIServer
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+
+# Suppress INFO logs from httpx (Supabase HTTP requests)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 intents = discord.Intents.default()
@@ -16,6 +21,9 @@ intents.message_content = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Initialize FastAPI server
+fastapi_server = FastAPIServer(bot, host="0.0.0.0", port=8000)
 
 
 @bot.event
@@ -26,11 +34,15 @@ async def on_ready():
     # Add persistent view
     from cogs.registration import RegisterView
     from models.timeout import timeout_manager
+    from models.scoreboard_config import ScoreboardConfigManager
 
     bot.add_view(RegisterView())
 
     # Initialize timeout manager
     await timeout_manager.load_active_timeouts()
+
+    # Initialize scoreboard config manager
+    await ScoreboardConfigManager.initialize()
 
     # Load cogs and sync commands with retry logic
     max_retries = 3
@@ -41,6 +53,7 @@ async def on_ready():
             await bot.load_extension("cogs.leaderboard")
             await bot.load_extension("cogs.profile")
             await bot.load_extension("cogs.scoreboard")
+            await bot.load_extension("cogs.manual_scoreboard")
             await bot.load_extension("cogs.levels")
             await bot.load_extension("cogs.seasons")
             await bot.load_extension("cogs.parties")
@@ -73,4 +86,30 @@ async def sync(ctx):
 
 
 if __name__ == "__main__":
-    bot.run(Config.TOKEN)
+    # Create event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    async def main():
+        """Run both Discord bot and FastAPI server concurrently"""
+        try:
+            # Start FastAPI server in background
+            fastapi_task = loop.create_task(fastapi_server.start())
+
+            # Start Discord bot
+            async with bot:
+                await bot.start(Config.TOKEN)
+
+        except KeyboardInterrupt:
+            logger.info("🟢 Shutting down...")
+        finally:
+            # Cleanup
+            await fastapi_server.stop()
+            await bot.close()
+
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        logger.info("🟢 Bot stopped by user")
+    finally:
+        loop.close()

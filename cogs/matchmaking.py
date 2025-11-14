@@ -1344,7 +1344,8 @@ class Matchmaking(commands.Cog):
             team1_captain=lobby["team1"][0],
             team2_captain=lobby["team2"][0],
             map_name=final_map,
-            output_path=image_path
+            output_path=image_path,
+            server="Not needed"
         )
         
         if not success:

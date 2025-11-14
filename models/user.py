@@ -9,6 +9,47 @@ logger = logging.getLogger(__name__)
 class User:
     TABLE = "users"
 
+    @staticmethod
+    def format_registration_date(registered_at: str) -> str:
+        """
+        Format registration date from ISO format to DD/MM/YYYY format
+        Args:
+            registered_at: ISO format date string (e.g., '2025-01-19T10:30:00.000Z')
+        Returns:
+            Formatted date string (e.g., '19/01/2025')
+        """
+        try:
+            if not registered_at:
+                return "Unknown"
+            
+            # Parse ISO format datetime
+            # Handle both with and without microseconds and timezone
+            if registered_at.endswith('Z'):
+                registered_at = registered_at[:-1] + '+00:00'
+            
+            # Try parsing with different formats
+            try:
+                dt = datetime.fromisoformat(registered_at)
+            except ValueError:
+                # Fallback: try parsing just the date part
+                date_part = registered_at[:10]  # Take YYYY-MM-DD part
+                dt = datetime.strptime(date_part, "%Y-%m-%d")
+            
+            return dt.strftime("%d/%m/%Y")
+            
+        except Exception as e:
+            logger.error(f"Error formatting registration date '{registered_at}': {e}")
+            return "Unknown"
+
+    @staticmethod
+    def format_current_datetime() -> str:
+        """
+        Format current datetime to HH:MM | DD/MM/YYYY format
+        Returns:
+            Formatted datetime string (e.g., '14:30 | 19/01/2025')
+        """
+        return datetime.now().strftime("%H:%M | %d/%m/%Y")
+
     @classmethod
     async def register(cls, discord_id: int, nickname: str, so2_id: str):
         loop = asyncio.get_running_loop()

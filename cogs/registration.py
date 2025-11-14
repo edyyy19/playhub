@@ -6,6 +6,7 @@ from models.stats import Stats
 from config import Config
 import logging
 import asyncio
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,9 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
+            # Defer the response to prevent timeout during database operations
+            await interaction.response.defer(ephemeral=True)
+            
             existing_user = await User.find(interaction.user.id)
             if existing_user:
                 embed = discord.Embed(
@@ -42,7 +46,7 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                     value="If you don't have the Registered role or your nickname isn't set, try leaving and rejoining the server. If the issue persists, contact an administrator.",
                     inline=False,
                 )
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     embed=embed, ephemeral=True
                 )
 
@@ -53,7 +57,7 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                     description="Standoff 2 Player ID must contain only numbers.",
                     color=Config.EMBED_COLORS["red"],
                 )
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     embed=embed, ephemeral=True
                 )
             # Check for duplicates
@@ -89,7 +93,7 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                         description=f"The Player ID '{self.so2_id.value}' is already being used by another player.",
                         color=Config.EMBED_COLORS["red"],
                     )
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     embed=embed, ephemeral=True
                 )
 
@@ -124,7 +128,7 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                             embed.set_footer(
                                 text="Please contact an administrator for assistance."
                             )
-                            return await interaction.response.send_message(
+                            return await interaction.followup.send(
                                 embed=embed, ephemeral=True
                             )
                     else:
@@ -142,7 +146,7 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                         embed.set_footer(
                             text="Please contact an administrator for assistance."
                         )
-                        return await interaction.response.send_message(
+                        return await interaction.followup.send(
                             embed=embed, ephemeral=True
                         )
                 else:
@@ -153,7 +157,7 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                         color=Config.EMBED_COLORS["red"],
                     )
                     embed.set_footer(text="Please contact an administrator.")
-                    return await interaction.response.send_message(
+                    return await interaction.followup.send(
                         embed=embed, ephemeral=True
                     )
 
@@ -167,7 +171,7 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                     color=Config.EMBED_COLORS["red"],
                 )
                 embed.set_footer(text="Please contact an administrator.")
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     embed=embed, ephemeral=True
                 )
 
@@ -175,37 +179,13 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                 interaction.user.id, self.nickname.value, self.so2_id.value
             )
 
-            # Get or create the Registered role with error handling
-            role = discord.utils.get(
-                interaction.guild.roles, name=Config.REGISTERED_ROLE
-            )
-            if not role:
-                try:
-                    role = await interaction.guild.create_role(
-                        name=Config.REGISTERED_ROLE,
-                        color=EMBED_COLOR,
-                        reason="Auto-created for registered players",
-                    )
-                    logger.info(f"🟡 Created Registered role: {role.name}")
-                except discord.Forbidden:
-                    logger.error("🟡 No permission to create Registered role")
-                    raise Exception("Bot lacks permission to create roles")
-                except Exception as e:
-                    logger.error(f"🟡 Failed to create Registered role: {e}")
-                    raise Exception(f"Role creation failed: {e}")
+            # Get or create the Registered role using helper function
+            role = await Registration.get_or_create_registered_role_static(interaction.guild)
 
-            # Add Registered role with error handling
-            registered_role_assigned = False
-            try:
-                await interaction.user.add_roles(role, reason="User registration")
-                registered_role_assigned = True
-                logger.info(f"🟡 Assigned Registered role to {interaction.user}")
-            except discord.Forbidden:
-                logger.error(f"🟡 No permission to assign Registered role to {interaction.user.id}")
-                registered_role_assigned = False
-            except Exception as e:
-                logger.error(f"🟡 Error assigning Registered role to {interaction.user.id}: {e}")
-                registered_role_assigned = False
+            # Add Registered role using helper function
+            registered_role_assigned = await Registration.assign_role_safely_static(
+                interaction.user, role, "User registration"
+            )
 
             # Assign Level 1 role to new users (they start with 200 points = Level 1)
             level_role_assigned = False
@@ -249,22 +229,15 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                         if league_result:
                             league_added = True
 
-                            # Try to assign the league role with error handling
+                            # Try to assign the league role using helper function
                             league_role = discord.utils.get(
                                 interaction.guild.roles, name=default_league_display
                             )
 
                             if league_role:
-                                try:
-                                    await interaction.user.add_roles(league_role, reason="Default league assignment")
-                                    league_role_assigned = True
-                                    logger.info(f"🟡 Assigned league role '{default_league_display}' to {interaction.user}")
-                                except discord.Forbidden:
-                                    logger.error(f"🟡 No permission to assign league role to {interaction.user.id}")
-                                    league_role_assigned = False
-                                except Exception as e:
-                                    logger.error(f"🟡 Error assigning league role to {interaction.user.id}: {e}")
-                                    league_role_assigned = False
+                                league_role_assigned = await Registration.assign_role_safely_static(
+                                    interaction.user, league_role, "Default league assignment"
+                                )
                             else:
                                 logger.warning(
                                     f"🟡 League role '{default_league_display}' not found for user {interaction.user.id}"
@@ -332,7 +305,7 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
             embed.set_thumbnail(url=interaction.user.display_avatar.url)
             embed.set_footer(text=f"Welcome to {Config.APP_NAME} competitive!")
 
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f"🟡 Registration error: {e}")
@@ -342,11 +315,8 @@ class RegisterModal(discord.ui.Modal, title=f"{Config.APP_NAME} Registration"):
                 color=Config.EMBED_COLORS["red"],
             )
             
-            # Check if interaction has already been responded to
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+            # Since we deferred the response, always use followup
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class RegisterView(discord.ui.View):
@@ -368,6 +338,53 @@ class Registration(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.bot.add_view(RegisterView())
+        
+        # CACHE SYSTEM pentru optimizare
+        self._config_cache = None
+        self._config_cache_time = 0
+        self._config_cache_ttl = 300  # 5 minute TTL
+        
+        self._leagues_cache = None
+        self._leagues_cache_time = 0
+        self._leagues_cache_ttl = 300  # 5 minute TTL
+
+    @staticmethod
+    async def get_or_create_registered_role_static(guild: discord.Guild) -> discord.Role:
+        """Static helper function for getting/creating registered role - accessible from RegisterModal"""
+        role = discord.utils.get(guild.roles, name=Config.REGISTERED_ROLE)
+        if not role:
+            try:
+                role = await guild.create_role(
+                    name=Config.REGISTERED_ROLE,
+                    color=EMBED_COLOR,
+                    hoist=True,
+                    mentionable=True,
+                    reason="Auto-created for registered players",
+                )
+                logger.info(f"🟡 Created Registered role in {guild.name}")
+            except discord.Forbidden:
+                logger.error(f"🟡 No permission to create Registered role in {guild.name}")
+                raise Exception("Bot lacks permission to create roles")
+            except Exception as e:
+                logger.error(f"🟡 Failed to create Registered role in {guild.name}: {e}")
+                raise Exception(f"Role creation failed: {e}")
+        return role
+
+    @staticmethod
+    async def assign_role_safely_static(member: discord.Member, role: discord.Role, reason: str) -> bool:
+        """Static helper function for safely assigning roles - accessible from RegisterModal"""
+        if role not in member.roles:
+            try:
+                await member.add_roles(role, reason=reason)
+                logger.info(f"🟡 Assigned role '{role.name}' to {member}")
+                return True
+            except discord.Forbidden:
+                logger.error(f"🟡 No permission to assign role '{role.name}' to {member}")
+                return False
+            except Exception as e:
+                logger.error(f"🟡 Failed to assign role '{role.name}' to {member}: {e}")
+                return False
+        return True  # Already has role
 
     async def league_name_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -382,7 +399,15 @@ class Registration(commands.Cog):
         return []
 
     async def get_config(self):
-        """Get current config from database"""
+        """Get current config from database with caching"""
+        current_time = time.time()
+        
+        # Check if cache is still valid
+        if (self._config_cache and 
+            current_time - self._config_cache_time < self._config_cache_ttl):
+            return self._config_cache
+        
+        # Cache miss or expired, fetch from database
         loop = asyncio.get_running_loop()
 
         def db_select():
@@ -393,7 +418,58 @@ class Registration(commands.Cog):
                 logger.error(f"🟡 Failed to get config: {e}")
                 return None
 
-        return await loop.run_in_executor(None, db_select)
+        result = await loop.run_in_executor(None, db_select)
+        
+        # Update cache
+        if result:
+            self._config_cache = result
+            self._config_cache_time = current_time
+            logger.debug("🟡 Config cache updated")
+        
+        return result
+
+    async def get_leagues_cached(self):
+        """Get all leagues with caching"""
+        current_time = time.time()
+        
+        # Check if cache is still valid
+        if (self._leagues_cache and 
+            current_time - self._leagues_cache_time < self._leagues_cache_ttl):
+            return self._leagues_cache
+        
+        # Cache miss or expired, fetch from database
+        loop = asyncio.get_running_loop()
+
+        def get_all_leagues():
+            try:
+                response = (
+                    Config.supabase()
+                    .table("leagues")
+                    .select("league_name, original_league_name")
+                    .execute()
+                )
+                return response.data
+            except Exception as e:
+                logger.error(f"Failed to fetch leagues: {e}")
+                return []
+
+        result = await loop.run_in_executor(None, get_all_leagues)
+        
+        # Update cache
+        if result:
+            self._leagues_cache = result
+            self._leagues_cache_time = current_time
+            logger.debug("Leagues cache updated")
+        
+        return result
+
+    async def invalidate_cache(self):
+        """Invalidate all caches (useful after config/league changes)"""
+        self._config_cache = None
+        self._config_cache_time = 0
+        self._leagues_cache = None
+        self._leagues_cache_time = 0
+        logger.info("🟡 Registration caches invalidated")
 
     async def update_config(self, default_league: str, default_league_display: str):
         """Update or insert config with default league settings"""
@@ -427,7 +503,13 @@ class Registration(commands.Cog):
                 logger.error(f"🟡 Failed to update config: {e}")
                 return None
 
-        return await loop.run_in_executor(None, db_upsert)
+        result = await loop.run_in_executor(None, db_upsert)
+        
+        # 🚀 OPTIMIZARE: Invalidează cache după update
+        if result:
+            await self.invalidate_cache()
+        
+        return result
 
     async def add_user_to_league(self, discord_id: int, league_table: str):
         """Add a user to a specific league table using the Stats model"""
@@ -453,6 +535,8 @@ class Registration(commands.Cog):
         if not await Config.check_authorization(interaction):
             return
             
+        await interaction.response.defer(ephemeral=True)
+            
         try:
             # Get the leagues cog to use its utilities
             leagues_cog = self.bot.get_cog("Leagues")
@@ -462,7 +546,7 @@ class Registration(commands.Cog):
                     description="Leagues system is not available. Please ensure the leagues cog is loaded.",
                     color=Config.EMBED_COLORS["red"],
                 )
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     embed=embed, ephemeral=True
                 )
             # Validate that the selected league exists using leagues cog
@@ -474,7 +558,7 @@ class Registration(commands.Cog):
                     description=f"The league '{default_league}' does not exist. Please create it first using the leagues commands.",
                     color=Config.EMBED_COLORS["red"],
                 )
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     embed=embed, ephemeral=True
                 )
 
@@ -486,7 +570,7 @@ class Registration(commands.Cog):
                     description="Failed to retrieve league information.",
                     color=Config.EMBED_COLORS["red"],
                 )
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     embed=embed, ephemeral=True
                 )
 
@@ -506,32 +590,30 @@ class Registration(commands.Cog):
                     description="Failed to save the default league configuration.",
                     color=Config.EMBED_COLORS["red"],
                 )
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     embed=embed, ephemeral=True
                 )
-            # Create or get the "Registered" role with proper permissions
-            registered_role = discord.utils.get(
-                interaction.guild.roles, name=Config.REGISTERED_ROLE
-            )
-
-            if not registered_role:
-                # Create the role with display role and mention permissions
-                registered_role = await interaction.guild.create_role(
-                    name=Config.REGISTERED_ROLE,
-                    color=EMBED_COLOR,
-                    hoist=True,  # Display role separately in member list
-                    mentionable=True,  # Allow mention
-                    reason="Auto-created for registered players during setup",
+            # Create or get the "Registered" role using helper function
+            try:
+                registered_role = await self.get_or_create_registered_role_static(interaction.guild)
+            except Exception as e:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['unsuccess']} Role Creation Failed",
+                    description=f"Failed to create or get Registered role: {e}",
+                    color=Config.EMBED_COLORS["red"],
                 )
-                logger.info(f"🟡 Created 'Registered' role with ID: {registered_role.id}")
-            else:
-                # Update existing role to ensure it has the correct permissions
+                return await interaction.followup.send(embed=embed, ephemeral=True)
+            
+            # Update existing role to ensure it has the correct permissions
+            try:
                 await registered_role.edit(
                     hoist=True,  # Display role separately in member list
                     mentionable=True,  # Allow mention
                     reason="Updated role permissions during setup",
                 )
-                logger.info(f"🟡 Updated existing 'Registered' role permissions")
+                logger.info(f"🟡 Updated 'Registered' role permissions")
+            except Exception as e:
+                logger.warning(f"🟡 Failed to update role permissions: {e}")
 
             channel = discord.utils.get(
                 interaction.guild.text_channels, name=Config.REGISTRATION_CHANNEL
@@ -618,31 +700,13 @@ class Registration(commands.Cog):
                 text="New registrations will be added to the configured default league"
             )
 
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f"🟡 Setup error: {e}")
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"{Config.ICONS['unsuccess']} Setup failed: {e}", ephemeral=True
             )
-
-    @commands.command(name="checkperms")
-    @commands.has_permissions(administrator=True)
-    async def check_perms(self, ctx):
-        """Check if bot has nickname permissions"""
-        perms = ctx.guild.me.guild_permissions
-        role_pos = ctx.guild.me.top_role.position
-        target_pos = ctx.author.top_role.position
-
-        embed = discord.Embed(title="Permission Check", color=EMBED_COLOR)
-        embed.add_field(
-            name="Nickname Permissions",
-            value=f"• `Manage Nicknames`: {perms.manage_nicknames}\n"
-            f"• `Bot Role Position`: {role_pos}\n"
-            f"• `Your Role Position`: {target_pos}",
-            inline=False,
-        )
-        await ctx.send(embed=embed)
 
     @app_commands.command(
         name="restore_user",
@@ -713,22 +777,30 @@ class Registration(commands.Cog):
     )
     @app_commands.default_permissions(administrator=True)
     async def restore_all_users(self, interaction: discord.Interaction):
-        """Restore registration data for all registered users in the server"""
+        """OPTIMIZED: Restore registration data for all registered users in the server using batch operations"""
         await interaction.response.defer(ephemeral=True)
 
         try:
-            # Get all members in the guild
-            all_members = interaction.guild.members
+            # Get all non-bot members in the guild
+            all_members = [member for member in interaction.guild.members if not member.bot]
+            
+            if not all_members:
+                embed = discord.Embed(
+                    title=f"{Config.ICONS['info']} No Members Found",
+                    description="No non-bot members found in this server.",
+                    color=Config.EMBED_COLORS["yellow"],
+                )
+                return await interaction.followup.send(embed=embed)
+
+            # BATCH OPTIMIZATION: Fetch ALL user data in one query
+            all_member_ids = [member.id for member in all_members]
+            users_batch = await User.find_multiple(all_member_ids)
+            logger.info(f"🟡 Fetched user data in batch for {len(all_member_ids)} members")
+
+            # Filter to only registered members using batch result
             registered_members = []
-            restored_count = 0
-            failed_count = 0
-
-            # Find all registered members
             for member in all_members:
-                if member.bot:  # Skip bots
-                    continue
-
-                user_data = await User.find(member.id)
+                user_data = users_batch.get(member.id)
                 if user_data:
                     registered_members.append((member, user_data))
 
@@ -740,35 +812,30 @@ class Registration(commands.Cog):
                 )
                 return await interaction.followup.send(embed=embed)
 
-            # Send initial progress message
-            progress_embed = discord.Embed(
-                title=f"{Config.ICONS['updating']} Restoring All Users",
-                description=f"Found {len(registered_members)} registered users. Starting restoration...",
-                color=Config.EMBED_COLORS["yellow"],
-            )
-            progress_message = await interaction.followup.send(embed=progress_embed)
-
-            # Process each registered member
-            for i, (member, user_data) in enumerate(registered_members):
-                try:
-                    # Update progress every 5 users
-                    if i % 5 == 0:
-                        progress_embed.description = f"Processing user {i + 1}/{len(registered_members)}: {member.display_name}..."
-                        await progress_message.edit(embed=progress_embed)
-
-                    # Use the same logic as restore_user but without the interaction responses
-                    success = await self._restore_user_logic(member, user_data)
-
+            # BATCH OPTIMIZATION: Get leagues data once with cache
+            leagues = await self.get_leagues_cached()
+            
+            # Process in chunks to avoid overwhelming Discord API
+            restored_count = 0
+            failed_count = 0
+            chunk_size = 20  # Process 20 users at a time
+            
+            for chunk_start in range(0, len(registered_members), chunk_size):
+                chunk_end = min(chunk_start + chunk_size, len(registered_members))
+                chunk = registered_members[chunk_start:chunk_end]
+                
+                # Process chunk with batch league lookup
+                chunk_results = await self._restore_users_chunk_optimized(chunk, leagues)
+                
+                for success in chunk_results:
                     if success:
                         restored_count += 1
                     else:
                         failed_count += 1
-
-                except Exception as e:
-                    logger.error(
-                        f"🟡 Error restoring user {member} (ID: {member.id}): {e}"
-                    )
-                    failed_count += 1
+                
+                # Small delay to prevent rate limiting
+                if chunk_end < len(registered_members):
+                    await asyncio.sleep(0.5)
 
             # Send final results
             embed = discord.Embed(
@@ -782,6 +849,12 @@ class Registration(commands.Cog):
                 f"{Config.ICONS['unsuccess']} Failed to restore: {failed_count}",
                 inline=False,
             )
+            
+            embed.add_field(
+                name="Performance",
+                value=f"Used batch optimization\nProcessed {len(all_member_ids)} members with 1 batch query",
+                inline=False,
+            )
 
             if failed_count > 0:
                 embed.add_field(
@@ -790,7 +863,7 @@ class Registration(commands.Cog):
                     inline=False,
                 )
 
-            await progress_message.edit(embed=embed)
+            await interaction.followup.send(embed=embed)
 
         except Exception as e:
             logger.error(f"🟡 Error in restore_all_users command: {e}")
@@ -801,186 +874,19 @@ class Registration(commands.Cog):
             )
             await interaction.followup.send(embed=embed)
 
-    async def _restore_user_logic(
-        self, member: discord.Member, user_data: dict
-    ) -> bool:
+    async def _restore_user_logic(self, member: discord.Member, user_data: dict) -> bool:
         """
-        Core restoration logic extracted from restore_user for reuse.
-        Returns True if successful, False if failed.
+        Core restoration logic - wrapper for optimized version that fetches league data
         """
         try:
-            # Get or create the registered role
-            role = discord.utils.get(member.guild.roles, name=Config.REGISTERED_ROLE)
-            if not role:
-                try:
-                    role = await member.guild.create_role(
-                        name=Config.REGISTERED_ROLE,
-                        color=EMBED_COLOR,
-                        hoist=True,
-                        mentionable=True,
-                        reason="Auto-created for registered players",
-                    )
-                except discord.Forbidden:
-                    logger.error(f"🟡 No permission to create Registered role during restore for {member}")
-                    return False
-                except Exception as e:
-                    logger.error(f"🟡 Failed to create Registered role during restore: {e}")
-                    return False
-
-            # Add the registered role if they don't have it
-            if role not in member.roles:
-                try:
-                    await member.add_roles(
-                        role, reason="Bulk restoration by admin"
-                    )
-                except discord.Forbidden:
-                    logger.error(f"🟡 No permission to assign Registered role to {member} during restore")
-                    return False
-                except Exception as e:
-                    logger.error(f"🟡 Error assigning Registered role to {member} during restore: {e}")
-                    return False
-                
-            # Assign the appropriate level role based on default starting points
-            # Note: User stats are now tracked in league tables, not the users table
-            try:
-                # Fix: Use correct cog name "LevelsCog" instead of "Levels"
-                levels_cog = self.bot.get_cog("LevelsCog")
-                if levels_cog:
-                    # Use default starting points since stats are now in league tables
-                    default_points = 200
-                    await levels_cog.update_player_roles(
-                        member.guild, member.id, default_points
-                    )
-                else:
-                    logger.warning("🟡 LevelsCog not found during bulk restore")
-            except Exception as e:
-                logger.error(
-                    f"🟡 Error assigning level role during bulk restore for {member}: {e}"
-                )
-
-            # League restoration logic (similar to restore_user)
-            leagues_cog = self.bot.get_cog("Leagues")
-            if leagues_cog:
-                try:
-                    # Get all existing leagues
-                    loop = asyncio.get_running_loop()
-
-                    def get_all_leagues():
-                        try:
-                            response = (
-                                Config.supabase()
-                                .table("leagues")
-                                .select("league_name, original_league_name")
-                                .execute()
-                            )
-                            return response.data
-                        except Exception as e:
-                            logger.error(f"🟡 Failed to fetch leagues: {e}")
-                            return []
-
-                    leagues = await loop.run_in_executor(None, get_all_leagues)
-                    user_leagues = []
-
-                    # Check which leagues the user is in
-                    for league in leagues:
-                        league_table = league["league_name"]
-
-                        def check_league_membership():
-                            try:
-                                response = (
-                                    Config.supabase()
-                                    .table(league_table)
-                                    .select("*")
-                                    .eq("discord_id", str(member.id))
-                                    .execute()
-                                )
-                                return response.data[0] if response.data else None
-                            except Exception as e:
-                                logger.error(
-                                    f"🟡 Failed to check league {league_table}: {e}"
-                                )
-                                return None
-
-                        league_data = await loop.run_in_executor(
-                            None, check_league_membership
-                        )
-                        if league_data:
-                            user_leagues.append(
-                                {
-                                    "table": league_table,
-                                    "original_name": league.get(
-                                        "original_league_name",
-                                        league_table.replace("_", " ").title(),
-                                    ),
-                                    "data": league_data,
-                                }
-                            )
-
-                    # Restore league roles with error handling
-                    for league_info in user_leagues:
-                        original_name = league_info["original_name"]
-                        league_role = discord.utils.get(
-                            member.guild.roles, name=original_name
-                        )
-
-                        if league_role and league_role not in member.roles:
-                            try:
-                                await member.add_roles(
-                                    league_role, reason="Bulk restoration by admin"
-                                )
-                                logger.info(f"🟡 Assigned league role '{original_name}' to {member} during restore")
-                            except discord.Forbidden:
-                                logger.error(f"🟡 No permission to assign league role '{original_name}' to {member}")
-                            except Exception as e:
-                                logger.error(f"🟡 Error assigning league role '{original_name}' to {member}: {e}")
-
-                    # Handle default league assignment (same logic as restore_user)
-                    config = await self.get_config()
-                    if config and config.get("default_league"):
-                        default_league = config["default_league"]
-                        default_league_display = config["default_league_display"]
-
-                        user_in_default = any(
-                            league["table"] == default_league for league in user_leagues
-                        )
-
-                        if not user_in_default:
-                            # Add to default league
-                            league_result = await self.add_user_to_league(
-                                member.id, default_league
-                            )
-
-                            if league_result:
-                                # Assign default league role with error handling
-                                league_role = discord.utils.get(
-                                    member.guild.roles, name=default_league_display
-                                )
-                                if league_role and league_role not in member.roles:
-                                    try:
-                                        await member.add_roles(
-                                            league_role,
-                                            reason="Added to default league during bulk restore",
-                                        )
-                                        logger.info(f"🟡 Assigned default league role '{default_league_display}' to {member}")
-                                    except discord.Forbidden:
-                                        logger.error(f"🟡 No permission to assign default league role to {member}")
-                                    except Exception as e:
-                                        logger.error(f"🟡 Error assigning default league role to {member}: {e}")
-
-                except Exception as e:
-                    logger.error(f"🟡 Error with league restoration for {member}: {e}")
-
-            # Update their nickname if it doesn't match
-            if member.nick != user_data["nickname"]:
-                try:
-                    await member.edit(
-                        nick=user_data["nickname"], reason="Bulk restoration by admin"
-                    )
-                except (discord.Forbidden, discord.HTTPException):
-                    pass  # Ignore permission errors for nickname updates
-
-            return True
-
+            # Get user's league data for optimized restoration
+            leagues_data = await self.get_leagues_cached()
+            user_leagues = await self._get_user_leagues_batch([member.id], leagues_data)
+            
+            # Use optimized version with fetched league data
+            return await self._restore_user_logic_optimized(
+                member, user_data, user_leagues.get(member.id, [])
+            )
         except Exception as e:
             logger.error(f"🟡 Error in _restore_user_logic for {member}: {e}")
             return False
@@ -1037,6 +943,146 @@ class Registration(commands.Cog):
 
         except Exception as e:
             logger.error(f"🟡 Error in on_member_join for {member}: {e}")
+
+    async def _restore_users_chunk_optimized(self, chunk_members, leagues_data):
+        """OPTIMIZED: Process a chunk of users with batch league lookups"""
+        results = []
+        
+        # Get all member IDs for batch league lookup
+        member_ids = [member.id for member, _ in chunk_members]
+        
+        # BATCH LEAGUE LOOKUP: Check all users' leagues in batch
+        user_leagues_batch = await self._get_user_leagues_batch(member_ids, leagues_data)
+        
+        # Process each member in the chunk
+        for member, user_data in chunk_members:
+            try:
+                # Use optimized restoration with batch league data
+                success = await self._restore_user_logic_optimized(
+                    member, user_data, user_leagues_batch.get(member.id, [])
+                )
+                results.append(success)
+                
+            except Exception as e:
+                logger.error(f"🟡 Error restoring user {member} (ID: {member.id}): {e}")
+                results.append(False)
+        
+        return results
+
+    async def _get_user_leagues_batch(self, user_ids, leagues_data):
+        """BATCH OPTIMIZATION: Get league memberships for multiple users"""
+        user_leagues = {}
+        
+        # Initialize empty lists for all users
+        for user_id in user_ids:
+            user_leagues[user_id] = []
+        
+        # Check each league table for all users in batch
+        for league in leagues_data:
+            league_table = league["league_name"]
+            original_name = league.get("original_league_name", league_table.replace("_", " ").title())
+            
+            try:
+                loop = asyncio.get_running_loop()
+                
+                def batch_league_check():
+                    try:
+                        # Query all users at once with IN clause - include points
+                        user_ids_str = [str(uid) for uid in user_ids]
+                        response = (
+                            Config.supabase()
+                            .table(league_table)
+                            .select("discord_id, points")
+                            .in_("discord_id", user_ids_str)
+                            .execute()
+                        )
+                        return response.data
+                    except Exception as e:
+                        logger.error(f"🟡 Failed batch check for league {league_table}: {e}")
+                        return []
+                
+                # Get users who are in this league with their points
+                league_users_data = await loop.run_in_executor(None, batch_league_check)
+                
+                # Add league info for users who are members
+                for user_data in league_users_data:
+                    user_id = int(user_data["discord_id"])
+                    if user_id in user_leagues:
+                        user_leagues[user_id].append({
+                            "table": league_table,
+                            "original_name": original_name,
+                            "points": user_data.get("points", 200)  # Include points
+                        })
+                        
+            except Exception as e:
+                logger.error(f"🟡 Error in batch league check for {league_table}: {e}")
+        
+        logger.info(f"🟡 Batch league lookup completed for {len(user_ids)} users across {len(leagues_data)} leagues")
+        return user_leagues
+
+    async def _restore_user_logic_optimized(self, member: discord.Member, user_data: dict, user_leagues: list) -> bool:
+        """OPTIMIZED: Core restoration logic with pre-fetched league data"""
+        try:
+            # Get or create the registered role using static function
+            role = await self.get_or_create_registered_role_static(member.guild)
+            
+            # Assign the registered role using static function
+            success = await self.assign_role_safely_static(
+                member, role, f"Restored registration for {user_data['nickname']}"
+            )
+            if not success:
+                return False
+
+            # Assign level role based on user's actual points from pre-fetched league data
+            try:
+                levels_cog = self.bot.get_cog("LevelsCog")
+                if levels_cog and user_leagues:
+                    # Use points from pre-fetched league data
+                    user_points = user_leagues[0].get("points", 200) if user_leagues else 200
+                    await levels_cog.update_player_roles(member.guild, member.id, user_points)
+                else:
+                    if not levels_cog:
+                        logger.warning("🟡 LevelsCog not found during optimized restore")
+                    else:
+                        # No leagues, use default starting points
+                        await levels_cog.update_player_roles(member.guild, member.id, 200)
+            except Exception as e:
+                logger.error(f"🟡 Error assigning level role during optimized restore for {member}: {e}")
+
+            # Restore league roles using pre-fetched data
+            league_roles_added = []
+            for league_info in user_leagues:
+                league_role_name = league_info["original_name"]
+                league_role = discord.utils.get(member.guild.roles, name=league_role_name)
+                
+                if league_role and league_role not in member.roles:
+                    try:
+                        await member.add_roles(
+                            league_role, 
+                            reason=f"Restored league membership for {user_data['nickname']}"
+                        )
+                        league_roles_added.append(league_role_name)
+                    except discord.Forbidden:
+                        logger.error(f"🟡 No permission to add league role {league_role_name} to {member}")
+                    except Exception as e:
+                        logger.error(f"🟡 Failed to add league role {league_role_name} to {member}: {e}")
+
+            # Restore nickname from database
+            try:
+                if member.display_name != user_data['nickname']:
+                    await member.edit(nick=user_data['nickname'])
+                    logger.info(f"🟡 Updated nickname for {member} to '{user_data['nickname']}'")
+            except discord.Forbidden:
+                logger.warning(f"🟡 No permission to change nickname for {member}")
+            except Exception as e:
+                logger.error(f"🟡 Failed to update nickname for {member}: {e}")
+
+            logger.info(f"🟡 Successfully restored {member} with {len(league_roles_added)} league roles")
+            return True
+
+        except Exception as e:
+            logger.error(f"🟡 Error in optimized restore logic for {member}: {e}")
+            return False
 
 
 async def setup(bot):

@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 class FinalMatchTemplateGenerator:
     """Generator pentru template-ul final de meci folosind Pillow cu cache optimizat"""
     
-    def __init__(self, background_image_path: str = "assets/template_images/arena_faceit_match_details.webp"):
+    def __init__(self, background_image_path: str = "assets/template_images/match_details.webp"):
         self.background_image_path = background_image_path
-        self.default_font_path = "assets/fonts/font-black.ttf"
+        self.default_font_path = "assets/fonts/fira_code_semibold.ttf"
         
         # Cache pentru optimizare cu toate variabilele necesare
         self._font_cache: Dict[int, tuple] = {}  # size -> (font, timestamp)
@@ -67,9 +67,11 @@ class FinalMatchTemplateGenerator:
                         if original_icon.mode != 'RGBA':
                             original_icon = original_icon.convert('RGBA')
                         
-                        # Pre-process pentru 100px (mărimea standard)
-                        processed_icon = self._process_level_icon(original_icon, 100)
-                        self._level_icons_cache[f"{icon_path}_100"] = processed_icon
+                        # Pre-process pentru 60px și 70px (mărimile standard pentru avataruri)
+                        processed_icon_60 = self._process_level_icon(original_icon, 60)
+                        processed_icon_70 = self._process_level_icon(original_icon, 70)
+                        self._level_icons_cache[f"{icon_path}_60"] = processed_icon_60
+                        self._level_icons_cache[f"{icon_path}_70"] = processed_icon_70
                         
                         logger.debug(f"Pre-loaded level icon: {icon_file}")
                     except Exception as e:
@@ -358,6 +360,7 @@ class FinalMatchTemplateGenerator:
         team2_captain: Union[str, object],
         map_name: str,
         output_path: str,
+        server: str = 'PlayHub Server',
         league_table=None
     ) -> bool:
         """
@@ -370,6 +373,7 @@ class FinalMatchTemplateGenerator:
             team1_captain: Căpitanul echipei 1 (Discord Member sau string)
             team2_captain: Căpitanul echipei 2 (Discord Member sau string)
             map_name: Numele hărții selectate
+            server: Numele serverului
             output_path: Calea unde să salveze imaginea generată
             league_table: Tabelul ligii pentru statistici
             
@@ -392,89 +396,214 @@ class FinalMatchTemplateGenerator:
             background = background.copy()
             draw = ImageDraw.Draw(background)
             
-            # Încarcă fontul cu cache
-            font = await self._get_cached_font(130)
-            if font is None:
-                logger.warning("Failed to load cached font, using default")
-                font = ImageFont.load_default()
+            # Încarcă fonturile cu cache pentru toate mărimile necesare
+            font_24 = await self._get_cached_font(24)
+            font_26 = await self._get_cached_font(26)
+            font_42 = await self._get_cached_font(42)
+            if not all([font_24, font_26, font_42]):
+                logger.warning("Failed to load some fonts, using defaults")
+                font_24 = font_24 or ImageFont.load_default()
+                font_26 = font_26 or ImageFont.load_default()
+                font_42 = font_42 or ImageFont.load_default()
             
             # Procesează toate avatar-urile în paralel
             all_players = team1_players + team2_players
-            avatar_dict = await self._batch_process_avatars(all_players, 217)
+            captain_avatars = await self._batch_process_avatars([team1_captain, team2_captain], 70)  # 70x70 pentru căpitani
+            player_avatars = await self._batch_process_avatars(all_players, 60)  # 60x60 pentru jucători
             
-            # Obține statisticile în batch PRIMUL
+            # Obține statisticile în batch pentru calculul punctelor și avg kills
             stats_dict = await self._batch_get_player_stats(all_players, league_table)
+            captain_stats = await self._batch_get_player_stats([team1_captain, team2_captain], league_table)
             
-            # Încarcă toate level icon-urile în paralel FOLOSIND stats_dict
-            level_icons_dict = await self._batch_load_level_icons(all_players, stats_dict)
+            # Încarcă toate level icon-urile în paralel pentru jucători (47x37)
+            player_level_icons = await self._batch_load_level_icons(all_players, stats_dict, size=(47, 37))
+            
+            # Calculează și încarcă level-urile echipelor (59x47)
+            team_level_icons = await self._calculate_and_load_team_level_icons([team1_players, team2_players], stats_dict, size=(59, 47))
             
             # Culoare text
             white = (255, 255, 255)
             
-            # Map name la (274, 213)
-            draw.text((274, 213), map_name, fill=white, font=font, anchor="lm")
+            # =====================================================================
+            # COORDINATE CONFIGURATION - MODIFY HERE TO ADJUST ELEMENT POSITIONS
+            # =====================================================================
             
-            # Match ID la (2090, 213) cu anchor rm (right-middle)
-            draw.text((2090, 213), match_id, fill=white, font=font, anchor="rm")
+            # --- Header coordinates ---
+            MATCH_ID_X = 909
+            MATCH_ID_Y = 130
             
-            # Team 1 Captain Name la (550, 717)
-            captain1_name = f"Team {self._get_display_name(team1_captain)}"
-            draw.text((550, 717), captain1_name, fill=white, font=font, anchor="lm")
+            MAP_NAME_X = 69
+            MAP_NAME_Y = 1122
             
-            # Team 1 players cu coordonate Y specifice
-            team1_y_positions = [1138, 1383, 1623, 1866, 2105]
-            team1_avatar_y_positions = [1028, 1271, 1518, 1762, 2007]
+            SERVER_X = 644
+            SERVER_Y = 1122
             
+            # --- Team A coordinates ---
+            # Captain coordinates
+            TEAM_A_CAPTAIN_AVATAR_X = 75
+            TEAM_A_CAPTAIN_AVATAR_Y = 301
+            TEAM_A_CAPTAIN_AVATAR_SIZE = 70
+            
+            TEAM_A_CAPTAIN_NAME_X = 164
+            TEAM_A_CAPTAIN_NAME_Y = 346
+            
+            # Team average level coordinates
+            TEAM_A_LEVEL_X = 725
+            TEAM_A_LEVEL_Y = 314
+            TEAM_A_LEVEL_SIZE = (59, 47)
+            
+            # Team A players list coordinates
+            TEAM_A_PLAYER_AVATAR_X = 76
+            TEAM_A_PLAYER_AVATAR_SIZE = 60
+            
+            TEAM_A_PLAYER_NICKNAME_X = 163  # +20 în stânga avatarului
+            
+            TEAM_A_LEVEL_ICON_X = 447
+            TEAM_A_LEVEL_ICON_SIZE = (47, 37)
+            
+            TEAM_A_POINTS_X = 593
+            TEAM_A_AVG_KILLS_X = 741
+            
+            # --- Team B coordinates ---
+            # Captain coordinates
+            TEAM_B_CAPTAIN_AVATAR_X = 1680
+            TEAM_B_CAPTAIN_AVATAR_Y = 301
+            TEAM_B_CAPTAIN_AVATAR_SIZE = 70
+            
+            TEAM_B_CAPTAIN_NAME_X = 1657
+            TEAM_B_CAPTAIN_NAME_Y = 346
+            
+            # Team average level coordinates
+            TEAM_B_LEVEL_X = 1035
+            TEAM_B_LEVEL_Y = 315
+            TEAM_B_LEVEL_SIZE = (59, 47)
+            
+            # Team B players list coordinates
+            TEAM_B_PLAYER_AVATAR_X = 1683
+            TEAM_B_PLAYER_AVATAR_SIZE = 60
+            
+            TEAM_B_PLAYER_NICKNAME_X = 1656  # +20 în stânga avatarului, right aligned
+            
+            TEAM_B_LEVEL_ICON_X = 1330
+            TEAM_B_LEVEL_ICON_SIZE = (47, 37)
+            
+            TEAM_B_POINTS_X = 1229
+            TEAM_B_AVG_KILLS_X = 1082
+            
+            # --- Player list settings ---
+            PLAYERS_BASE_Y = 500
+            PLAYERS_GAP_Y = 110  # Gap între jucători
+            PLAYER_TEXT_OFFSET_Y = 30  # Offset pentru centrarea textului pe Y
+            LEVEL_ICON_OFFSET_Y = 12  # Offset pentru centrarea icon-ului pe Y
+            
+            # =====================================================================
+            # DRAWING ELEMENTS USING DEFINED COORDINATES
+            # =====================================================================
+            
+            # Match ID - (font size 24, 909, 130)
+            draw.text((MATCH_ID_X, MATCH_ID_Y), match_id, fill=white, font=font_24, anchor="mm")
+            
+            # Selected Map Name - (font size 42, 77, 1122)
+            draw.text((MAP_NAME_X, MAP_NAME_Y), map_name, fill=white, font=font_42, anchor="lm")
+            
+            # Server - (font size 42, 649, 1122)
+            draw.text((SERVER_X, SERVER_Y), server, fill=white, font=font_42, anchor="lm")
+            
+            # === TEAM A ===
+            # Captain avatar - (70x70, 114, 335)
+            captain1_id = str(team1_captain.id) if hasattr(team1_captain, 'id') else str(team1_captain)
+            if captain1_id in captain_avatars:
+                await self._draw_avatar_from_cache(background, captain_avatars[captain1_id], TEAM_A_CAPTAIN_AVATAR_X, TEAM_A_CAPTAIN_AVATAR_Y)
+            
+            # Team captain name - (font size 26, 167, 340)
+            captain1_name = f"team_{self._get_display_name(team1_captain)}"
+            draw.text((TEAM_A_CAPTAIN_NAME_X, TEAM_A_CAPTAIN_NAME_Y), captain1_name, fill=white, font=font_26, anchor="lm")
+            
+            # Average team level - (59x47, 755, 332)
+            if len(team_level_icons) > 0:
+                team1_level_icon = team_level_icons[0]  # Team A
+                self._draw_level_icon_from_cache(background, team1_level_icon, TEAM_A_LEVEL_X, TEAM_A_LEVEL_Y, TEAM_A_LEVEL_SIZE)
+            
+            # === TEAM B ===
+            # Captain avatar - (70x70, 1713, 335)
+            captain2_id = str(team2_captain.id) if hasattr(team2_captain, 'id') else str(team2_captain)
+            if captain2_id in captain_avatars:
+                await self._draw_avatar_from_cache(background, captain_avatars[captain2_id], TEAM_B_CAPTAIN_AVATAR_X, TEAM_B_CAPTAIN_AVATAR_Y)
+            
+            # Team captain name - (font size 26, 1652, 340) - right aligned
+            captain2_name = f"team_{self._get_display_name(team2_captain)}"
+            draw.text((TEAM_B_CAPTAIN_NAME_X, TEAM_B_CAPTAIN_NAME_Y), captain2_name, fill=white, font=font_26, anchor="rm")
+            
+            # Average team level - (59x47, 1072, 332)
+            if len(team_level_icons) > 1:
+                team2_level_icon = team_level_icons[1]  # Team B
+                self._draw_level_icon_from_cache(background, team2_level_icon, TEAM_B_LEVEL_X, TEAM_B_LEVEL_Y, TEAM_B_LEVEL_SIZE)
+            
+            # === LIST TEAM A ===
+            # Coordonate pentru jucătorii echipei A (Y gap = 100)
             for i, player in enumerate(team1_players):
-                if i < len(team1_y_positions):
-                    y_pos = team1_y_positions[i]
-                    player_name = self._get_display_name(player)
-                    player_id = str(getattr(player, 'id', ''))
+                if i >= 5:  # Maxim 5 jucători
+                    break
                     
-                    # Desenează avatar din cache
-                    if player_id in avatar_dict:
-                        avatar_x = 419 - 334
-                        avatar_y = team1_avatar_y_positions[i]
-                        await self._draw_avatar_from_cache(background, avatar_dict[player_id], avatar_x, avatar_y)
-                    
-                    # Desenează level icon din cache
-                    if player_id in level_icons_dict:
-                        level_x = 515 - 120
-                        level_y = y_pos - 51
-                        self._draw_level_icon_from_cache(background, level_icons_dict[player_id], level_x, level_y, 100)
-                    
-                    draw.text((515, y_pos), player_name, fill=white, font=font, anchor="lm")
+                y_pos = PLAYERS_BASE_Y + (i * PLAYERS_GAP_Y)
+                player_id = str(player.id) if hasattr(player, 'id') else str(player)
+                player_name = self._get_display_name(player)
+                
+                # Player avatar - (60x60, 109, y_pos)
+                if player_id in player_avatars:
+                    await self._draw_avatar_from_cache(background, player_avatars[player_id], TEAM_A_PLAYER_AVATAR_X, y_pos)
+                
+                # Nickname - (font size 24, +20 în stânga avatarului = 129, y_pos + 30 pentru centrare)
+                draw.text((TEAM_A_PLAYER_NICKNAME_X, y_pos + PLAYER_TEXT_OFFSET_Y), player_name, fill=white, font=font_24, anchor="lm")
+                
+                # Level icon - (47x37, 462, y_pos + 12 pentru centrare)
+                if player_id in player_level_icons:
+                    self._draw_level_icon_from_cache(background, player_level_icons[player_id], TEAM_A_LEVEL_ICON_X, y_pos + LEVEL_ICON_OFFSET_Y, TEAM_A_LEVEL_ICON_SIZE)
+                
+                # Points - (font size 26, 593, y_pos + 30 pentru centrare)
+                points = stats_dict.get(player_id, 0)
+                draw.text((TEAM_A_POINTS_X, y_pos + PLAYER_TEXT_OFFSET_Y), str(points), fill=white, font=font_26, anchor="mm")
+                
+                # Avg kills - (font size 26, 742, y_pos + 30 pentru centrare)
+                # Pentru acum folosim punctele ca placeholder pentru avg kills
+                avg_kills = points // 100  # Formula temporară pentru avg kills
+                draw.text((TEAM_A_AVG_KILLS_X, y_pos + PLAYER_TEXT_OFFSET_Y), str(avg_kills), fill=white, font=font_26, anchor="mm")
             
-            # Team 2 Captain Name la (1860, 717)
-            captain2_name = f"Team {self._get_display_name(team2_captain)}"
-            draw.text((1860, 717), captain2_name, fill=white, font=font, anchor="rm")
-            
-            # Team 2 players cu coordonate Y specifice
-            team2_y_positions = [1138, 1383, 1623, 1866, 2105]
-            team2_avatar_y_positions = [1028, 1271, 1517, 1762, 2006]
-            
+            # === LIST TEAM B ===
+            # Coordonate pentru jucătorii echipei B (Y gap = 100)
             for i, player in enumerate(team2_players):
-                if i < len(team2_y_positions):
-                    y_pos = team2_y_positions[i]
-                    player_name = self._get_display_name(player)
-                    player_id = str(getattr(player, 'id', ''))
+                if i >= 5:  # Maxim 5 jucători
+                    break
                     
-                    # Desenează avatar din cache
-                    if player_id in avatar_dict:
-                        avatar_x = 1945 + 115
-                        avatar_y = team2_avatar_y_positions[i]
-                        await self._draw_avatar_from_cache(background, avatar_dict[player_id], avatar_x, avatar_y)
-                    
-                    # Desenează level icon din cache
-                    if player_id in level_icons_dict:
-                        level_x = 1849 + 28
-                        level_y = y_pos - 49
-                        self._draw_level_icon_from_cache(background, level_icons_dict[player_id], level_x, level_y, 100)
-                    
-                    draw.text((1849, y_pos), player_name, fill=white, font=font, anchor="rm")
+                y_pos = PLAYERS_BASE_Y + (i * PLAYERS_GAP_Y)
+                player_id = str(player.id) if hasattr(player, 'id') else str(player)
+                player_name = self._get_display_name(player)
+                
+                # Player avatar - (60x60, 1713, y_pos)
+                if player_id in player_avatars:
+                    await self._draw_avatar_from_cache(background, player_avatars[player_id], TEAM_B_PLAYER_AVATAR_X, y_pos)
+                
+                # Nickname - (font size 24, +20 în stânga avatarului = 1693, y_pos + 30 pentru centrare) - right aligned
+                draw.text((TEAM_B_PLAYER_NICKNAME_X, y_pos + PLAYER_TEXT_OFFSET_Y), player_name, fill=white, font=font_24, anchor="rm")
+                
+                # Level icon - (47x37, 1364, y_pos + 12 pentru centrare)
+                if player_id in player_level_icons:
+                    self._draw_level_icon_from_cache(background, player_level_icons[player_id], TEAM_B_LEVEL_ICON_X, y_pos + LEVEL_ICON_OFFSET_Y, TEAM_B_LEVEL_ICON_SIZE)
+                
+                # Points - (font size 26, 1229, y_pos + 30 pentru centrare)
+                points = stats_dict.get(player_id, 0)
+                draw.text((TEAM_B_POINTS_X, y_pos + PLAYER_TEXT_OFFSET_Y), str(points), fill=white, font=font_26, anchor="mm")
+                
+                # Avg kills - (font size 26, 1082, y_pos + 30 pentru centrare)
+                # Pentru acum folosim punctele ca placeholder pentru avg kills
+                avg_kills = points // 100  # Formula temporară pentru avg kills
+                draw.text((TEAM_B_AVG_KILLS_X, y_pos + PLAYER_TEXT_OFFSET_Y), str(avg_kills), fill=white, font=font_26, anchor="mm")
             
-            # Salvează imaginea în format WebP pentru compresie optimă
-            background.save(output_path, "WebP", quality=85, method=6)
+            # Salvează imaginea - detectează formatul pe baza extensiei
+            if output_path.lower().endswith('.png'):
+                background.save(output_path, "PNG", optimize=True)
+            else:
+                background.save(output_path, "WebP", quality=85, method=6)
             
             generation_time = time.time() - start_time
             logger.info(f"Final match image generated successfully in {generation_time:.2f}s: {output_path}")
@@ -533,7 +662,7 @@ class FinalMatchTemplateGenerator:
             logger.warning(f"Custom font not found ({e}), using default")
             return ImageFont.load_default()
 
-    async def _batch_load_level_icons(self, players: List[Union[str, object]], stats_dict: Dict[str, int] = None) -> Dict[str, Image.Image]:
+    async def _batch_load_level_icons(self, players: List[Union[str, object]], stats_dict: Dict[str, int] = None, size=(47, 37)) -> Dict[str, Image.Image]:
         """Încarcă toate level icon-urile în paralel folosind stats pre-calculate"""
         try:
             level_icons_dict = {}
@@ -569,7 +698,12 @@ class FinalMatchTemplateGenerator:
                 for i, (player_id, _) in enumerate(tasks):
                     result = results[i]
                     if not isinstance(result, Exception) and result is not None:
-                        level_icons_dict[player_id] = result
+                        # Redimensionează icon-ul la mărimea specificată
+                        if isinstance(size, tuple):
+                            resized_icon = result.resize(size, Image.Resampling.LANCZOS)
+                        else:
+                            resized_icon = result.resize((size, size), Image.Resampling.LANCZOS)
+                        level_icons_dict[player_id] = resized_icon
             
             logger.info(f"Batch loaded {len(level_icons_dict)} level icons")
             return level_icons_dict
@@ -577,6 +711,83 @@ class FinalMatchTemplateGenerator:
         except Exception as e:
             logger.error(f"Error in batch load level icons: {e}")
             return {}
+
+    async def _calculate_and_load_team_level_icons(self, teams: List[List], stats_dict: Dict[str, int], size=(59, 47)) -> List[Image.Image]:
+        """Calculează level-ul mediu al echipei și încarcă icon-ul corespunzător"""
+        try:
+            team_icons = []
+            
+            for team_players in teams:
+                if not team_players:
+                    continue
+                    
+                # Calculează punctajul mediu al echipei
+                total_points = 0
+                player_count = 0
+                
+                for player in team_players:
+                    player_id = str(player.id) if hasattr(player, 'id') else str(player)
+                    if player_id in stats_dict:
+                        total_points += stats_dict[player_id]
+                        player_count += 1
+                
+                avg_points = total_points // player_count if player_count > 0 else 0
+                
+                # Determină level-ul bazat pe puncte (reutilizez logica din LevelsCog)
+                from cogs.levels import LevelsCog
+                levels_cog = LevelsCog(None)  # Temporar pentru acces la config
+                
+                team_level = 1  # Default
+                for level, config in levels_cog.LEVEL_CONFIG.items():
+                    if config["min_points"] <= avg_points <= config["max_points"]:
+                        team_level = level
+                        break
+                
+                # Încarcă icon-ul pentru level-ul echipei
+                level_icon_path = await self._get_team_level_icon_path(team_level)
+                if level_icon_path:
+                    level_icon = await self._get_cached_level_icon(level_icon_path)
+                    if level_icon:
+                        # Redimensionează la mărimea dorită pentru echipă
+                        resized_icon = level_icon.resize(size, Image.Resampling.LANCZOS)
+                        team_icons.append(resized_icon)
+                    else:
+                        # Fallback la level 1
+                        fallback_path = await self._get_team_level_icon_path(1)
+                        if fallback_path:
+                            fallback_icon = await self._get_cached_level_icon(fallback_path)
+                            if fallback_icon:
+                                resized_icon = fallback_icon.resize(size, Image.Resampling.LANCZOS)
+                                team_icons.append(resized_icon)
+            
+            return team_icons
+            
+        except Exception as e:
+            logger.error(f"Error calculating team level icons: {e}")
+            return []
+
+    async def _get_team_level_icon_path(self, level: int) -> Optional[str]:
+        """Returnează calea către iconița de level pentru echipă"""
+        try:
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            level_icons_dir = os.path.join(project_root, "assets", "level_icons")
+            
+            # Mapare level la fișier
+            if level >= 100:  # Challenger
+                icon_name = "challenger.webp"
+            elif level >= 10:
+                icon_name = "level10.webp"
+            elif 1 <= level <= 9:
+                icon_name = f"level{level}.webp"
+            else:
+                icon_name = "level1.webp"  # Default
+            
+            icon_path = os.path.join(level_icons_dir, icon_name)
+            return icon_path if os.path.exists(icon_path) else None
+            
+        except Exception as e:
+            logger.warning(f"Error getting team level icon path: {e}")
+            return None
 
     async def _get_cached_level_icon(self, icon_path: str) -> Optional[Image.Image]:
         """Încarcă level icon cu cache"""
@@ -611,26 +822,29 @@ class FinalMatchTemplateGenerator:
         except Exception as e:
             logger.warning(f"Error drawing avatar from cache: {e}")
 
-    def _draw_level_icon_from_cache(self, background: Image.Image, level_icon: Image.Image, x: int, y: int, size: int):
+    def _draw_level_icon_from_cache(self, background: Image.Image, level_icon: Image.Image, x: int, y: int, size):
         """Desenează level icon din cache păstrând aspect ratio-ul"""
         try:
+            # Acceptă atât int cât și tuple pentru dimensiuni
+            if isinstance(size, tuple):
+                target_width, target_height = size
+            else:
+                target_width = target_height = size
+            
             # Păstrează aspect ratio-ul original pentru level icons
             original_width, original_height = level_icon.size
             
             # Calculează new size păstrând aspect ratio
-            if original_width > original_height:
-                new_width = size
-                new_height = int((original_height * size) / original_width)
-            else:
-                new_height = size
-                new_width = int((original_width * size) / original_height)
+            ratio = min(target_width / original_width, target_height / original_height)
+            new_width = int(original_width * ratio)
+            new_height = int(original_height * ratio)
             
             # Resize cu aspect ratio păstrat
             resized_icon = level_icon.resize((new_width, new_height), Image.Resampling.LANCZOS)
             
-            # Calculează poziția pentru centrare
-            center_x = x + (size - new_width) // 2
-            center_y = y + (size - new_height) // 2
+            # Calculează poziția pentru centrare în spațiul alocat
+            center_x = x + (target_width - new_width) // 2
+            center_y = y + (target_height - new_height) // 2
             
             # Paste icon centrat
             if resized_icon.mode == 'RGBA':
@@ -823,9 +1037,9 @@ class FinalMatchTemplateGenerator:
             if os.path.exists(background_path):
                 with Image.open(background_path) as img:
                     return img.size
-            return (740, 711)  # Dimensiuni default
+            return (1860, 1250)  # Dimensiuni default pentru noul template
         except Exception:
-            return (740, 711)  # Dimensiuni default
+            return (1860, 1250)  # Dimensiuni default pentru noul template
 
     def cleanup_caches(self):
         """Curăță cache-urile manual pentru economisirea memoriei"""

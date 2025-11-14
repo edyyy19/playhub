@@ -6,6 +6,7 @@ from models.user import User
 from models.stats import Stats
 from models.match import Match
 from assets.template_generators.profile_generator import ProfileTemplateGenerator
+from cogs.levels import LevelsCog
 import logging
 from datetime import datetime
 import os
@@ -176,36 +177,28 @@ class Profile(commands.Cog):
         """Get the leagues cog for accessing league methods"""
         return self.bot.get_cog("Leagues")
 
-    async def league_name_autocomplete(
-        self, interaction: discord.Interaction, current: str
-    ):
-        """
-        Autocomplete function for league names - delegates to leagues cog
-        """
-        leagues_cog = self.get_leagues_cog()
-        if leagues_cog:
-            return await leagues_cog.league_name_autocomplete(interaction, current)
-        return []
-
     async def get_default_league_from_config(self):
         """Get the default league from the config table"""
-        import asyncio
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
 
-        loop = asyncio.get_running_loop()
+            def db_get():
+                try:
+                    response = (
+                        Config.supabase().table("config").select("default_league").execute()
+                    )
+                    if response.data and len(response.data) > 0:
+                        return response.data[0].get("default_league")
+                    return None
+                except Exception as e:
+                    logger.error(f"Failed to get default league from config: {e}")
+                    return None
 
-        def db_get():
-            try:
-                response = (
-                    Config.supabase().table("config").select("default_league").execute()
-                )
-                if response.data and len(response.data) > 0:
-                    return response.data[0].get("default_league")
-                return None
-            except Exception as e:
-                logger.error(f"Failed to get default league from config: {e}")
-                return None
-
-        return await loop.run_in_executor(None, db_get)
+            return await loop.run_in_executor(None, db_get)
+        except Exception as e:
+            logger.error(f"Failed to get default league from config: {e}")
+            return None
 
     @app_commands.command(
         name="edit_profile", description="Edit your nickname and Standoff 2 Player ID"
@@ -252,7 +245,6 @@ class Profile(commands.Cog):
         user="The user whose profile to view (optional - defaults to yourself)",
         league_name="The league to view stats for (optional - defaults to default league)",
     )
-    @app_commands.autocomplete(league_name=league_name_autocomplete)
     async def view_profile(
         self,
         interaction: discord.Interaction,
@@ -287,10 +279,12 @@ class Profile(commands.Cog):
                     )
                 return await interaction.followup.send(embed=embed)
 
+            # Get leagues cog once for multiple operations
+            leagues_cog = self.get_leagues_cog()
+
             # Determine which league to get stats from
             if league_name:
                 # Validate that the specified league exists
-                leagues_cog = self.get_leagues_cog()
                 if leagues_cog:
                     league_exists = await leagues_cog.league_exists(league_name)
                     if not league_exists:
@@ -322,7 +316,6 @@ class Profile(commands.Cog):
                 points = stats_data.get("points", 200)
             else:
                 # User not found in the specified league table
-                leagues_cog = self.get_leagues_cog()
                 league_display_name = target_league
                 if leagues_cog:
                     league_data = await leagues_cog.get_league_by_name(target_league)
@@ -352,59 +345,35 @@ class Profile(commands.Cog):
             # Calculate K/D ratio
             if deaths == 0:
                 kd_ratio = f"{kills:.2f}" if kills > 0 else "0.00"
+                kd_ratio_float = float(kills) if kills > 0 else 0.0
             else:
-                kd_ratio = f"{kills / deaths:.2f}"
+                kd_ratio_float = kills / deaths
+                kd_ratio = f"{kd_ratio_float:.2f}"
 
             # Calculate win rate
             if total_games > 0:
-                win_rate = f"{(wins / total_games) * 100:.1f}%"
+                win_rate = f"{round((wins / total_games) * 100)}%"
             else:
-                win_rate = "N/A"
+                win_rate = "0%"
 
-            # Get last 5 matches for the user
-            recent_matches = await Match.get_user_matches(str(target_user.id), limit=5)
-
-            # Format matches for template
-            formatted_matches = []
-            for match in recent_matches:
-                # Format the date
-                match_date = "Unknown"
-                if match.get("ended_at"):
-                    try:
-                        dt = datetime.fromisoformat(
-                            match["ended_at"].replace("Z", "+00:00")
-                        )
-                        match_date = dt.strftime("%H:%M | %d/%m/%Y")
-                    except:
-                        match_date = "Unknown"
-
-                # Extract scores from processed match data
-                team1_score = match.get("team1_score", 0)
-                team2_score = match.get("team2_score", 0)
-
-                formatted_match = {
-                    "match_id": match.get("match_id", "Unknown"),
-                    "map": match.get("map", "Unknown"),
-                    "date": match_date,
-                    "final_score": f"{team1_score}-{team2_score}",
-                    "user_team": match.get("user_team", "Unknown"),
-                    "result": "W" if match.get("user_won", False) else "L",
-                    "ended_at": match.get("ended_at", ""),  # Add for sorting
-                }
-                formatted_matches.append(formatted_match)
+            # Get user's place in league leaderboard
+            user_place = await self.get_user_league_position(target_user.id, target_league)
+            place_text = f"#{user_place} Place" if user_place else "Unranked"
             
-            # Sort matches by ended_at in descending order to ensure newest first
-            formatted_matches.sort(key=lambda x: x.get("ended_at", ""), reverse=True)
+            # Get user's best map (map with most wins)
+            best_map_data = await self.get_user_best_map(target_user.id, target_league)
+
+            # Format points with next level requirement
+            formatted_points = await self.format_points_with_next_level(points, user_data.get('level', 1))
+
+            # Get last 5 matches for the user and format for template
+            recent_matches = await Match.get_user_matches(str(target_user.id), limit=5)
+            formatted_matches = await self.format_matches_for_template(recent_matches)
             
             # Prepare template variables
-            current_date = datetime.now().strftime("%H:%M | %d/%m/%Y")
-            registered_date = (
-                user_data.get("registered_at", "Unknown")[:10]
-                if user_data.get("registered_at")
-                else "Unknown"
-            )
-            # Get league display name
-            leagues_cog = self.get_leagues_cog()
+            current_date = User.format_current_datetime()
+            registered_date = User.format_registration_date(user_data.get("registered_at"))
+            # Get league display name (reuse leagues_cog from above)
             league_display_name = target_league
             if leagues_cog:
                 league_data = await leagues_cog.get_league_by_name(target_league)
@@ -413,18 +382,32 @@ class Profile(commands.Cog):
                         "original_league_name", target_league
                     )
 
+            # Prepare user data with enhanced information
+            enhanced_user_data = {
+                **user_data,
+                'league': league_display_name,
+                'place': place_text,
+                'level': f"Level {user_data.get('level', 1)}",
+                'premium': 'Not Available'  # Placeholder
+            }
+
             # Generate profile image using the dedicated template generator
             image_path = await self.profile_generator.generate_profile_image(
-                user_data=user_data,
+                user_data=enhanced_user_data,
                 target_user=target_user,
-                points=points,
+                points=formatted_points,
                 wins=wins,
                 losses=losses,
                 total_games=total_games,
                 kills=kills,
                 deaths=deaths,
+                assists=500,  # Placeholder until we have assists in database
                 kd_ratio=kd_ratio,
-                win_rate=win_rate
+                win_rate=win_rate,
+                rating=kd_ratio_float,
+                match_history=formatted_matches,
+                best_map_data=best_map_data,
+                registered_date=registered_date
             )
 
             # Upload image to Discord
@@ -434,29 +417,6 @@ class Profile(commands.Cog):
                 color=EMBED_COLOR,
             )
             embed.set_image(url="attachment://profile.png")
-            
-            # Add recent matches as embed fields
-            if formatted_matches:
-                matches_text = ""
-                for match in formatted_matches:
-                    match_line = (
-                        f"#{match['match_id']} • {match['result']} ┃ "
-                        f"{match['date']} ┃ {match['map']} • {match['final_score']}\n"
-                    )
-                    matches_text += match_line
-                
-                embed.add_field(
-                    name="Recent Matches",
-                    value=matches_text.strip(),
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name="Recent Matches",
-                    value="No recent matches found",
-                    inline=False
-                )
-            
             embed.set_footer(text=f"Profile generated at {current_date}")
 
             await interaction.followup.send(embed=embed, file=file)
@@ -478,6 +438,179 @@ class Profile(commands.Cog):
                 await interaction.followup.send(embed=embed)
             else:
                 await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def get_user_league_position(self, user_id: int, league_name: str) -> int:
+        """Get user's position in the league leaderboard using leaderboard cog functionality"""
+        try:
+            # Get leaderboard cog instance
+            leaderboard_cog = self.bot.get_cog("Leaderboard")
+            if not leaderboard_cog:
+                logger.warning("Leaderboard cog not found, falling back to direct database query")
+                return await self._get_user_position_direct(user_id, league_name)
+            
+            # Use leaderboard cog's get_league_users function which already sorts by points
+            league_users = await leaderboard_cog.get_league_users(league_name)
+            
+            # Find user position in the sorted list
+            for position, user in enumerate(league_users, 1):
+                if user.get("discord_id") == str(user_id):
+                    return position
+            
+            return None  # User not found in league
+            
+        except Exception as e:
+            logger.error(f"Error in get_user_league_position: {e}")
+            return None
+
+    async def _get_user_position_direct(self, user_id: int, league_name: str) -> int:
+        """Fallback method for getting user position directly from database"""
+        try:
+            import asyncio
+            
+            def db_get_position():
+                try:
+                    # Get leaderboard ordered by points descending
+                    response = (
+                        Config.supabase()
+                        .table(league_name)
+                        .select("discord_id, points")
+                        .order("points", desc=True)
+                        .execute()
+                    )
+                    
+                    if response.data:
+                        for index, user_data in enumerate(response.data, 1):
+                            if str(user_data.get("discord_id")) == str(user_id):
+                                return index
+                    return None
+                except Exception as e:
+                    logger.error(f"Error getting user position: {e}")
+                    return None
+            
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, db_get_position)
+            
+        except Exception as e:
+            logger.error(f"Error in _get_user_position_direct: {e}")
+            return None
+
+    async def get_user_best_map(self, user_id: int, league_name: str) -> dict:
+        """Get user's best map (map with most wins)"""
+        try:
+            # Get all user matches and count wins per map (limit=0 means no limit)
+            user_matches = await Match.get_user_matches(str(user_id), limit=0)
+            
+            if not user_matches:
+                # Return default map if no matches
+                return {
+                    'map': 'Sandstone',
+                    'wins': 0
+                }
+                
+            map_wins = {}
+            for match in user_matches:
+                map_name = match.get('map', 'Unknown')
+                if match.get('user_won', False):
+                    map_wins[map_name] = map_wins.get(map_name, 0) + 1
+            
+            if not map_wins:
+                # Return default map if no wins
+                return {
+                    'map': 'Sandstone',
+                    'wins': 0
+                }
+                
+            # Find map with most wins
+            best_map = max(map_wins, key=map_wins.get)
+            best_wins = map_wins[best_map]
+            
+            return {
+                'map': best_map,
+                'wins': best_wins
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting user best map: {e}")
+            # Return default map in case of error
+            return {
+                'map': 'Sandstone',
+                'wins': 0
+            }
+
+    async def format_matches_for_template(self, matches: list) -> list:
+        """Format matches for the profile template with complete match information"""
+        try:
+            formatted_matches = []
+            
+            for match in matches:
+                # Format the date
+                match_date = "Unknown"
+                if match.get("ended_at"):
+                    try:
+                        dt = datetime.fromisoformat(
+                            match["ended_at"].replace("Z", "+00:00")
+                        )
+                        match_date = dt.strftime("%H:%M | %d/%m/%Y")
+                    except:
+                        match_date = "Unknown"
+
+                # Extract scores from processed match data
+                team1_score = match.get("team1_score", 0)
+                team2_score = match.get("team2_score", 0)
+
+                formatted_match = {
+                    'id': match.get('match_id', 'Unknown'),
+                    'match_id': match.get('match_id', 'Unknown'),
+                    'map': match.get('map', 'Unknown'),
+                    'date': match_date,
+                    'final_score': f"{team1_score}-{team2_score}",
+                    'user_team': match.get('user_team', 'Unknown'),
+                    'result': "W" if match.get('user_won', False) else "L",
+                    'is_win': match.get('user_won', False),
+                    'kills': match.get('user_kills', 0),
+                    'deaths': match.get('user_deaths', 0),
+                    'ended_at': match.get('ended_at', '')  # For sorting
+                }
+                formatted_matches.append(formatted_match)
+            
+            # Sort matches by ended_at in descending order to ensure newest first
+            formatted_matches.sort(key=lambda x: x.get("ended_at", ""), reverse=True)
+            
+            return formatted_matches
+            
+        except Exception as e:
+            logger.error(f"Error formatting matches for template: {e}")
+            return []
+
+    async def format_points_with_next_level(self, current_points: int, current_level: int) -> str:
+        """Format points with next level requirement using levels cog configuration"""
+        try:
+            # Check if player is at Challenger level
+            if current_points >= LevelsCog.CHALLENGER_CONFIG["min_points"]:
+                return f"{current_points} Points"
+            
+            # Get current level based on points
+            actual_level = LevelsCog.get_level_from_points(current_points)
+            
+            # Check if at max regular level (level 10)
+            if actual_level >= 10:
+                # If at level 10, next threshold is Challenger
+                next_level_points = LevelsCog.CHALLENGER_CONFIG["min_points"]
+                return f"{current_points} / {next_level_points} Points"
+            
+            # Find next level threshold
+            next_level = actual_level + 1
+            if next_level in LevelsCog.LEVEL_CONFIG:
+                next_level_points = LevelsCog.LEVEL_CONFIG[next_level]["min_points"]
+            else:
+                # Fallback to Challenger threshold
+                next_level_points = LevelsCog.CHALLENGER_CONFIG["min_points"]
+            
+            return f"{current_points} / {next_level_points} Points"
+            
+        except Exception as e:
+            logger.error(f"Error formatting points: {e}")
+            return f"{current_points} Points"
 
 
 async def setup(bot):

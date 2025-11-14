@@ -256,6 +256,10 @@ class Match:
     async def get_user_matches(cls, discord_id: str, limit: int = 5):
         """Get the last N matches for a specific user"""
         loop = asyncio.get_running_loop()
+        
+        # Ensure limit is a valid integer
+        if limit is None or limit < 0:
+            limit = 0  # 0 means no limit
 
         def db_select():
             try:
@@ -350,6 +354,22 @@ class Match:
                             user_won = (user_team == "Team1" and team1_score > team2_score) or \
                                       (user_team == "Team2" and team2_score > team1_score)
 
+                        # Get user stats from teams_stats if available
+                        user_kills = 0
+                        user_deaths = 0
+                        if teams_stats_data:
+                            if user_team == "Team1":
+                                team_stats = teams_stats_data.get("team1", {})
+                            else:
+                                team_stats = teams_stats_data.get("team2", {})
+                            
+                            players_stats = team_stats.get("players", [])
+                            for player_stat in players_stats:
+                                if player_stat.get("discord_id") == discord_id:
+                                    user_kills = player_stat.get("kills", 0)
+                                    user_deaths = player_stat.get("deaths", 0)
+                                    break
+
                         # Add processed match data
                         match_info = {
                             "match_id": match.get("match_id"),
@@ -359,11 +379,13 @@ class Match:
                             "team2_score": team2_score,
                             "user_team": user_team,
                             "user_won": user_won,
+                            "user_kills": user_kills,
+                            "user_deaths": user_deaths,
                         }
                         user_matches.append(match_info)
 
-                        # Stop when we have enough matches
-                        if len(user_matches) >= limit:
+                        # Stop when we have enough matches (only if limit is positive)
+                        if limit > 0 and len(user_matches) >= limit:
                             break
 
                 return user_matches

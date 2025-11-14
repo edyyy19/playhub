@@ -4,6 +4,7 @@ Generates leaderboard images with player avatars and statistics
 """
 
 import os
+import sys
 import tempfile
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont
@@ -13,15 +14,29 @@ import asyncio
 import logging
 from typing import List, Dict, Optional
 
+# Add parent directories to path to import from cogs
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+from cogs.levels import LevelsCog
+
 logger = logging.getLogger(__name__)
 
 
 class LeaderboardTemplateGenerator:
     """Generator pentru template-ul de leaderboard folosind Pillow"""
     
-    def __init__(self, background_image_path: str = "template_images/arena_faceit_leaderboard.webp"):
+    def __init__(self, background_image_path: str = "template_images/leaderboard.png"):
         self.background_image_path = background_image_path
-        self.default_font_path = "fonts/font-black.ttf"
+        self.default_font_path = "fonts/fira_code_semibold.ttf"
+
+    def _get_project_root(self) -> str:
+        """Get the project root directory"""
+        return os.path.dirname(os.path.dirname(__file__))
+
+    def _ensure_rgba(self, image: Image.Image) -> Image.Image:
+        """Ensure image is in RGBA format"""
+        if image.mode != 'RGBA':
+            return image.convert('RGBA')
+        return image
 
     async def download_and_create_round_avatar(self, bot, discord_user_id: int, size: int = 80) -> Optional[Image.Image]:
         """Download user avatar and create a round avatar image"""
@@ -81,10 +96,10 @@ class LeaderboardTemplateGenerator:
         display_name: str, 
         league_table_name: str
     ) -> str:
-        """Generate leaderboard image using Pillow"""
+        """Generate leaderboard image using Pillow with new coordinates"""
         try:
             # Get the project root directory
-            project_root = os.path.dirname(os.path.dirname(__file__))
+            project_root = self._get_project_root()
             
             # Load the background image
             background_path = os.path.join(project_root, self.background_image_path)
@@ -97,44 +112,43 @@ class LeaderboardTemplateGenerator:
             # Create a drawing context
             draw = ImageDraw.Draw(image)
             
-            # Load the custom font
+            # Load fonts with different sizes
             font_path = os.path.join(project_root, self.default_font_path)
-            try:
-                font = ImageFont.truetype(font_path, 72)  # Font size for leaderboard
-                logger.info(f"Loaded custom font: {font_path}")
-            except (IOError, OSError) as e:
-                logger.warning(f"Could not load font from {font_path}, using default font: {e}")
-                font = ImageFont.load_default()
+            fonts = {}
+            font_sizes = [24, 32, 54]  # Font sizes needed for leaderboard
             
-            # Define text color (white)
-            text_color = (255, 255, 255)
+            for size in font_sizes:
+                try:
+                    fonts[size] = ImageFont.truetype(font_path, size)
+                except (IOError, OSError) as e:
+                    logger.warning(f"Could not load font size {size} from {font_path}, using default font: {e}")
+                    fonts[size] = ImageFont.load_default()
             
-            # Layout configuration
-            avatar_size = 80  # Size of round avatars
+            # Define colors
+            text_color = (255, 255, 255)        # White
+            wins_color = (87, 242, 135)          # #57F287 in RGB (green)
+            losses_color = (255, 72, 72)        # #FF4848 in RGB (red)
             
-            # Y positions for each row (top 10 players)
-            row_y_positions = [
-                198,   # Row 1
-                322,   # Row 2
-                446,   # Row 3
-                577,   # Row 4
-                709,   # Row 5
-                840,   # Row 6
-                963,   # Row 7
-                1096,  # Row 8
-                1227,  # Row 9
-                1351   # Row 10
-        ]
+            # Add league name at (102, 186) with font size 54 - use display_name instead of league_table_name
+            draw.text((98, 168), str(display_name), font=fonts[54], fill=text_color, anchor="lm")
             
-            # Coordinates for each column
-            avatar_x = 626  # Position for avatar (before name)
-            name_x = 720
-            points_x = 1208
-            games_x = 1345
-            wins_x = 1487
-            losses_x = 1635
-            kills_x = 1784
-            deaths_x = 1928
+            # Avatar and nickname configuration
+            avatar_size = 60  # 60x60 as specified
+            avatar_x = 176   # X coordinate for avatar
+            nickname_x = avatar_x + avatar_size + 15  # Nickname right after avatar with small gap
+            
+            # Other column coordinates
+            level_icon_x = 560
+            points_x = 700
+            rating_x = 847
+            rating_square_x = 847  # Poziție X independentă pentru pătratul de rating
+            wins_x = 993
+            losses_x = 1139
+            win_rate_x = 1285
+            
+            # Base Y coordinate and gap between players
+            base_y = 383
+            player_gap = 105  # Gap between players (you can adjust this)
             
             # Download all avatars concurrently
             avatar_tasks = []
@@ -161,46 +175,104 @@ class LeaderboardTemplateGenerator:
             
             # Add each player's data
             for i, player in enumerate(players):
-                # Skip if we exceed the maximum number of rows
-                if i >= len(row_y_positions):
-                    logger.warning(f"Player {i+1} exceeds maximum leaderboard positions, skipping")
-                    break
-                    
-                y_position = row_y_positions[i]
+                # Calculate Y position for this player
+                player_y = base_y + (i * player_gap)
                 
                 # Add round avatar if available
                 if i in avatar_lookup:
                     avatar = avatar_lookup[i]
-                    avatar_y = y_position - (avatar_size // 2)  # Center vertically
+                    avatar_y = player_y - (avatar_size // 2)  # Center vertically
                     image.paste(avatar, (avatar_x, avatar_y), avatar)
                 
-                # Player name
-                draw.text((name_x, y_position), str(player['nickname']), font=font, fill=text_color, anchor="lm")
+                # Nickname - right after avatar, font size 24
+                nickname = player.get('nickname', 'Unknown')
+                draw.text((nickname_x, player_y), str(nickname), font=fonts[24], fill=text_color, anchor="lm")
                 
-                # Points
-                draw.text((points_x, y_position), str(player['points']), font=font, fill=text_color, anchor="mm")
+                # Level icon - 574, 381 with 47 width 37 height
+                try:
+                    points = player.get('points', 0)
+                    level_icon_path = LevelsCog.get_level_icon_path(points)
+                    if level_icon_path and os.path.exists(level_icon_path):
+                        level_icon = Image.open(level_icon_path)
+                        
+                        # Convert to RGBA if needed
+                        level_icon = self._ensure_rgba(level_icon)
+                        
+                        # Resize to specified dimensions (47x37)
+                        level_icon = level_icon.resize((47, 37), Image.Resampling.LANCZOS)
+                        
+                        # Position the level icon
+                        icon_y = player_y - 37 // 2  # Center vertically
+                        image.paste(level_icon, (level_icon_x, icon_y), level_icon)
+                except Exception as e:
+                    logger.warning(f"Could not load level icon for player {i}: {e}")
                 
-                # Total games
-                draw.text((games_x, y_position), str(player['total_games']), font=font, fill=text_color, anchor="mm")
+                # Points - font size 32, 697 381
+                points = player.get('points', 0)
+                draw.text((points_x, player_y), str(points), font=fonts[32], fill=text_color, anchor="mm")
                 
-                # Wins
-                draw.text((wins_x, y_position), str(player['wins']), font=font, fill=text_color, anchor="mm")
+                # Rating (K/D ratio) - font size 32, 844 381
+                kills = player.get('kills', 0)
+                deaths = player.get('deaths', 0)
+                if deaths == 0:
+                    rating_value = float(kills) if kills > 0 else 0.0
+                    rating = f"{kills:.2f}" if kills > 0 else "0.00"
+                else:
+                    rating_value = kills / deaths
+                    rating = f"{rating_value:.2f}"
                 
-                # Losses
-                draw.text((losses_x, y_position), str(player['losses']), font=font, fill=text_color, anchor="mm")
+                # Add rating square indicator based on rating value
+                try:
+                    rating_square_path = self._get_rating_square_path(rating_value)
+                    if rating_square_path and os.path.exists(rating_square_path):
+                        rating_square = Image.open(rating_square_path)
+                        
+                        # Convert to RGBA if needed
+                        rating_square = self._ensure_rgba(rating_square)
+                        
+                        # Position the rating square using independent X coordinate
+                        square_x = rating_square_x - rating_square.width // 2  # Center horizontally at rating_square_x
+                        square_y = player_y - rating_square.height // 2  # Center vertically at player's Y
+                        image.paste(rating_square, (square_x, square_y), rating_square)
+                except Exception as e:
+                    logger.warning(f"Could not load rating square for player {i}: {e}")
                 
-                # Kills
-                draw.text((kills_x, y_position), str(player['kills']), font=font, fill=text_color, anchor="mm")
+                # Determine rating text color based on rating value
+                if rating_value <= 0.50:
+                    # Rating 0-0.50: red color
+                    rating_text_color = (255, 72, 72)    # #FF4848 in RGB (red)
+                elif rating_value <= 1.0:
+                    # Rating 0.50-1.0: yellow color
+                    rating_text_color = (255, 197, 51)   # #FFC533 in RGB (yellow)
+                else:
+                    # Rating >1.0: green color
+                    rating_text_color = (87, 242, 135)   # #57F287 in RGB (green)
                 
-                # Deaths
-                draw.text((deaths_x, y_position), str(player['deaths']), font=font, fill=text_color, anchor="mm")
+                # Display the rating text with color based on rating value
+                draw.text((rating_x, player_y), rating, font=fonts[32], fill=rating_text_color, anchor="mm")
+                
+                # Wins - font size 32, 992 381, color 57F287
+                wins = player.get('wins', 0)
+                draw.text((wins_x, player_y), str(wins), font=fonts[32], fill=wins_color, anchor="mm")
+                
+                # Losses - font size 32, 1133 381, color FF4848
+                losses = player.get('losses', 0)
+                draw.text((losses_x, player_y), str(losses), font=fonts[32], fill=losses_color, anchor="mm")
+                
+                # Win rate - font size 32, 1280 381
+                total_games = wins + losses
+                if total_games > 0:
+                    win_rate = f"{round((wins / total_games) * 100)}%"
+                else:
+                    win_rate = "0%"
+                draw.text((win_rate_x, player_y), win_rate, font=fonts[32], fill=text_color, anchor="mm")
             
             # Save the image to a temporary file
             temp_path = os.path.join(
                 tempfile.gettempdir(),
-                f"leaderboard_{league_table_name}_{int(datetime.now().timestamp())}.webp",
+                f"leaderboard_{league_table_name}_{int(datetime.now().timestamp())}.png",
             )
-            image.save(temp_path, "WebP", quality=85)
+            image.save(temp_path, "PNG", quality=95)
             
             logger.info(f"Leaderboard image generated successfully: {temp_path}")
             return temp_path
@@ -231,9 +303,9 @@ class LeaderboardTemplateGenerator:
                 
             temp_path = os.path.join(
                 tempfile.gettempdir(), 
-                f"leaderboard_error_{league_table_name}_{int(datetime.now().timestamp())}.webp"
+                f"leaderboard_error_{league_table_name}_{int(datetime.now().timestamp())}.png"
             )
-            fallback_image.save(temp_path, "WebP", quality=85)
+            fallback_image.save(temp_path, "PNG", quality=95)
             
             logger.info(f"Created fallback leaderboard image: {temp_path}")
             return temp_path
@@ -243,15 +315,32 @@ class LeaderboardTemplateGenerator:
             # Return a dummy path - calling code should handle this gracefully
             return ""
 
-    def get_image_dimensions(self) -> tuple:
-        """Get the dimensions of the background image"""
+    def _get_rating_square_path(self, rating_value: float) -> str:
+        """Get the path to the appropriate rating square based on rating value"""
         try:
-            project_root = os.path.dirname(os.path.dirname(__file__))
-            background_path = os.path.join(project_root, self.background_image_path)
+            project_root = self._get_project_root()
+            template_images_dir = os.path.join(project_root, 'template_images')
             
-            if os.path.exists(background_path):
-                with Image.open(background_path) as img:
-                    return img.size
-            return (1920, 1080)  # Default dimensions
-        except Exception:
-            return (1920, 1080)  # Default dimensions
+            # Determine which square to use based on rating value
+            if rating_value <= 0.50:
+                # Rating 0-0.50: red square
+                square_name = "leaderboard_square_red.png"
+            elif rating_value <= 1.0:
+                # Rating 0.50-1.0: yellow square
+                square_name = "leaderboard_square_yellow.png"
+            else:
+                # Rating >1.0: green square
+                square_name = "leaderboard_square_green.png"
+            
+            square_path = os.path.join(template_images_dir, square_name)
+            
+            # Check if the square image exists
+            if os.path.exists(square_path):
+                return square_path
+            else:
+                logger.warning(f"Rating square not found: {square_path}")
+                return ""
+                
+        except Exception as e:
+            logger.warning(f"Error determining rating square path: {e}")
+            return ""

@@ -4,20 +4,20 @@ from discord import app_commands
 from config import Config
 import asyncio
 import json
-from openai import OpenAI
 import os
 import logging
 from datetime import datetime
 from models.match import Match
 from models.stats import Stats
-from models.scoreboard_config import ScoreboardConfig
+from models.scoreboard_config import ScoreboardConfig, ScoreboardConfigManager
 from models.season import Season
-from assets.template_generators.scoreboard_generator import ScoreboardResultsTemplateGenerator
+from assets.template_generators.scoreboard_generator import (
+    ScoreboardResultsTemplateGenerator,
+)
+from cogs import manual_scoreboard
+from cogs import dynamic_scoreboard
 
 logger = logging.getLogger(__name__)
-
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
@@ -92,12 +92,12 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
 
         # Check if user participated in the match
         user_discord_id = str(interaction.user.id)
-        
+
         # Get teams data from new structure
         teams_data = json.loads(match_data.get("teams", "{}"))
         team1_players = teams_data.get("team1", {}).get("players", [])
         team2_players = teams_data.get("team2", {}).get("players", [])
-        
+
         all_players = team1_players + team2_players
 
         user_participated = False
@@ -122,6 +122,12 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
             )
             return
 
+        # Check scoreboard submission method (dynamic vs manual)
+        guild_id = interaction.guild.id
+        submission_method = ScoreboardConfigManager.get_method(guild_id)
+
+        logger.info(f"Guild {guild_id} scoreboard method: {submission_method}")
+
         # Ask for screenshot upload
         upload_embed = discord.Embed(
             title=f"{Config.ICONS['camera']} Upload Scoreboard Screenshot",
@@ -139,6 +145,7 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
         self.bot = interaction.client
         self.match_data = match_data
         self.user_id = interaction.user.id
+        self.submission_method = submission_method  # Store the method for later use
 
         # Wait for image upload
         try:
@@ -155,37 +162,44 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
                     )
                 )
 
-            message = await self.bot.wait_for(
-                "message", check=check, timeout=60.0
-            )  
-            
-            # Show processing embed
-            processing_embed = discord.Embed(
-                title=f"{Config.ICONS['updating']} Processing Screenshot",
-                description="Analyzing screenshot data...",
-                color=Config.EMBED_COLORS["yellow"],
-            )
-            processing_embed.add_field(
-                name=f"{Config.ICONS['stats_yellow']} Analysis Steps",
-                value="• Reading player statistics\n• Matching players to database\n• Calculating results\n• Generating final scoreboard",
-                inline=False,
-            )
-            processing_message = await interaction.followup.send(
-                embed=processing_embed, ephemeral=True
-            )
+            message = await self.bot.wait_for("message", check=check, timeout=60.0)
 
             # Get the image URL
             image_url = message.attachments[0].url
 
-            # Process the image with OpenAI GPT
-            await self.process_scoreboard_with_gpt(
-                interaction,
-                image_url,
-                match_data,
-                self.target_channel_id,
-                message,
-                processing_message,
-            )
+            # Route based on submission method
+            if submission_method == "manual":
+                # Manual mode: Upload to Cloudinary and create ticket channel
+                # Lock remains active - will be released when staff processes the submission
+                await manual_scoreboard.handle_manual_submission(
+                    interaction, str(match_id_int), match_data, image_url, message
+                )
+            else:
+                # Dynamic mode: Process with OpenAI
+                # Show processing embed
+                processing_embed = discord.Embed(
+                    title=f"{Config.ICONS['updating']} Processing Screenshot",
+                    description="Analyzing screenshot data...",
+                    color=Config.EMBED_COLORS["yellow"],
+                )
+                processing_embed.add_field(
+                    name=f"{Config.ICONS['stats_yellow']} Analysis Steps",
+                    value="• Reading player statistics\n• Matching players to database\n• Calculating results\n• Generating final scoreboard",
+                    inline=False,
+                )
+                processing_message = await interaction.followup.send(
+                    embed=processing_embed, ephemeral=True
+                )
+
+                # Process the image with OpenAI GPT
+                await self.process_scoreboard_with_gpt(
+                    interaction,
+                    image_url,
+                    match_data,
+                    self.target_channel_id,
+                    message,
+                    processing_message,
+                )
 
         except asyncio.TimeoutError:
             # Release the submission lock since user didn't upload in time
@@ -210,146 +224,22 @@ class MatchIDModal(discord.ui.Modal, title="Submit Scoreboard"):
         screenshot_message=None,
         processing_message=None,
     ):
-        """Process the scoreboard image using advanced OpenAI GPT with player matching"""
+        """Process the scoreboard image using dynamic_scoreboard module with OpenAI GPT"""
         try:
             # Get teams data from database
             teams_data = json.loads(match_data.get("teams", "{}"))
             team1_players = teams_data.get("team1", {}).get("players", [])
             team2_players = teams_data.get("team2", {}).get("players", [])
-            
-            # Create the expected players list for GPT with discord_ids
-            team1_players_info = [{"nickname": p["nickname"], "discord_id": p["discord_id"]} for p in team1_players]
-            team2_players_info = [{"nickname": p["nickname"], "discord_id": p["discord_id"]} for p in team2_players]
-            
-            # Define the advanced OpenAI call function with player matching
-            def make_openai_call():
-                return client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": f"""Analyze this Standoff 2 scoreboard screenshot and extract player statistics with smart player matching.
 
-EXPECTED PLAYERS FROM DATABASE:
-Team 1: {team1_players_info}
-Team 2: {team2_players_info}
-
-INSTRUCTIONS:
-1. First verify this is a valid Standoff 2 scoreboard with Counter-Terrorists vs Terrorists teams
-2. Extract all visible player names and their stats (kills, assists, deaths)
-   - FIRST STEP: Remove ALL clan tags before any processing
-   - Clan tags are in format "[TAG] PlayerName" - remove "[TAG] " completely
-   - Work ONLY with clean names for all subsequent steps
-3. CRITICAL: Player name extraction process
-   - When you see "[EXTN] User-1" in screenshot → extract as "User-1" 
-   - When you see "[PRO] Player123" in screenshot → extract as "Player123"
-   - NEVER include clan tags in any extracted names
-   - Use ONLY the clean names for matching and processing
-4. Match the clean extracted names directly to database players:
-   - Use ONLY clean names (no clan tags) from step 2
-   - Try exact name matches first between clean extracted names and database
-   - Then try substring matching (database name contained in clean extracted name)
-   - Handle variations like special characters, numbers
-   - Match case-insensitively
-5. Use FIXED team mapping: Team1 = Terrorists, Team2 = Counter-Terrorists
-6. For each player in the result, use the EXACT discord_id from the database
-7. Assign unmatched database players default stats (0 kills, 0 assists, 13 deaths)
-
-Return ONLY valid JSON in this exact format:
-{{
-  "game_detected": "standoff2" or "unknown",
-  "confidence": number (0.0-1.0 confidence this is valid Standoff 2 scoreboard),
-  "teams": {{
-    "team1": {{
-      "score": integer (Terrorists score),
-      "players": [
-        {{
-          "nickname": "exact_database_player_name",
-          "discord_id": "actual_discord_id_from_database",
-          "kills": integer,
-          "assists": integer, 
-          "deaths": integer,
-          "matched_from": "clean_extracted_name_from_screenshot" or "default_stats"
-        }}
-      ]
-    }},
-    "team2": {{
-      "score": integer (Counter-Terrorists score),
-      "players": [
-        {{
-          "nickname": "exact_database_player_name", 
-          "discord_id": "actual_discord_id_from_database",
-          "kills": integer,
-          "assists": integer,
-          "deaths": integer,
-          "matched_from": "clean_extracted_name_from_screenshot" or "default_stats"
-        }}
-      ]
-    }}
-  }},
-  "matching_details": [
-    "details about each matching attempt for debugging"
-  ]
-}}
-
-IMPORTANT RULES:
-- Include ALL database players in the result (either with matched stats or default stats)
-- Use exact database nicknames and discord_ids in the result
-- Team1 = Terrorists (T side), Team2 = Counter-Terrorists (CT side)
-- If a database player isn't found in screenshot, give them default stats: 0K/0A/13D
-- Confidence should be 0.8+ only for clear Standoff 2 scoreboards
-- Extract exact numbers for kills, assists, deaths as shown in screenshot
-- CRITICAL: Remove "[TAG] " prefixes BEFORE any processing or matching
-- Store clean extracted name (without clan tags) in "matched_from"
-- VERY IMPORTANT: Return the exact discord_id from the database for each player
-- VERY IMPORTANT: Extract players WITHOUT clan tags from the very beginning""",
-                                },
-                                {"type": "image_url", "image_url": {"url": image_url}},
-                            ],
-                        }
-                    ],
-                    max_tokens=2000,
-                )
-
-            # Run the OpenAI call in a separate thread to avoid blocking Discord's event loop
-            response = await asyncio.to_thread(make_openai_call)
-
-            # Log token usage
-            usage = response.usage
-            logger.info(
-                f"🟢 OpenAI Token Usage — Prompt: {usage.prompt_tokens}, "
-                f"Completion: {usage.completion_tokens}, "
-                f"Total: {usage.total_tokens}"
-            )
-
-            # Parse the JSON response
-            content = response.choices[0].message.content.strip()
-
-            # Try to extract JSON from the response
+            # Call the dynamic_scoreboard module to process with GPT
             try:
-                # Find JSON in the response
-                if "```json" in content:
-                    json_start = content.find("```json") + 7
-                    json_end = content.find("```", json_start)
-                    json_content = content[json_start:json_end].strip()
-                elif "{" in content:
-                    json_start = content.find("{")
-                    json_end = content.rfind("}") + 1
-                    json_content = content[json_start:json_end]
-                else:
-                    json_content = content
+                extracted_data = await dynamic_scoreboard.process_with_gpt(
+                    image_url, team1_players, team2_players
+                )
+            except Exception as gpt_error:
+                logger.error(f"🟢 Dynamic scoreboard processing failed: {gpt_error}")
 
-                extracted_data = json.loads(json_content)
-                logger.info(f"🟢 GPT extracted data: {json.dumps(extracted_data, indent=2)}")
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"🟢 Failed to parse OpenAI JSON response: {e}")
-                logger.error(f"🟢 Raw response: {content}")
-                
-                # Release the submission lock since parsing failed
+                # Release the submission lock since processing failed
                 try:
                     await Match.release_submission_lock(match_data["match_id"])
                 except Exception as lock_error:
@@ -357,7 +247,8 @@ IMPORTANT RULES:
 
                 await self._delete_screenshot_safely(screenshot_message)
                 await interaction.followup.send(
-                    "Failed to parse scoreboard data. Please try again.", ephemeral=True
+                    "Failed to process scoreboard data. Please try again.",
+                    ephemeral=True,
                 )
                 return
 
@@ -435,13 +326,17 @@ IMPORTANT RULES:
             teams = extracted_data.get("teams", {})
             team1_data = teams.get("team1", {})
             team2_data = teams.get("team2", {})
-            
+
             # Get scores
             team1_score = team1_data.get("score", 0)
             team2_score = team2_data.get("score", 0)
 
             # Validate score reasonableness
-            if team1_score < 0 or team2_score < 0 or (team1_score == 0 and team2_score == 0):
+            if (
+                team1_score < 0
+                or team2_score < 0
+                or (team1_score == 0 and team2_score == 0)
+            ):
                 # Release the submission lock since scores are invalid
                 try:
                     await Match.release_submission_lock(match_data["match_id"])
@@ -473,20 +368,17 @@ IMPORTANT RULES:
 
             # 🔍 VERIFICARE SCOREBOARD - Nouă funcționalitate
             # Verifică dacă meciul necesită verificare manuală (niciuna din echipe nu are 13)
-            verification_data = {
-                "teams": teams,
-                "match_data": match_data
-            }
-            
+            verification_data = {"teams": teams, "match_data": match_data}
+
             needs_verification = await self.process_scoreboard_verification(
-                match_data["match_id"], 
-                team1_score, 
-                team2_score, 
-                verification_data, 
+                match_data["match_id"],
+                team1_score,
+                team2_score,
+                verification_data,
                 interaction,
-                processing_message
+                processing_message,
             )
-            
+
             if needs_verification:
                 return
 
@@ -495,40 +387,60 @@ IMPORTANT RULES:
             # 🚀 OPTIMIZARE BATCH: Obține stats pentru toți jucătorii deodată
             all_player_ids = []
             all_gpt_players = []
-            
+
             # Colectează toți ID-urile de jucători
             for gpt_player in team1_data.get("players", []):
                 all_player_ids.append(int(gpt_player["discord_id"]))
-                all_gpt_players.append((gpt_player, 1, team1_score > team2_score))  # team, won
-                
+                all_gpt_players.append(
+                    (gpt_player, 1, team1_score > team2_score)
+                )  # team, won
+
             for gpt_player in team2_data.get("players", []):
                 all_player_ids.append(int(gpt_player["discord_id"]))
-                all_gpt_players.append((gpt_player, 2, team2_score > team1_score))  # team, won
-            
+                all_gpt_players.append(
+                    (gpt_player, 2, team2_score > team1_score)
+                )  # team, won
+
             # Fetch stats în batch pentru toți jucătorii deodată
             league_name = match_data.get("league")
-            stats_batch = await Stats.get_multiple_user_stats(all_player_ids, league_name)
-            logger.info(f"🟢 Fetched stats in batch for {len(all_player_ids)} players in league {league_name}")
-            
+            stats_batch = await Stats.get_multiple_user_stats(
+                all_player_ids, league_name
+            )
+            logger.info(
+                f"🟢 Fetched stats in batch for {len(all_player_ids)} players in league {league_name}"
+            )
+
             # Process all players cu datele din batch
             updated_team1 = []
             updated_team2 = []
-            
+
             for gpt_player, team_num, team_won in all_gpt_players:
                 discord_id = gpt_player["discord_id"]
-                
+
+                # Get current points from batch stats (before match)
+                stats_result = stats_batch.get(discord_id)
+                old_points = 0
+                if stats_result and stats_result.get("success"):
+                    stats_data = stats_result.get("stats", {})
+                    old_points = stats_data.get("points", 0)
+
                 # Calculate points using batch stats data
                 was_absent = gpt_player.get("matched_from", "") == "default_stats"
                 points_received = await self._calculate_player_points_batch(
                     discord_id, league_name, was_absent, team_won, stats_batch
                 )
-                
+
+                # Calculate total points after this match
+                current_points = old_points + points_received
+
                 # Calculate rating using bot formula: (KILLS + 0.5 × ASSISTS) / max(1, DEATHS)
                 kills = gpt_player.get("kills", 0)
                 assists = gpt_player.get("assists", 0)
-                deaths = max(1, gpt_player.get("deaths", 13))  # Prevent division by zero
+                deaths = max(
+                    1, gpt_player.get("deaths", 13)
+                )  # Prevent division by zero
                 rating = round((kills + 0.5 * assists) / deaths, 1)
-                
+
                 updated_player = {
                     "nickname": gpt_player["nickname"],
                     "discord_id": discord_id,
@@ -536,11 +448,12 @@ IMPORTANT RULES:
                     "assists": assists,
                     "deaths": gpt_player.get("deaths", 13),
                     "rating": rating,
-                    "points": points_received,  # For generator
-                    "points_received": points_received,  # For database
-                    "matched_from": gpt_player.get("matched_from", "default_stats")
+                    "points": points_received,  # Delta for display
+                    "points_received": points_received,  # Delta for database
+                    "current_points": current_points,  # Total points after match for level icon
+                    "matched_from": gpt_player.get("matched_from", "default_stats"),
                 }
-                
+
                 if team_num == 1:
                     updated_team1.append(updated_player)
                 else:
@@ -549,7 +462,7 @@ IMPORTANT RULES:
             # Update database - create copies without extra fields for database storage
             team1_for_db = []
             team2_for_db = []
-            
+
             for player in updated_team1:
                 db_player = {
                     "nickname": player["nickname"],
@@ -557,10 +470,10 @@ IMPORTANT RULES:
                     "kills": player["kills"],
                     "assists": player["assists"],
                     "deaths": player["deaths"],
-                    "points_received": player["points_received"]
+                    "points_received": player["points_received"],
                 }
                 team1_for_db.append(db_player)
-            
+
             for player in updated_team2:
                 db_player = {
                     "nickname": player["nickname"],
@@ -568,10 +481,10 @@ IMPORTANT RULES:
                     "kills": player["kills"],
                     "assists": player["assists"],
                     "deaths": player["deaths"],
-                    "points_received": player["points_received"]
+                    "points_received": player["points_received"],
                 }
                 team2_for_db.append(db_player)
-            
+
             await Match.complete_submission(
                 match_data["match_id"],
                 team1_for_db,
@@ -596,11 +509,15 @@ IMPORTANT RULES:
 
             # Delete the screenshot message to clean up
             await self._delete_screenshot_safely(screenshot_message)
-            
+
             # Show success message
-            matched_count = sum(1 for p in updated_team1 + updated_team2 if p.get("matched_from", "") != "default_stats")
+            matched_count = sum(
+                1
+                for p in updated_team1 + updated_team2
+                if p.get("matched_from", "") != "default_stats"
+            )
             total_players = len(updated_team1 + updated_team2)
-            
+
             success_embed = discord.Embed(
                 title=f"{Config.ICONS['success']} Scoreboard Successfully Processed",
                 description="Screenshot analysis completed successfully!",
@@ -655,7 +572,7 @@ IMPORTANT RULES:
         # Extract league from match data
         league_name = match_data.get("league")
         logger.info(f"🟢 Updating stats for match in league: {league_name}")
-        
+
         # Get the default league from config table to determine if level roles should be updated
         default_league = await self.get_default_league_from_config()
         is_default_league = league_name == default_league
@@ -725,6 +642,24 @@ IMPORTANT RULES:
                 if "assists" not in player:
                     player["assists"] = 0
 
+            # Determine MVP (player with most kills)
+            all_players = team1 + team2
+            mvp_player = (
+                max(all_players, key=lambda p: p.get("kills", 0))
+                if all_players
+                else None
+            )
+
+            # Add MVP data to match_data for the generator
+            if mvp_player:
+                match_data["mvp"] = {
+                    "nickname": mvp_player.get("nickname", "Unknown"),
+                    "points": mvp_player.get(
+                        "current_points", 0
+                    ),  # Use current_points for level calculation
+                    "kills": mvp_player.get("kills", 0),
+                }
+
             # Create scoreboard generator instance
             scoreboard_generator = ScoreboardResultsTemplateGenerator()
 
@@ -735,7 +670,7 @@ IMPORTANT RULES:
                 team1=team1,
                 team2=team2,
                 team1_score=team1_score,
-                team2_score=team2_score
+                team2_score=team2_score,
             )
 
             if not image_path or not os.path.exists(image_path):
@@ -748,7 +683,7 @@ IMPORTANT RULES:
                 color=Config.MAIN_COLOR,
             )
             embed.set_image(url="attachment://scoreboard_results.png")
-            
+
             current_date = datetime.now().strftime("%H:%M | %d/%m/%Y")
             embed.set_footer(text=f"Results processed at {current_date}")
 
@@ -766,16 +701,20 @@ IMPORTANT RULES:
             teams_data = match_data.get("teams", {})
             if isinstance(teams_data, str):
                 teams_data = json.loads(teams_data)
-            
-            team1_captain = teams_data.get('team1', {}).get('captain', 'Unknown')
-            team2_captain = teams_data.get('team2', {}).get('captain', 'Unknown')
-            winner = f"Team {team1_captain}" if team1_score > team2_score else f"Team {team2_captain}"
+
+            team1_captain = teams_data.get("team1", {}).get("captain", "Unknown")
+            team2_captain = teams_data.get("team2", {}).get("captain", "Unknown")
+            winner = (
+                f"Team {team1_captain}"
+                if team1_score > team2_score
+                else f"Team {team2_captain}"
+            )
             fallback_msg = f"{Config.ICONS['success']} **Match {match_data['match_id']} Results**\n"
             fallback_msg += f"**Map:** {match_data.get('map', 'Unknown')}\n"
             fallback_msg += f"**Score:** {team1_score} - {team2_score}\n"
             fallback_msg += f"**Winner:** {winner}\n\n"
             fallback_msg += "*(Image generation failed - showing text summary)*"
-            
+
             target_channel = interaction.guild.get_channel(target_channel_id)
             if target_channel:
                 await target_channel.send(fallback_msg)
@@ -840,24 +779,34 @@ IMPORTANT RULES:
             # Fallback to old system
             return 20 if is_win else -10
 
-    async def _calculate_player_points_batch(self, discord_id, match_league, was_absent, team_won, stats_batch):
+    async def _calculate_player_points_batch(
+        self, discord_id, match_league, was_absent, team_won, stats_batch
+    ):
         """Optimized helper method to calculate points using batch stats data"""
         default_league = await self.get_default_league_from_config()
         discord_id_int = int(discord_id)
-        
+
         if was_absent and match_league == default_league:
             # Player was absent (left match): apply leaving penalty based on their level
             current_points = self._get_points_from_batch(discord_id_int, stats_batch)
-            is_challenger = await self.check_challenger_status(discord_id_int, current_points)
-            return await self.calculate_leaving_penalty_points(discord_id_int, match_league, is_challenger)
+            is_challenger = await self.check_challenger_status(
+                discord_id_int, current_points
+            )
+            return await self.calculate_leaving_penalty_points(
+                discord_id_int, match_league, is_challenger
+            )
         elif was_absent:
             # Player was absent in non-default league: fixed penalty
             return -45
         elif match_league == default_league:
             # Player was present: normal win/loss calculation
             current_points = self._get_points_from_batch(discord_id_int, stats_batch)
-            is_challenger = await self.check_challenger_status(discord_id_int, current_points)
-            return await self.calculate_level_based_points(discord_id_int, team_won, match_league, is_challenger)
+            is_challenger = await self.check_challenger_status(
+                discord_id_int, current_points
+            )
+            return await self.calculate_level_based_points(
+                discord_id_int, team_won, match_league, is_challenger
+            )
         else:
             # Player was present in non-default league: normal fixed points
             return 25 if team_won else -25
@@ -870,23 +819,37 @@ IMPORTANT RULES:
             return stats_data.get("points", 0)
         return 0
 
-    async def _calculate_player_points(self, discord_id, match_league, was_absent, team_won):
+    async def _calculate_player_points(
+        self, discord_id, match_league, was_absent, team_won
+    ):
         """Helper method to calculate points for a player based on league and participation"""
         default_league = await self.get_default_league_from_config()
-        
+
         if was_absent and match_league == default_league:
             # Player was absent (left match): apply leaving penalty based on their level
-            current_points = await self.get_player_current_points(int(discord_id), match_league)
-            is_challenger = await self.check_challenger_status(int(discord_id), current_points)
-            return await self.calculate_leaving_penalty_points(int(discord_id), match_league, is_challenger)
+            current_points = await self.get_player_current_points(
+                int(discord_id), match_league
+            )
+            is_challenger = await self.check_challenger_status(
+                int(discord_id), current_points
+            )
+            return await self.calculate_leaving_penalty_points(
+                int(discord_id), match_league, is_challenger
+            )
         elif was_absent:
             # Player was absent in non-default league: fixed penalty
             return -45
         elif match_league == default_league:
             # Player was present: normal win/loss calculation
-            current_points = await self.get_player_current_points(int(discord_id), match_league)
-            is_challenger = await self.check_challenger_status(int(discord_id), current_points)
-            return await self.calculate_level_based_points(int(discord_id), team_won, match_league, is_challenger)
+            current_points = await self.get_player_current_points(
+                int(discord_id), match_league
+            )
+            is_challenger = await self.check_challenger_status(
+                int(discord_id), current_points
+            )
+            return await self.calculate_level_based_points(
+                int(discord_id), team_won, match_league, is_challenger
+            )
         else:
             # Player was present in non-default league: normal fixed points
             return 25 if team_won else -25
@@ -902,45 +865,53 @@ IMPORTANT RULES:
             logger.error(f"🟢 Error checking challenger status for {discord_id}: {e}")
             return False
 
-    async def _process_teams_data(self, team1_data, team2_data, match_data, team1_score, team2_score):
+    async def _process_teams_data(
+        self, team1_data, team2_data, match_data, team1_score, team2_score
+    ):
         """Process team data and calculate points - optimized helper method for verification"""
-        
+
         # 🚀 OPTIMIZARE BATCH: Colectează toți jucătorii pentru batch query
         all_player_ids = []
         all_gpt_players = []
-        
+
         # Colectează jucătorii din team1
         for gpt_player in team1_data.get("players", []):
             all_player_ids.append(int(gpt_player["discord_id"]))
-            all_gpt_players.append((gpt_player, 1, team1_score > team2_score))  # team, won
-            
-        # Colectează jucătorii din team2  
+            all_gpt_players.append(
+                (gpt_player, 1, team1_score > team2_score)
+            )  # team, won
+
+        # Colectează jucătorii din team2
         for gpt_player in team2_data.get("players", []):
             all_player_ids.append(int(gpt_player["discord_id"]))
-            all_gpt_players.append((gpt_player, 2, team2_score > team1_score))  # team, won
-        
+            all_gpt_players.append(
+                (gpt_player, 2, team2_score > team1_score)
+            )  # team, won
+
         # Fetch stats în batch pentru toți jucătorii
         league_name = match_data.get("league")
         stats_batch = await Stats.get_multiple_user_stats(all_player_ids, league_name)
-        logger.info(f"🟢 [VERIFICATION] Fetched stats in batch for {len(all_player_ids)} players in league {league_name}")
-        
+        logger.info(
+            f"🟢 [VERIFICATION] Fetched stats in batch for {len(all_player_ids)} players in league {league_name}"
+        )
+
         all_players = []
-        
+
         # Process all players cu datele din batch
         for gpt_player, team_num, team_won in all_gpt_players:
             discord_id = gpt_player["discord_id"]
-            
+
             # Calculate points using batch data
             was_absent = gpt_player.get("matched_from", "") == "default_stats"
             points_received = await self._calculate_player_points_batch(
                 discord_id, league_name, was_absent, team_won, stats_batch
             )
-            
+
             kills = gpt_player.get("kills", 0)
             assists = gpt_player.get("assists", 0)
             deaths = max(1, gpt_player.get("deaths", 13))
             rating = round((kills + 0.5 * assists) / deaths, 1)
-            
+
             updated_player = {
                 "nickname": gpt_player["nickname"],
                 "discord_id": discord_id,
@@ -951,17 +922,17 @@ IMPORTANT RULES:
                 "points": points_received,
                 "points_received": points_received,
                 "matched_from": gpt_player.get("matched_from", "default_stats"),
-                "team": team_num
+                "team": team_num,
             }
             all_players.append(updated_player)
-        
+
         return all_players
 
     async def _prepare_teams_for_db(self, all_players):
         """Prepare team data for database storage"""
         team1_for_db = []
         team2_for_db = []
-        
+
         for player in all_players:
             db_player = {
                 "nickname": player["nickname"],
@@ -969,151 +940,177 @@ IMPORTANT RULES:
                 "kills": player["kills"],
                 "assists": player["assists"],
                 "deaths": player["deaths"],
-                "points_received": player["points_received"]
+                "points_received": player["points_received"],
             }
-            
+
             if player["team"] == 1:
                 team1_for_db.append(db_player)
             else:
                 team2_for_db.append(db_player)
-                
+
         return team1_for_db, team2_for_db
 
-    async def process_scoreboard_verification(self, match_id: int, team1_score: int, team2_score: int, 
-                                            extracted_data: dict, interaction: discord.Interaction,
-                                            processing_message=None):
+    async def process_scoreboard_verification(
+        self,
+        match_id: int,
+        team1_score: int,
+        team2_score: int,
+        extracted_data: dict,
+        interaction: discord.Interaction,
+        processing_message=None,
+    ):
         """Verifică dacă meciul necesită aprobare manuală"""
-        
+
         # Verifică dacă una din echipe are scorul 13 (meci terminat normal)
         if team1_score == 13 or team2_score == 13:
             # Meci normal - returnează False pentru a continua procesarea normală
             return False
-        
+
         # Meci necesită verificare - creează canal de verificare
         try:
             guild = interaction.guild
-            
+
             # Setează permisiunile pentru canalul de verificare
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)
+                guild.me: discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, manage_channels=True
+                ),
             }
-            
+
             # Adaugă permisiuni pentru utilizatori autorizați
             for user_id in Config.AUTHORIZED_USERS:
                 try:
                     user = guild.get_member(user_id)
                     if user:
-                        overwrites[user] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+                        overwrites[user] = discord.PermissionOverwrite(
+                            view_channel=True, send_messages=True
+                        )
                 except:
                     pass
-            
+
             # Adaugă permisiuni pentru utilizatorul care a submis screenshot-ul
             submitter = interaction.user
             overwrites[submitter] = discord.PermissionOverwrite(
-                view_channel=True, 
-                send_messages=True, 
+                view_channel=True,
+                send_messages=True,
                 read_message_history=True,
                 attach_files=True,
-                embed_links=True
+                embed_links=True,
             )
-            
+
             # Creează canalul specific pentru acest meci direct în guild (fără categorie)
             channel_name = f"🆔{match_id}┃match_verification"
             verification_channel = await guild.create_text_channel(
                 name=channel_name,
                 overwrites=overwrites,
-                reason=f"Verification needed for match #{match_id} with unusual score: {team1_score}-{team2_score}"
+                reason=f"Verification needed for match #{match_id} with unusual score: {team1_score}-{team2_score}",
             )
-            
+
             # Creează embed-ul pentru verificare
             verification_embed = discord.Embed(
                 title=f"{Config.ICONS['search_yellow']} Match Verification Required",
                 description=f"**Match ID:** {match_id}\n**Unusual Score:** {team1_score} - {team2_score}",
-                color=Config.EMBED_COLORS["yellow"]
+                color=Config.EMBED_COLORS["yellow"],
             )
-            
+
             verification_embed.add_field(
                 name=f"{Config.ICONS['info']} Why Verification?",
                 value="Neither team reached 13 rounds, which indicates the match may have ended early, had disconnections, or other issues that require manual review.",
-                inline=False
+                inline=False,
             )
-            
+
             verification_embed.add_field(
                 name=f"{Config.ICONS['stats_yellow']} Extracted Scores",
                 value=f"**Team 1 (T):** {team1_score} rounds\n**Team 2 (CT):** {team2_score} rounds",
-                inline=True
+                inline=True,
             )
-            
+
             verification_embed.add_field(
                 name="Submitted by",
                 value=f"{interaction.user.mention}\n({interaction.user.display_name})",
-                inline=True
+                inline=True,
             )
-            
+
             verification_embed.add_field(
                 name="Action Required",
                 value="Review the screenshot and determine if this match should be accepted or denied.",
-                inline=False
+                inline=False,
             )
-            
+
             verification_embed.set_footer(
                 text="Only authorized staff can approve or deny. Channel auto-deletes after decision."
             )
-            
+
             # Stochează datele pentru procesarea ulterioară
             verification_data = {
                 "teams": extracted_data.get("teams", {}),
-                "match_data": extracted_data.get("match_data")
+                "match_data": extracted_data.get("match_data"),
             }
-            
+
             # Creează view-ul cu butoane
             verification_view = ScoreboardVerificationView(
                 match_id=match_id,
-                team1_score=team1_score, 
+                team1_score=team1_score,
                 team2_score=team2_score,
                 extracted_data=verification_data,
                 original_interaction=interaction,
-                scoreboard_cog=self
+                scoreboard_cog=self,
             )
-            
+
             # Găsește mesajul cu screenshot pentru a-l face forward
             screenshot_message = None
             try:
                 # Găsește ultimul mesaj cu attachment de la user
                 async for message in interaction.channel.history(limit=50):
-                    if (message.author.id == interaction.user.id and 
-                        message.attachments and 
-                        any(att.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')) 
-                            for att in message.attachments)):
+                    if (
+                        message.author.id == interaction.user.id
+                        and message.attachments
+                        and any(
+                            att.filename.lower().endswith(
+                                (".png", ".jpg", ".jpeg", ".webp", ".gif")
+                            )
+                            for att in message.attachments
+                        )
+                    ):
                         screenshot_message = message
                         break
             except Exception as screenshot_error:
                 logger.error(f"🟢 Error finding screenshot message: {screenshot_error}")
-            
+
             # Trimite embed-ul cu butoanele în canalul de verificare
             verification_message = await verification_channel.send(
-                embed=verification_embed,
-                view=verification_view
+                embed=verification_embed, view=verification_view
             )
-            
+
             # Fă forward la mesajul cu screenshot-ul în canalul de verificare
             if screenshot_message:
                 try:
                     # Forward attachment-ul direct fără embed
                     await verification_channel.send(
-                        files=[await att.to_file() for att in screenshot_message.attachments 
-                               if att.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif'))]
+                        files=[
+                            await att.to_file()
+                            for att in screenshot_message.attachments
+                            if att.filename.lower().endswith(
+                                (".png", ".jpg", ".jpeg", ".webp", ".gif")
+                            )
+                        ]
                     )
-                    logger.info(f"🟢 Successfully forwarded screenshot for match {match_id} to verification channel")
-                    
+                    logger.info(
+                        f"🟢 Successfully forwarded screenshot for match {match_id} to verification channel"
+                    )
+
                     # Șterge screenshot-ul original după forward
                     try:
                         await screenshot_message.delete()
-                        logger.info(f"🟢 Deleted original screenshot message after forwarding to verification")
+                        logger.info(
+                            f"🟢 Deleted original screenshot message after forwarding to verification"
+                        )
                     except Exception as delete_error:
-                        logger.warning(f"🟢 Could not delete original screenshot message: {delete_error}")
-                        
+                        logger.warning(
+                            f"🟢 Could not delete original screenshot message: {delete_error}"
+                        )
+
                 except Exception as forward_error:
                     logger.error(f"🟢 Error forwarding screenshot: {forward_error}")
                     # Fallback - trimite un mesaj cu link-ul
@@ -1126,9 +1123,9 @@ IMPORTANT RULES:
                 await verification_channel.send(
                     f"{Config.ICONS['info']} **Screenshot not found.** Please check the original submission manually."
                 )
-            
+
             verification_view.message = verification_message
-            
+
             # Trimite embed de confirmare în interaction cu logica nouă de embeduri
             verification_embed_user = discord.Embed(
                 title=f"{Config.ICONS['info']} Match Submitted for Verification",
@@ -1150,42 +1147,54 @@ IMPORTANT RULES:
                 value=f"You can participate in the verification process here: {verification_channel.mention}\n*Note: You can view, send messages, and provide additional context if needed.*",
                 inline=False,
             )
-            verification_embed_user.set_footer(text="Screenshot processed and ready for review")
+            verification_embed_user.set_footer(
+                text="Screenshot processed and ready for review"
+            )
 
             if processing_message:
                 try:
                     await processing_message.edit(embed=verification_embed_user)
                 except discord.NotFound:
-                    await interaction.followup.send(embed=verification_embed_user, ephemeral=True)
+                    await interaction.followup.send(
+                        embed=verification_embed_user, ephemeral=True
+                    )
             else:
-                await interaction.followup.send(embed=verification_embed_user, ephemeral=True)
-            
-            logger.info(f"🟢 Created verification channel for match {match_id}: {verification_channel.name} (score: {team1_score}-{team2_score})")
-            
+                await interaction.followup.send(
+                    embed=verification_embed_user, ephemeral=True
+                )
+
+            logger.info(
+                f"🟢 Created verification channel for match {match_id}: {verification_channel.name} (score: {team1_score}-{team2_score})"
+            )
+
             return True  # Indică că meciul este în verificare
-            
+
         except Exception as e:
-            logger.error(f"🟢 Failed to create verification channel for match {match_id}: {e}")
-            
+            logger.error(
+                f"🟢 Failed to create verification channel for match {match_id}: {e}"
+            )
+
             # Fallback - respinge meciul și trimite doar un followup message
             error_embed = discord.Embed(
                 title=f"{Config.ICONS['unsuccess']} Verification Setup Failed",
                 description="Could not create verification channel. Match was not processed.",
-                color=Config.EMBED_COLORS["red"]
+                color=Config.EMBED_COLORS["red"],
             )
             error_embed.add_field(
                 name="Error Details",
                 value="The verification system encountered an error. Please try resubmitting or contact an administrator.",
-                inline=False
+                inline=False,
             )
             await interaction.followup.send(embed=error_embed, ephemeral=True)
-            
+
             # Release submission lock
             try:
                 await Match.release_submission_lock(match_id)
             except Exception as lock_error:
-                logger.error(f"🟢 Failed to release submission lock after verification error: {lock_error}")
-            
+                logger.error(
+                    f"🟢 Failed to release submission lock after verification error: {lock_error}"
+                )
+
             return True  # Indică că procesarea s-a oprit (chiar dacă cu eroare)
 
 
@@ -1199,18 +1208,26 @@ class DenyReasonModal(discord.ui.Modal, title="Deny Match - Provide Reason"):
         placeholder="Enter the reason why this match is being denied...",
         required=True,
         max_length=500,
-        style=discord.TextStyle.paragraph
+        style=discord.TextStyle.paragraph,
     )
 
     async def on_submit(self, interaction: discord.Interaction):
         # Procesează meciul ca fiind respins cu motivul specificat
-        await self.verification_view._process_verified_match(interaction, approved=False, deny_reason=self.reason.value)
+        await self.verification_view._process_verified_match(
+            interaction, approved=False, deny_reason=self.reason.value
+        )
 
 
 class ScoreboardVerificationView(discord.ui.View):
-    def __init__(self, match_id: int, team1_score: int, team2_score: int, 
-                 extracted_data: dict, original_interaction: discord.Interaction,
-                 scoreboard_cog):
+    def __init__(
+        self,
+        match_id: int,
+        team1_score: int,
+        team2_score: int,
+        extracted_data: dict,
+        original_interaction: discord.Interaction,
+        scoreboard_cog,
+    ):
         super().__init__(timeout=3600)  # 1 oră timeout pentru verificare
         self.match_id = match_id
         self.team1_score = team1_score
@@ -1220,7 +1237,9 @@ class ScoreboardVerificationView(discord.ui.View):
         self.scoreboard_cog = scoreboard_cog
 
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
-    async def accept_match(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def accept_match(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
         try:
             # Verifică dacă utilizatorul este autorizat
             if not await Config.check_authorization(interaction):
@@ -1228,27 +1247,31 @@ class ScoreboardVerificationView(discord.ui.View):
                     f"🟢 Unauthorized user {interaction.user} ({interaction.user.id}) attempted to approve match {self.match_id}"
                 )
                 await interaction.response.send_message(
-                    f"{Config.ICONS['not_allowed']} You are not authorized to approve match results.", 
-                    ephemeral=True
+                    f"{Config.ICONS['not_allowed']} You are not authorized to approve match results.",
+                    ephemeral=True,
                 )
                 return
-                
+
             # Procesează meciul ca fiind valid
             await self._process_verified_match(interaction, approved=True)
-            
+
         except Exception as e:
-            logger.warning(f"🟢 Error in accept_match for user {interaction.user.id}: {e}")
+            logger.warning(
+                f"🟢 Error in accept_match for user {interaction.user.id}: {e}"
+            )
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(
-                        "An error occurred while processing your request.", 
-                        ephemeral=True
+                        "An error occurred while processing your request.",
+                        ephemeral=True,
                     )
             except:
                 pass  # Ignore if already responded
 
     @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
-    async def deny_match(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def deny_match(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
         try:
             # Verifică dacă utilizatorul este autorizat
             if not await Config.check_authorization(interaction):
@@ -1256,79 +1279,87 @@ class ScoreboardVerificationView(discord.ui.View):
                     f"🟢 Unauthorized user {interaction.user} ({interaction.user.id}) attempted to deny match {self.match_id}"
                 )
                 await interaction.response.send_message(
-                    f"{Config.ICONS['not_allowed']} You are not authorized to deny match results.", 
-                    ephemeral=True
+                    f"{Config.ICONS['not_allowed']} You are not authorized to deny match results.",
+                    ephemeral=True,
                 )
                 return
-                
+
             # Afișează modalul pentru motivul de respingere
             deny_modal = DenyReasonModal(self)
             await interaction.response.send_modal(deny_modal)
-            
+
         except Exception as e:
-            logger.warning(f"🟢 Error in deny_match for user {interaction.user.id}: {e}")
+            logger.warning(
+                f"🟢 Error in deny_match for user {interaction.user.id}: {e}"
+            )
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(
-                        "An error occurred while processing your request.", 
-                        ephemeral=True
+                        "An error occurred while processing your request.",
+                        ephemeral=True,
                     )
             except:
                 pass  # Ignore if already responded
 
-    async def _process_verified_match(self, interaction: discord.Interaction, approved: bool, deny_reason: str = None):
+    async def _process_verified_match(
+        self, interaction: discord.Interaction, approved: bool, deny_reason: str = None
+    ):
         """Procesează meciul după verificare"""
         try:
             await interaction.response.defer()
-            
+
             if approved:
                 # Procesează meciul normal cu datele extrase
                 logger.info(f"🟢 Match {self.match_id} approved by {interaction.user}")
-                
+
                 # Folosește funcția existentă de procesare din scoreboard_cog
                 await self._complete_match_processing()
-                
+
                 embed = discord.Embed(
                     title=f"{Config.ICONS['success']} Match Approved",
                     description=f"Match {self.match_id} has been approved and processed.",
-                    color=Config.EMBED_COLORS["light_green"]
+                    color=Config.EMBED_COLORS["light_green"],
                 )
                 embed.add_field(
                     name="Final Score",
                     value=f"{self.team1_score} - {self.team2_score}",
-                    inline=True
+                    inline=True,
                 )
                 embed.add_field(
-                    name="Approved by",
-                    value=interaction.user.mention,
-                    inline=True
+                    name="Approved by", value=interaction.user.mention, inline=True
                 )
             else:
-                logger.info(f"🟢 Match {self.match_id} denied by {interaction.user} - Reason: {deny_reason}")
-                
+                logger.info(
+                    f"🟢 Match {self.match_id} denied by {interaction.user} - Reason: {deny_reason}"
+                )
+
                 # Release the submission lock pentru meciul respins
                 try:
                     await Match.release_submission_lock(self.match_id)
                 except Exception as lock_error:
                     logger.error(f"🟢 Failed to release submission lock: {lock_error}")
-                
+
                 embed = discord.Embed(
-                    title=f"{Config.ICONS['unsuccess']} Match Denied", 
+                    title=f"{Config.ICONS['unsuccess']} Match Denied",
                     description=f"Match {self.match_id} has been denied by {interaction.user.mention} and will not be processed.",
-                    color=Config.EMBED_COLORS["red"]
+                    color=Config.EMBED_COLORS["red"],
                 )
                 embed.add_field(
                     name="Reason",
-                    value=deny_reason if deny_reason else "Score verification failed - results not processed",
-                    inline=False
+                    value=(
+                        deny_reason
+                        if deny_reason
+                        else "Score verification failed - results not processed"
+                    ),
+                    inline=False,
                 )
-                
+
             # Dezactivează butoanele
             for item in self.children:
                 item.disabled = True
-                
+
             await interaction.edit_original_response(embed=embed, view=self)
-            
+
             # Notifică utilizatorul original despre decizie
             try:
                 user = self.original_interaction.user
@@ -1336,38 +1367,44 @@ class ScoreboardVerificationView(discord.ui.View):
                 notification_embed = discord.Embed(
                     title=f"{Config.ICONS['bell_lightgreen'] if approved else Config.ICONS['bell_red']} Match Verification Update",
                     description=f"Match ID {self.match_id} has been **{decision}** by staff.",
-                    color=Config.EMBED_COLORS["light_green"] if approved else Config.EMBED_COLORS["red"]
+                    color=(
+                        Config.EMBED_COLORS["light_green"]
+                        if approved
+                        else Config.EMBED_COLORS["red"]
+                    ),
                 )
-                
+
                 # Adaugă motivul dacă meciul a fost respins
                 if not approved and deny_reason:
                     notification_embed.add_field(
-                        name="Reason for denial",
-                        value=deny_reason,
-                        inline=False
+                        name="Reason for denial", value=deny_reason, inline=False
                     )
-                
+
                 # Adaugă footer la notification embed
                 current_time = datetime.now().strftime("%H:%M | %d/%m/%Y")
-                notification_embed.set_footer(text=f"Verification completed at {current_time}")
-                
+                notification_embed.set_footer(
+                    text=f"Verification completed at {current_time}"
+                )
+
                 await user.send(embed=notification_embed)
             except Exception as dm_error:
                 logger.warning(f"🟢 Could not send DM notification to user: {dm_error}")
-            
+
             # Șterge canalul de verificare după un delay
             await asyncio.sleep(10)
             try:
-                await interaction.channel.delete(reason=f"Match {self.match_id} verification completed")
+                await interaction.channel.delete(
+                    reason=f"Match {self.match_id} verification completed"
+                )
             except Exception as delete_error:
                 logger.error(f"🟢 Error deleting verification channel: {delete_error}")
-            
+
         except Exception as e:
             logger.error(f"🟢 Error processing verified match {self.match_id}: {e}")
             error_embed = discord.Embed(
                 title=f"{Config.ICONS['unsuccess']} Processing Error",
                 description="An error occurred while processing the verification.",
-                color=Config.EMBED_COLORS["red"]
+                color=Config.EMBED_COLORS["red"],
             )
             await interaction.followup.send(embed=error_embed, ephemeral=True)
 
@@ -1376,20 +1413,22 @@ class ScoreboardVerificationView(discord.ui.View):
         try:
             # Folosește match_data din extracted_data pentru a procesa complet meciul
             match_data = self.extracted_data.get("match_data")
-            
+
             # Procesează teams data exact cum se face în funcția normală
             teams = self.extracted_data.get("teams", {})
             team1_data = teams.get("team1", {})
             team2_data = teams.get("team2", {})
-            
+
             # Recalculează și procesează toți jucătorii
             all_players = await self.scoreboard_cog._process_teams_data(
                 team1_data, team2_data, match_data, self.team1_score, self.team2_score
             )
-            
+
             # Update database
-            team1_for_db, team2_for_db = await self.scoreboard_cog._prepare_teams_for_db(all_players)
-            
+            team1_for_db, team2_for_db = (
+                await self.scoreboard_cog._prepare_teams_for_db(all_players)
+            )
+
             await Match.complete_submission(
                 self.match_id,
                 team1_for_db,
@@ -1406,17 +1445,17 @@ class ScoreboardVerificationView(discord.ui.View):
                 configs = await ScoreboardConfig.get_all_configs()
                 target_channel_id = None
                 guild_id = self.original_interaction.guild.id
-                
+
                 for config in configs:
                     if config["guild_id"] == guild_id:
                         target_channel_id = config["results_channel_id"]
                         break
-                
+
                 if target_channel_id:
                     # Extrage echipele procesate
                     team1_players = [p for p in all_players if p.get("team") == 1]
                     team2_players = [p for p in all_players if p.get("team") == 2]
-                    
+
                     await self.scoreboard_cog.send_final_results_image(
                         self.original_interaction,
                         target_channel_id,
@@ -1427,66 +1466,86 @@ class ScoreboardVerificationView(discord.ui.View):
                         match_data,
                     )
                 else:
-                    logger.error(f"🟢 Could not find target channel for guild {guild_id}")
-                    
+                    logger.error(
+                        f"🟢 Could not find target channel for guild {guild_id}"
+                    )
+
             except Exception as results_error:
-                logger.error(f"🟢 Error sending results after verification: {results_error}")
-                
+                logger.error(
+                    f"🟢 Error sending results after verification: {results_error}"
+                )
+
         except Exception as e:
             logger.error(f"🟢 Error in _complete_match_processing: {e}")
             raise
 
     async def on_timeout(self):
-        """Handelează timeout-ul pentru verificare"""
+        """Handelează timeout-ul pentru verificare - șterge canalul și notifică utilizatorul"""
         try:
             # Release submission lock pentru meciul cu timeout
             try:
                 await Match.release_submission_lock(self.match_id)
             except Exception as lock_error:
-                logger.error(f"🟢 Failed to release submission lock on timeout: {lock_error}")
-            
-            embed = discord.Embed(
-                title=f"{Config.ICONS['info']} Verification Timeout",
-                description=f"Verification for match {self.match_id} has timed out. The match was not processed.",
-                color=Config.EMBED_COLORS["yellow"]
-            )
-            embed.add_field(
-                name=f"{Config.ICONS['clock_yellow']} Timeout Details",
-                value="No staff member reviewed this match within 1 hour.\nThe match submission has been automatically rejected.",
-                inline=False
-            )
-            
-            # Dezactivează butoanele
-            for item in self.children:
-                item.disabled = True
-                
-            # Încearcă să editeze mesajul
-            try:
-                await self.message.edit(embed=embed, view=self)
-            except:
-                pass  # Mesajul poate fi deja șters
-            
-            # Notifică utilizatorul despre timeout
+                logger.error(
+                    f"🟢 Failed to release submission lock on timeout: {lock_error}"
+                )
+
+            # Notifică utilizatorul că niciun admin nu este activ
             try:
                 user = self.original_interaction.user
                 timeout_embed = discord.Embed(
-                    title=f"{Config.ICONS['clock_yellow']} Match Verification Timeout",
-                    description=f"Your match {self.match_id} verification timed out and was not processed.",
-                    color=Config.EMBED_COLORS["yellow"]
+                    title=f"{Config.ICONS['clock_yellow']} No Active Administrators",
+                    description=f"Your match #{self.match_id} could not be verified because no administrators are currently active.",
+                    color=Config.EMBED_COLORS["yellow"],
                 )
                 timeout_embed.add_field(
-                    name="What happened?",
-                    value="No staff member reviewed your match within 1 hour.\nYou can resubmit the match if needed.",
-                    inline=False
+                    name=f"{Config.ICONS['info']} What happened?",
+                    value="Your match required manual verification, but no staff member was available to review it within 1 hour.",
+                    inline=False,
                 )
+                timeout_embed.add_field(
+                    name=f"{Config.ICONS['question_yellow']} What should you do?",
+                    value="• Please try resubmitting your match results later when administrators are active\n"
+                    "• Check back during peak hours for faster verification",
+                    inline=False,
+                )
+                timeout_embed.set_footer(
+                    text="The verification channel has been automatically deleted"
+                )
+
                 await user.send(embed=timeout_embed)
+                logger.info(
+                    f"🟢 Sent timeout notification to user {user.display_name} for match {self.match_id}"
+                )
             except Exception as dm_error:
-                logger.warning(f"🟢 Could not send timeout DM notification: {dm_error}")
-                
-            logger.info(f"🟢 Match {self.match_id} verification timed out")
-                
+                logger.warning(
+                    f"🟢 Could not send timeout DM notification to user: {dm_error}"
+                )
+
+            # Șterge canalul de verificare automat
+            try:
+                if hasattr(self, "message") and self.message:
+                    channel = self.message.channel
+                    if channel and hasattr(channel, "delete"):
+                        await channel.delete(
+                            reason=f"Auto-delete after timeout for match {self.match_id}"
+                        )
+                        logger.info(
+                            f"🟢 Deleted verification channel for match {self.match_id} due to timeout"
+                        )
+            except Exception as delete_error:
+                logger.error(
+                    f"🟢 Failed to delete verification channel on timeout: {delete_error}"
+                )
+
+            logger.info(
+                f"🟢 Match {self.match_id} verification timed out - channel deleted, user notified"
+            )
+
         except Exception as e:
-            logger.error(f"🟢 Error handling verification timeout for match {self.match_id}: {e}")
+            logger.error(
+                f"🟢 Error handling verification timeout for match {self.match_id}: {e}"
+            )
 
 
 class SubmitScoreboardView(discord.ui.View):
@@ -1536,7 +1595,9 @@ class Scoreboard(commands.Cog):
         try:
             await self.recreate_persistent_views()
         except Exception as e:
-            logger.warning(f"🟢 Failed to recreate scoreboard views on startup, will try again later: {e}")
+            logger.warning(
+                f"🟢 Failed to recreate scoreboard views on startup, will try again later: {e}"
+            )
             # Schedule retry after bot is fully loaded
             self.bot.loop.create_task(self._retry_recreate_views())
 
@@ -1621,7 +1682,9 @@ class Scoreboard(commands.Cog):
                     embed.set_footer(text="Only match participants can submit results")
 
                     try:
-                        new_message = await submission_channel.send(embed=embed, view=view)
+                        new_message = await submission_channel.send(
+                            embed=embed, view=view
+                        )
 
                         # Update database with new message_id
                         await ScoreboardConfig.set_config(
@@ -1641,11 +1704,15 @@ class Scoreboard(commands.Cog):
                         )
 
                 except Exception as config_error:
-                    logger.error(f"🟢 Error processing scoreboard config: {config_error}")
+                    logger.error(
+                        f"🟢 Error processing scoreboard config: {config_error}"
+                    )
                     continue  # Continue with next config
 
         except Exception as e:
-            logger.error(f"🟢 Error recreating persistent scoreboard views (will retry later): {e}")
+            logger.error(
+                f"🟢 Error recreating persistent scoreboard views (will retry later): {e}"
+            )
             # Don't let database connection errors prevent the bot from starting
             # The views can be recreated manually later with the set_scoreboard_channel command
 
@@ -1663,7 +1730,7 @@ class Scoreboard(commands.Cog):
         # Verifică autorizația utilizatorului
         if not await Config.check_authorization(interaction):
             return
-            
+
         # Check if user has admin permissions
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(
